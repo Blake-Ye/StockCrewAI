@@ -33,6 +33,15 @@ COMPARATIVE_FACT_CONCEPTS = {
     "common_shares_outstanding": "shares_prior",
 }
 
+TTM_FACT_CONCEPTS = (
+    "revenue",
+    "operating_income",
+    "net_income",
+    "operating_cash_flow",
+    "capex",
+)
+TTM_ROLES = ("latest_fy", "current_ytd", "prior_ytd")
+
 
 class EdgarToolInput(BaseModel):
     company_name: str | None = Field(default=None, description="公司名称")
@@ -121,6 +130,7 @@ class EdgarResult(BaseModel):
     exchange: list[str] = Field(default_factory=list)
     cik: str | None = None
     facts: dict[str, EdgarFact] = Field(default_factory=dict)
+    ttm_inputs: dict[str, dict[str, EdgarFact]] = Field(default_factory=dict)
     filings: list[EdgarFilingEvidence] = Field(default_factory=list)
     historical_financial_snapshots: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -429,6 +439,7 @@ class EdgarTool(BaseTool):
         get_all_facts = getattr(container, "get_all_facts", None)
         if not callable(get_all_facts):
             return []
+
         source = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json"
         try:
             all_facts = get_all_facts()
@@ -520,17 +531,199 @@ class EdgarTool(BaseTool):
         except Exception:
             return []
 
+    def _collect_ttm_inputs(
+        self,
+        container: Any,
+        company_cik: str,
+        ticker: str | None,
+    ) -> dict[str, dict[str, EdgarFact]]:
+        inputs: dict[str, dict[str, EdgarFact]] = {}
+        get_concept = getattr(container, "get_concept", None)
+        if not callable(get_concept):
+            return inputs
+        get_fact = getattr(container, "get_fact", None)
+
+        def enrich_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+            enriched = dict(metadata)
+            tag = enriched.get("tag_used")
+            period = enriched.get("period")
+            if not callable(get_fact) or not tag or not period:
+                return enriched
+            try:
+                fact = get_fact(tag, period=period)
+            except Exception:
+                return enriched
+            if fact is None:
+                return enriched
+
+            def fact_value(name: str) -> Any:
+                if isinstance(fact, dict):
+                    return fact.get(name)
+                return _read_attr(fact, name)
+
+            for metadata_key, fact_key in (
+                ("period_start", "period_start"),
+                ("period_end", "period_end"),
+                ("period_type", "period_type"),
+                ("fiscal_year", "fiscal_year"),
+                ("fiscal_period", "fiscal_period"),
+                ("filing_date", "filing_date"),
+                ("form_type", "form_type"),
+                ("accession", "accession"),
+            ):
+                if enriched.get(metadata_key) in (None, ""):
+                    value = fact_value(fact_key)
+                    if value is not None:
+                        enriched[metadata_key] = value
+            return enriched
+
+        for metric_id in TTM_FACT_CONCEPTS:
+            candidates: list[dict[str, Any]] = []
+            try:
+                latest = get_concept(metric_id, return_metadata=True)
+            except Exception:
+                latest = None
+            if latest:
+                latest = enrich_metadata(dict(latest))
+                candidates.append(latest)
+            latest_year = None
+            if latest:
+                latest_year = latest.get("fiscal_year")
+                if latest.get("fiscal_period") != "FY":
+                    latest_year = int(latest_year) - 1 if latest_year else None
+            if latest_year:
+                periods = [
+                    f"{latest_year}-FY",
+                    *(
+                        f"{year}-Q{quarter}"
+                        for year in (int(latest_year), int(latest_year) + 1)
+                        for quarter in range(1, 5)
+                    ),
+                ]
+                for period in periods:
+                    if latest and period == latest.get("period"):
+                        continue
+                    try:
+                        metadata = get_concept(
+                            metric_id,
+                            period=period,
+                            return_metadata=True,
+                        )
+                    except Exception:
+                        continue
+                    if metadata:
+                        candidates.append(enrich_metadata(dict(metadata)))
+
+            by_period: dict[str, dict[str, Any]] = {}
+            for metadata in candidates:
+                period = str(metadata.get("period") or "")
+                fiscal_period = str(
+                    metadata.get("fiscal_period")
+                    or (period.rsplit("-", 1)[-1] if "-" in period else "")
+                ).upper()
+                fiscal_year = metadata.get("fiscal_year")
+                if fiscal_year is None and period[:4].isdigit():
+                    fiscal_year = int(period[:4])
+                if not period or fiscal_year is None:
+                    continue
+                filed_at = _as_date(metadata.get("filing_date", metadata.get("filed_at")))
+                if filed_at and filed_at > self._as_of:
+                    continue
+                key = f"{fiscal_year}-{fiscal_period}"
+                metadata["fiscal_year"] = int(fiscal_year)
+                metadata["fiscal_period"] = fiscal_period
+                by_period[key] = metadata
+            fy_candidates = [
+                item for item in by_period.values() if item["fiscal_period"] == "FY"
+            ]
+            if not fy_candidates:
+                continue
+            latest_fy = max(fy_candidates, key=lambda item: item["fiscal_year"])
+            latest_year = latest_fy["fiscal_year"]
+            ytd_candidates = [
+                item
+                for item in by_period.values()
+                if item["fiscal_year"] == latest_year + 1
+                and item["fiscal_period"] in {"Q1", "Q2", "Q3"}
+            ]
+            if not ytd_candidates:
+                continue
+            current_ytd = max(
+                ytd_candidates,
+                key=lambda item: _as_date(item.get("period_end")) or date.min,
+            )
+            prior_ytd = by_period.get(
+                f"{latest_year}-{current_ytd['fiscal_period']}"
+            )
+            if prior_ytd is None:
+                continue
+            selected = {
+                "latest_fy": latest_fy,
+                "current_ytd": current_ytd,
+                "prior_ytd": prior_ytd,
+            }
+            by_role: dict[str, EdgarFact] = {}
+            for role in TTM_ROLES:
+                metadata = selected[role]
+                try:
+                    value = _decimal_string(metadata.get("value"))
+                except ValueError:
+                    continue
+                period = str(metadata.get("period") or "unknown")
+                accession = str(
+                    metadata.get("accession")
+                    or metadata.get("accession_number")
+                    or "unknown"
+                )
+                evidence_id = "ev_{}_{}_{}_{}_{}".format(
+                    _safe_id(ticker or "company"),
+                    _safe_id(metric_id),
+                    role,
+                    _safe_id(period),
+                    _safe_id(accession),
+                )
+                by_role[role] = EdgarFact(
+                    metric_id=metric_id,
+                    evidence_id=evidence_id,
+                    value=value,
+                    unit=str(metadata.get("unit")) if metadata.get("unit") else None,
+                    period_type=metadata.get("period_type"),
+                    period=period,
+                    period_start=_as_iso(metadata.get("period_start")),
+                    period_end=_as_iso(metadata.get("period_end")),
+                    fiscal_year=metadata.get("fiscal_year"),
+                    fiscal_period=metadata.get("fiscal_period"),
+                    filed_at=_as_iso(metadata.get("filing_date", metadata.get("filed_at"))),
+                    form=metadata.get("form_type", metadata.get("form")),
+                    accession_number=accession,
+                    taxonomy=(
+                        str(metadata.get("tag_used")).split(":", 1)[0]
+                        if metadata.get("tag_used")
+                        else None
+                    ),
+                    xbrl_tag=metadata.get("tag_used"),
+                    source_reference=f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json",
+                )
+            if by_role:
+                inputs[metric_id] = by_role
+        return inputs
+
     def _collect_facts(
         self,
         company: Any,
         company_cik: str,
         ticker: str | None,
-    ) -> tuple[dict[str, EdgarFact], list[str], list[dict[str, Any]]]:
+    ) -> tuple[
+        dict[str, EdgarFact],
+        list[str],
+        list[dict[str, Any]],
+        dict[str, dict[str, EdgarFact]],
+    ]:
         warnings: list[str] = []
         facts: dict[str, EdgarFact] = {}
         container = company.get_facts()
         if container is None:
-            return facts, ["SEC Company Facts 不可用"], []
+            return facts, ["SEC Company Facts 不可用"], [], {}
         source = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json"
 
         def enrich_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -645,10 +838,11 @@ class EdgarTool(BaseTool):
                 )
                 continue
             add_fact(prior_metric_id, prior_metadata)
-        return facts, warnings, self._collect_historical_financial_snapshots(
-            container,
-            company_cik,
-            ticker,
+        return (
+            facts,
+            warnings,
+            self._collect_historical_financial_snapshots(container, company_cik, ticker),
+            self._collect_ttm_inputs(container, company_cik, ticker),
         )
 
     def _run(
@@ -680,10 +874,16 @@ class EdgarTool(BaseTool):
             facts: dict[str, EdgarFact] = {}
             filings: list[EdgarFilingEvidence] = []
             historical_financial_snapshots: list[dict[str, Any]] = []
+            ttm_inputs: dict[str, dict[str, EdgarFact]] = {}
             warnings: list[str] = []
             errors: list[EdgarError] = []
             try:
-                facts, warnings, historical_financial_snapshots = self._collect_facts(
+                (
+                    facts,
+                    warnings,
+                    historical_financial_snapshots,
+                    ttm_inputs,
+                ) = self._collect_facts(
                     company,
                     company_cik,
                     official_ticker,
@@ -722,6 +922,7 @@ class EdgarTool(BaseTool):
                 ],
                 cik=company_cik,
                 facts=facts,
+                ttm_inputs=ttm_inputs,
                 filings=filings,
                 historical_financial_snapshots=historical_financial_snapshots,
                 warnings=warnings,

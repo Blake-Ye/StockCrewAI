@@ -9,6 +9,13 @@ from stockcrewai.tools.edgar_tool import (
     EdgarResult,
     EdgarTool,
 )
+from stockcrewai.tools.ttm_tool import (
+    SUPPORTED_TTM_METRICS,
+    TTMBuilderTool,
+    TTMBuilderToolInput,
+    TTMMetricResult,
+    TTMResult,
+)
 from stockcrewai.tools.market_price_tool import MarketPriceResult, MarketPriceTool
 from stockcrewai.tools.historical_valuation_tool import (
     HistoricalPricePoint,
@@ -43,6 +50,11 @@ __all__ = [
     "EdgarFilingEvidence",
     "EdgarResult",
     "EdgarTool",
+    "SUPPORTED_TTM_METRICS",
+    "TTMBuilderTool",
+    "TTMBuilderToolInput",
+    "TTMMetricResult",
+    "TTMResult",
     "FinancialCalculatorTool",
     "FinancialValidationTool",
     "MarketPriceResult",

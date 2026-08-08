@@ -84,6 +84,125 @@ class FakeFacts:
         }
 
 
+class TTMFacts(FakeFacts):
+    observations = {
+        "revenue": {
+            "2024-FY": "100",
+            "2025-Q3": "30",
+            "2024-Q3": "25",
+            "2025-Q4": "99",
+            "2024-Q4": "88",
+        },
+        "operating_income": {
+            "2024-FY": "40",
+            "2025-Q3": "12",
+            "2024-Q3": "10",
+            "2025-Q4": "39",
+            "2024-Q4": "38",
+        },
+        "net_income": {
+            "2024-FY": "20",
+            "2025-Q3": "6",
+            "2024-Q3": "5",
+            "2025-Q4": "19",
+            "2024-Q4": "18",
+        },
+        "operating_cash_flow": {
+            "2024-FY": "30",
+            "2025-Q3": "9",
+            "2024-Q3": "7",
+            "2025-Q4": "29",
+            "2024-Q4": "28",
+        },
+        "capex": {
+            "2024-FY": "10",
+            "2025-Q3": "3",
+            "2024-Q3": "2",
+            "2025-Q4": "9",
+            "2024-Q4": "8",
+        },
+    }
+
+    def __init__(self):
+        self.fact_calls = []
+
+    def get_concept(self, concept, period=None, return_metadata=False):
+        if concept not in self.observations:
+            return super().get_concept(
+                concept,
+                period=period,
+                return_metadata=return_metadata,
+            )
+        resolved_period = period or "2024-FY"
+        value = self.observations[concept].get(resolved_period)
+        if value is None:
+            return None
+        if not return_metadata:
+            return value
+        fiscal_year = int(resolved_period[:4])
+        fiscal_period = resolved_period[5:]
+        if fiscal_period == "FY":
+            period_start, period_end, form = date(fiscal_year, 1, 1), date(
+                fiscal_year, 12, 31
+            ), "10-K"
+        elif fiscal_period in {"Q3", "Q4"}:
+            period_start = date(fiscal_year, 1, 1)
+            period_end = date(
+                fiscal_year,
+                9 if fiscal_period == "Q3" else 12,
+                30 if fiscal_period == "Q3" else 31,
+            )
+            form = "10-Q" if fiscal_period == "Q3" else "10-K"
+        else:
+            raise AssertionError(f"unexpected test period: {resolved_period}")
+        return {
+            "concept_name": concept,
+            "filing_date": date(2026, 1, 31),
+            "period": resolved_period,
+            "period_end": period_end,
+            "synonyms_tried": [],
+            "tag_used": f"us-gaap:{concept}",
+            "unit": "USD",
+            "value": value,
+        }
+
+    def get_fact(self, tag_used, period=None):
+        self.fact_calls.append((tag_used, period))
+        concept = str(tag_used).split(":", 1)[-1]
+        resolved_period = period or "2024-FY"
+        value = self.observations.get(concept, {}).get(resolved_period)
+        if value is None:
+            return None
+        fiscal_year = int(resolved_period[:4])
+        fiscal_period = resolved_period[5:]
+        if fiscal_period == "FY":
+            period_start, period_end, form = date(fiscal_year, 1, 1), date(
+                fiscal_year, 12, 31
+            ), "10-K"
+        elif fiscal_period in {"Q3", "Q4"}:
+            period_start = date(fiscal_year, 1, 1)
+            period_end = date(
+                fiscal_year,
+                9 if fiscal_period == "Q3" else 12,
+                30 if fiscal_period == "Q3" else 31,
+            )
+            form = "10-Q" if fiscal_period == "Q3" else "10-K"
+        else:
+            raise AssertionError(f"unexpected fact period: {resolved_period}")
+        return SimpleNamespace(
+            concept=tag_used,
+            taxonomy="us-gaap",
+            period_start=period_start,
+            period_end=period_end,
+            period_type="duration",
+            fiscal_year=fiscal_year,
+            fiscal_period=fiscal_period,
+            filing_date=date(2026, 1, 31),
+            form_type=form,
+            accession=f"acc-{concept}-{resolved_period}",
+        )
+
+
 class FactsWithObjectMetadata(FakeFacts):
     def get_concept(self, concept, period=None, return_metadata=False):
         metadata = super().get_concept(
@@ -263,6 +382,16 @@ class FakeEdgar:
         return company
 
 
+class TTMCompany(FakeCompany):
+    def get_facts(self):
+        self.facts = TTMFacts()
+        return self.facts
+
+
+class TTMEdgar(FakeEdgar):
+    company_class = TTMCompany
+
+
 class HistoricalCompany(FakeCompany):
     def get_facts(self):
         return HistoricalFacts()
@@ -421,6 +550,92 @@ class EdgarToolTests(unittest.TestCase):
         self.assertEqual(revenue.form, "10-K")
         self.assertEqual(revenue.accession_number, "0000320193-25-000001")
         self.assertEqual(result.facts["revenue_prior"].period_start, "2023-01-01")
+
+    def test_sparse_ttm_metadata_is_enriched_from_get_fact(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        fake_edgar = TTMEdgar()
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "Test User test@example.com"}):
+            result = EdgarTool(
+                edgar_module=fake_edgar,
+                as_of=date(2026, 8, 5),
+            ).run(ticker="AAPL")
+
+        self.assertEqual(
+            set(result.ttm_inputs),
+            {
+                "revenue",
+                "operating_income",
+                "net_income",
+                "operating_cash_flow",
+                "capex",
+            },
+        )
+        calls = set(fake_edgar.companies[0].facts.fact_calls)
+        self.assertIn(("us-gaap:revenue", "2024-FY"), calls)
+        self.assertIn(("us-gaap:revenue", "2025-Q3"), calls)
+        self.assertIn(("us-gaap:revenue", "2024-Q3"), calls)
+        revenue = result.ttm_inputs["revenue"]
+        self.assertEqual(revenue["latest_fy"].period_start, "2024-01-01")
+        self.assertEqual(revenue["current_ytd"].period_start, "2025-01-01")
+        self.assertEqual(revenue["current_ytd"].period_end, "2025-09-30")
+        self.assertEqual(revenue["current_ytd"].period_type, "duration")
+        self.assertEqual(revenue["current_ytd"].fiscal_year, 2025)
+        self.assertEqual(revenue["current_ytd"].fiscal_period, "Q3")
+        self.assertEqual(revenue["current_ytd"].filed_at, "2026-01-31")
+        self.assertEqual(revenue["current_ytd"].form, "10-Q")
+        self.assertEqual(
+            revenue["current_ytd"].accession_number,
+            "acc-revenue-2025-Q3",
+        )
+
+    def test_extracts_non_colliding_ttm_evidence_roles_without_calculating(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "Test User test@example.com"}):
+            result = EdgarTool(
+                edgar_module=TTMEdgar(),
+                as_of=date(2026, 8, 5),
+            ).run(ticker="AAPL")
+
+        self.assertEqual(
+            set(result.ttm_inputs),
+            {
+                "revenue",
+                "operating_income",
+                "net_income",
+                "operating_cash_flow",
+                "capex",
+            },
+        )
+        for metric_id, by_role in result.ttm_inputs.items():
+            self.assertEqual(
+                set(by_role), {"latest_fy", "current_ytd", "prior_ytd"}
+            )
+            evidence_ids = [fact.evidence_id for fact in by_role.values()]
+            self.assertEqual(len(evidence_ids), len(set(evidence_ids)))
+            for role, metric_fact in by_role.items():
+                self.assertIn(metric_id, metric_fact.evidence_id)
+                self.assertIn(role, metric_fact.evidence_id)
+                self.assertEqual(
+                    metric_fact.source_reference,
+                    "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json",
+                )
+                self.assertTrue(
+                    metric_fact.period in {"2024-FY", "2025-Q3", "2024-Q3"}
+                )
+        self.assertEqual(result.ttm_inputs["revenue"]["current_ytd"].period, "2025-Q3")
+
+    def test_excludes_q4_from_current_ytd_candidate(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "Test User test@example.com"}):
+            result = EdgarTool(
+                edgar_module=TTMEdgar(),
+                as_of=date(2026, 8, 5),
+            ).run(ticker="AAPL")
+
+        self.assertEqual(result.ttm_inputs["revenue"]["current_ytd"].period, "2025-Q3")
 
     def test_requested_filing_text_is_bounded_and_traceable(self):
         from stockcrewai.tools.edgar_tool import EdgarTool

@@ -34,25 +34,19 @@
 二、当前开发环境
 ==================================================
 
-项目必须使用已有的 conda 环境：AgentVest。
-
-执行命令时优先使用：
-  conda run -n AgentVest <command>
+项目使用 uv 管理 Python 环境、依赖和锁文件。本轮复用现有项目环境和已锁定依赖，命令统一通过 `uv run --no-sync` 执行。
 
 例如：
-  conda run -n AgentVest python --version
-  conda run -n AgentVest python -m pytest -q
-  conda run -n AgentVest python -m ruff check .
-  conda run -n AgentVest python -m mypy src
+  uv run --no-sync python --version
+  uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
+  uv run --no-sync python -m ruff check .
+  uv run --no-sync python -m mypy src
 
-禁止：
-- 创建新的 Conda 环境
-- 创建 .venv
-- 使用 uv venv 或 uv sync
-- 删除或重建 AgentVest 环境
-- 将依赖安装到 base 环境
+本轮不得：
+- 执行 `uv sync`、创建新的环境或创建 `.venv`
+- 删除或重建现有项目环境
 - 未经允许升级 CrewAI、Pydantic 或 Python 版本
-- 未经允许批量升级现有依赖
+- 未经允许批量升级现有依赖或新增依赖
 
 如需新增依赖，必须先报告以下内容并等待批准：
 1. 依赖名称
@@ -88,7 +82,7 @@
 5. 按固定流程获取 SEC 文件与 XBRL 数据
 6. 规范化所有数据并生成 Evidence
 7. 验证公司身份、单位、财务期间和数据来源
-8. 构建 TTM 数据
+8. 构建并展示 TTM 数据（本轮不替换当前估值输入）
 9. 计算财务指标
 10. 获取带时间戳的市场价格
 11. 计算当前估值
@@ -105,12 +99,13 @@
 核心原则：
 - LLM 负责：理解、解释
 - 普通 Python 程序负责：事实、数学、验证、评级
+- 本轮由确定性 Python 生成并展示 TTM；当前估值、历史估值、反向 DCF 和 Verdict 继续使用现有输入。
 
 ==================================================
 四、Agent 与 Crew 固定架构
 ==================================================
 
-V1 版本只允许 5 个 LLM Agent 和 3 个 Crew，严禁擅自增加任何 Planner、Research、Validator、Manager 或自由自治 Agent。
+V1 版本固定为 4 个 LLM Agent 和 3 个 Crew，严禁擅自增加任何 Planner、Research、Validator、Manager 或自由自治 Agent。
 
 Crew 1：Request Parser Crew
 - 1 个 Agent：RequestParserAgent
@@ -118,10 +113,10 @@ Crew 1：Request Parser Crew
 - 输出：ParsedRequest
 
 Crew 2：Analysis Crew
-- 3 个 Agent：FinancialQualityAgent、RiskAnalysisAgent、ValuationAnalysisAgent
-- 3 个 Task：FinancialQualityAnalysisTask、RiskAnalysisTask、ValuationAnalysisTask
-- 输出：AnalysisClaims
-- 三个 Agent 可分析同一份已验证状态，但不得互相修改数据。
+- 2 个 Agent：FinancialQualityAgent、RiskAnalysisAgent
+- 2 个 Task：FinancialQualityAnalysisTask、RiskAnalysisTask
+- 输出：AnalysisClaims；估值 Claims 由确定性 Python 生成后合并，不设置估值 LLM Agent。
+- 两个 Agent 可分析同一份已验证状态，但不得互相修改数据。
 
 Crew 3：Report Crew
 - 1 个 Agent：ReportWriterAgent
@@ -132,12 +127,13 @@ Crew 3：Report Crew
 - 查询哪些 SEC 文件 → 固定代码决定
 - 获取数据 → Service 完成
 - 财务计算 → 确定性 Python 完成
+- 估值 Claims → 确定性 Python 完成
 - 数据验证 → Validator 完成
 - 最终评级 → 规则引擎完成
 以上过程均不需要 LLM 参与。
 
 ==================================================
-五、五个 Agent 的具体职责与约束
+五、四个 Agent 的具体职责与约束
 ==================================================
 
 Agent 1：RequestParserAgent
@@ -179,14 +175,7 @@ Agent 3：RiskAnalysisAgent
 - 禁止：使用无来源新闻、自行搜索互联网、添加 SEC 文件中不存在的风险、预测未来事件、生成最终评级。
 - 输出为结构化 Claims，类似上述结构。
 
-Agent 4：ValuationAnalysisAgent
-- 所属：Analysis Crew
-- 作用：解释当前估值、历史百分位、P/E、FCF Yield、Price-to-Sales、反向 DCF 隐含增长，并比较历史增长与市场隐含增长。
-- 允许读取：已验证的 CurrentValuationResult、HistoricalValuationResult、ReverseDCFResult、市场价格时间戳、Calculation IDs。
-- 禁止：自行执行 DCF、计算 P/E、修改折现率或永续增长率、创造新估值假设、输出买卖建议或最终评级。
-- 输出为结构化 Claims。
-
-Agent 5：ReportWriterAgent
+Agent 4：ReportWriterAgent
 - 所属：Report Crew
 - 作用：将已验证的 Claims 整理为中文 Markdown 报告，展示评级、财务表现、估值、风险、数据来源与局限性。
 - 只能读取：已验证 Claims、Deterministic Verdict、CalculationResults、Evidence 来源元数据、市场价格时间戳、已知局限性。
@@ -227,7 +216,7 @@ src/stockcrewai/
 ├── validators/      (calculation_validator, claim_validator, report_validator)
 ├── verdict/         (rules, engine)
 ├── crews/           (request_parser, analysis, report)
-└── tools/           (edgar_tool)
+└── tools/           (edgar_tool, ttm_tool)
 
 tests/
 ├── unit/
@@ -260,15 +249,16 @@ CrewAI Flow 按以下固定顺序执行（共 20 步）：
 ==================================================
 十、LLM 与确定性模块的明确划分
 ==================================================
-LLM 阶段（仅这 5 个）：
+LLM 阶段（仅这 4 个）：
 - RequestParserAgent
 - FinancialQualityAgent
 - RiskAnalysisAgent
-- ValuationAnalysisAgent
 - ReportWriterAgent
 
 确定性 Python 模块（绝不可改为 Agent）：
-EntityResolver, ScopeGate, FixedResearchPlanBuilder, SECDataPipeline, MarketDataPipeline, EvidenceNormalizer, EvidenceValidator, TTMBuilder, FinancialCalculationEngine, CurrentValuationEngine, HistoricalValuationEngine, ReverseDCFEngine, CalculationValidator, ClaimValidator, DeterministicVerdictEngine, FinalReportValidator, OutputWriter.
+EntityResolver, ScopeGate, FixedResearchPlanBuilder, SECDataPipeline, MarketDataPipeline, EvidenceNormalizer, EvidenceValidator, TTMBuilder, FinancialCalculationEngine, CurrentValuationEngine, HistoricalValuationEngine, ReverseDCFEngine, build_deterministic_valuation_claims, CalculationValidator, ClaimValidator, DeterministicVerdictEngine, FinalReportValidator, OutputWriter.
+
+当前估值、历史估值和反向 DCF 的 Claims 由 `build_deterministic_valuation_claims` 等确定性 Python 逻辑生成；Analysis Crew 中的 LLM 只解释允许进入该 Crew 的财务与风险 Claims，ReportWriterAgent 只整理已验证 Claims。
 
 ==================================================
 十一、固定 SEC 数据获取流程
@@ -292,8 +282,8 @@ Agent 策略建议：
 - RequestParserAgent: thinking disabled, temperature 0, 结构化输出
 - FinancialQualityAgent: thinking enabled, 低 temperature, 只读 validated 数据
 - RiskAnalysisAgent: thinking enabled, 低 temperature, 只读带来源 SEC 文本
-- ValuationAnalysisAgent: thinking enabled, 低 temperature, 禁止自行计算
 - ReportWriterAgent: thinking disabled / 低推理, 仅重组 validated Claims
+- 估值 Claims：由确定性 Python 逻辑生成，不由 LLM 生成或计算。
 实现时务必检查当前 CrewAI 版本支持的实际 LLM 配置方式，不要复制过时代码。
 
 ==================================================
@@ -340,6 +330,7 @@ evidence_id, entity_cik, evidence_type, metric_id, raw_source_value, economic_va
 ==================================================
 固定公式：TTM = 最近完整财年 + 当前财年累计值 - 上年同期累计值。
 只有在当前累计期与上年同期可比较、单位一致、期间长度兼容、财务日历对齐且输入 Evidence 已验证时才可构建。否则返回 unavailable 并记录原因。
+本轮 TTM Builder 负责生成并在 Flow 阶段摘要和结果中展示 TTM 可用性；暂不切换当前估值输入，历史估值、反向 DCF 和 Verdict 也不因本轮 TTM 结果改变输入口径。
 
 ==================================================
 十九、固定财务计算清单
@@ -407,11 +398,11 @@ parsed_request.json, entity.json, scope.json, source_manifest.json, evidence.jso
 收到任务后严格按以下步骤：
 1. 读取 AGENTS.md 与相关文档
 2. 检查 Git 状态
-3. 确认 AgentVest 环境
+3. 确认当前 uv 项目环境
 4. 列出允许修改文件
 5. 检查依赖接口
 6. 给出不超过 10 行的实施计划
-7. 先写失败测试，再写最小实现
+7. 代码任务先写失败测试，再写最小实现；文档任务先运行文档契约
 8. 运行测试
 9. 重构
 10. 审查完整 diff
@@ -448,8 +439,8 @@ parsed_request.json, entity.json, scope.json, source_manifest.json, evidence.jso
 现在不要实现业务代码。请先：
 1. 阅读仓库中的 AGENTS.md 和 docs 文档；
 2. 查看当前目录与目标架构的差异；
-3. 确认项目固定为 5 个 Agent、3 个 Crew；
+3. 确认项目固定为 4 个 LLM Agent、3 个 Crew；
 4. 确认 LLM 模块与普通 Python 模块的划分；
-5. 确认当前环境为 Conda AgentVest；
+5. 确认当前使用 uv 工作流；
 6. 用中文简要复述你对架构的理解；
 7. 等待我发送第一个具体开发任务。

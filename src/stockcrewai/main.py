@@ -192,6 +192,7 @@ class ResearchFlowState(BaseModel):
     valuation: dict[str, Any] = Field(default_factory=dict)
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
+    ttm: dict[str, Any] = Field(default_factory=dict)
     analysis: list[dict[str, Any]] = Field(default_factory=list)
     analysis_attempts: int = 0
     analysis_diagnostics: dict[str, Any] = Field(default_factory=dict)
@@ -227,6 +228,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         "market_price_tool",
         "historical_valuation_tool",
         "reverse_dcf_tool",
+        "ttm_builder_tool",
         "analysis_crew",
         "report_crew",
         "market_price_data",
@@ -240,6 +242,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
     _market_price_tool: Any = PrivateAttr(default=None)
     _historical_valuation_tool: Any = PrivateAttr(default=None)
     _reverse_dcf_tool: Any = PrivateAttr(default=None)
+    _ttm_builder_tool: Any = PrivateAttr(default=None)
     _analysis_crew: Any = PrivateAttr(default=None)
     _report_crew: Any = PrivateAttr(default=None)
     _market_price_data: Any = PrivateAttr(default=None)
@@ -307,6 +310,21 @@ class ResearchFlow(Flow[ResearchFlowState]):
             if isinstance(validation_mapping, Mapping)
             else None
         )
+        ttm_metrics = (
+            self.state.ttm.get("metrics", [])
+            if isinstance(self.state.ttm, Mapping)
+            else []
+        )
+        if isinstance(ttm_metrics, Mapping):
+            ttm_metrics = list(ttm_metrics.values())
+        ttm_metrics = ttm_metrics if isinstance(ttm_metrics, list | tuple) else []
+        ttm_available = sum(
+            1
+            for metric in ttm_metrics
+            if isinstance(metric, Mapping)
+            and metric.get("status") == "available"
+            and metric.get("validation_status") == "valid"
+        )
         return {
             "identity": (
                 f"company={_summary_value(parsed, keys=('company_name_guess', 'company_name', 'company'))}; "
@@ -320,6 +338,8 @@ class ResearchFlow(Flow[ResearchFlowState]):
             "validation": validation,
             "validated_evidence": validated_evidence,
             "validated_calculations": validated_calculations,
+            "ttm_available": ttm_available,
+            "ttm_total": len(ttm_metrics),
             "price": _summary_value(
                 market,
                 valuation,
@@ -516,6 +536,47 @@ class ResearchFlow(Flow[ResearchFlowState]):
             calculations=calculation_result.calculations,
         )
 
+        ttm_inputs = getattr(edgar_result, "ttm_inputs", {})
+        ttm_inputs, ttm_evidence_validation = pipeline_support.validate_ttm_evidence(
+            ttm_inputs,
+            company_name=edgar_result.company_name or company_name,
+            ticker=edgar_result.ticker or ticker,
+            validation_tool=self._validation_tool,
+        )
+        if self._ttm_builder_tool is None:
+            try:
+                from stockcrewai.tools.ttm_tool import TTMBuilderTool
+            except ModuleNotFoundError:
+                ttm_result = pipeline_support._ttm_unavailable(
+                    edgar_result.company_name or company_name,
+                    edgar_result.ticker or ticker,
+                    "ttm_builder_unavailable",
+                )
+            else:
+                self._ttm_builder_tool = TTMBuilderTool()
+        if self._ttm_builder_tool is not None:
+            try:
+                ttm_result = self._ttm_builder_tool.run(
+                    company_name=edgar_result.company_name or company_name,
+                    ticker=edgar_result.ticker or ticker,
+                    metric_inputs=ttm_inputs,
+                )
+            except Exception:
+                ttm_result = pipeline_support._ttm_unavailable(
+                    edgar_result.company_name or company_name,
+                    edgar_result.ticker or ticker,
+                    "ttm_builder_error",
+                )
+        ttm_output = _json_safe(ttm_result)
+        if not isinstance(ttm_output, dict):
+            ttm_output = pipeline_support._ttm_unavailable(
+                edgar_result.company_name or company_name,
+                edgar_result.ticker or ticker,
+                "ttm_output_invalid",
+            )
+        ttm_output["evidence_validation"] = _json_safe(ttm_evidence_validation)
+        self.state.ttm = ttm_output
+
         edgar_output, calculation_output = _synchronized_outputs(
             edgar_result, calculation_result, validation_result
         )
@@ -571,6 +632,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 output_summary=(
                     f"facts={snapshot['facts']}; filings={snapshot['filings']}; "
                     f"risk_sections={snapshot['risk_sections']}; calculations={snapshot['calculations']}; "
+                    f"ttm={snapshot['ttm_available']}/{snapshot['ttm_total']}; "
                     f"validation={snapshot['validation']} "
                     f"({snapshot['validated_evidence']} evidence/{snapshot['validated_calculations']} calculations)"
                 ),
@@ -1363,6 +1425,7 @@ def run_research(
     report_crew: Any | None = None,
     historical_valuation_tool: HistoricalValuationTool | Any | None = None,
     reverse_dcf_tool: ReverseDCFTool | Any | None = None,
+    ttm_builder_tool: Any | None = None,
     progress_callback: Any | None = None,
 ):
     """以完整的 CrewAI 原生 Flow 保持旧 ``run_research`` 调用契约。
@@ -1386,6 +1449,7 @@ def run_research(
         "report_crew": report_crew,
         "historical_valuation_tool": historical_valuation_tool,
         "reverse_dcf_tool": reverse_dcf_tool,
+        "ttm_builder_tool": ttm_builder_tool,
     }
     if progress_callback is not None:
         flow_kwargs["progress_callback"] = progress_callback
@@ -1402,6 +1466,7 @@ def run_research(
         "edgar",
         "calculations",
         "validation",
+        "ttm",
         "valuation",
         "analysis",
         "status",
@@ -1421,6 +1486,7 @@ def run_research(
         "valuation",
         "historical_valuation",
         "reverse_dcf",
+        "ttm",
     )
     deterministic_outputs = {
         key: result.get(key) for key in deterministic_keys

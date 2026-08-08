@@ -554,6 +554,20 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
+def _write_formal_report(result: Mapping[str, Any], output_path: Path) -> Path | None:
+    """只写出已经通过 Flow 最终校验的非空 Markdown 报告。"""
+
+    if result.get("status") != "ok" or result.get("stage") != "report":
+        return None
+    report = result.get("report")
+    if not isinstance(report, str) or not report.strip():
+        return None
+
+    report_path = output_path.with_name("investment-report.md")
+    report_path.write_text(report.rstrip("\r\n") + "\n", encoding="utf-8")
+    return report_path
+
+
 class CompactRunReporter:
     """实时渲染阶段单框，并把事件和最终摘要分别保存为运行产物。"""
 
@@ -672,6 +686,15 @@ class CompactRunReporter:
                 f"已完成（completed）：{_compact_text(', '.join(summary.get('completed', [])))}",
                 f"报告（report）：{'已生成' if generated else '未生成'}",
             ]
+            if isinstance(report, Mapping):
+                if report.get("formal_report"):
+                    lines.append(
+                        f"正式报告：{_compact_text(report['formal_report'], 120)}"
+                    )
+                elif report.get("export_error"):
+                    lines.append(
+                        f"正式报告导出失败：{_compact_text(report['export_error'], 80)}"
+                    )
         self._render_box("最终运行结果", lines, status)
 
     def _markdown(self, summary: Mapping[str, Any], result_name: str, started_at: datetime, finished_at: datetime, exit_code: int) -> str:
@@ -787,15 +810,23 @@ class CompactRunReporter:
             else {}
         )
         if isinstance(claims, Mapping):
+            report = summary.get("report", {})
             lines.extend(
                 [
                     "",
                     "## Analysis 与报告",
                     "",
                     f"- 通过 Claim Gate Claims：{md(claims.get('total'), 40)}（财务 {md(claims.get('financial'), 40)}；风险 {md(claims.get('risk'), 40)}；估值 {md(claims.get('valuation'), 40)}）",
-                    f"- 报告：{'已生成' if summary.get('report', {}).get('generated') else '未生成'}",
+                    f"- 报告：{'已生成' if report.get('generated') else '未生成'}",
                 ]
             )
+            if isinstance(report, Mapping):
+                if report.get("formal_report"):
+                    lines.append(f"- 正式报告：{md(report['formal_report'], 120)}")
+                elif report.get("export_error"):
+                    lines.append(
+                        f"- 正式报告导出失败：{md(report['export_error'], 80)}"
+                    )
             if isinstance(agent_claims, Mapping) and agent_claims:
                 lines.append(
                     "- Agent 输出 Claims："
@@ -851,6 +882,29 @@ class CompactRunReporter:
             + "\n",
             encoding="utf-8",
         )
+        formal_report = None
+        export_error = ""
+        try:
+            formal_report = _write_formal_report(result, output_path)
+        except Exception as exc:
+            export_error = type(exc).__name__
+
+        report = summary.get("report")
+        if isinstance(report, dict):
+            if formal_report is not None:
+                report["formal_report"] = formal_report.name
+            elif export_error:
+                report["export_error"] = export_error
+        if formal_report is not None or export_error:
+            try:
+                output_path.write_text(
+                    self._markdown(
+                        summary, result_path.name, started_at, finished_at, exit_code
+                    ),
+                    encoding="utf-8",
+                )
+            except (Exception, SystemExit):
+                pass
         try:
             self._render_final(summary)
         except (Exception, SystemExit):

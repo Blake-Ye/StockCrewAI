@@ -182,6 +182,49 @@ def _valid_pipeline_fakes():
                 source_reference="sec:test-revenue",
             )
         },
+        ttm_inputs={
+            "revenue": {
+                "latest_fy": EdgarFact(
+                    metric_id="revenue",
+                    evidence_id="ev_revenue_latest_fy",
+                    value="100",
+                    unit="USD",
+                    period_type="duration",
+                    period="FY",
+                    period_start="2025-01-01",
+                    period_end="2025-12-31",
+                    fiscal_year=2025,
+                    fiscal_period="FY",
+                    source_reference="sec:test-revenue-latest-fy",
+                ),
+                "current_ytd": EdgarFact(
+                    metric_id="revenue",
+                    evidence_id="ev_revenue_current_ytd",
+                    value="75",
+                    unit="USD",
+                    period_type="duration",
+                    period="Q3",
+                    period_start="2026-01-01",
+                    period_end="2026-09-30",
+                    fiscal_year=2026,
+                    fiscal_period="Q3",
+                    source_reference="sec:test-revenue-current-ytd",
+                ),
+                "prior_ytd": EdgarFact(
+                    metric_id="revenue",
+                    evidence_id="ev_revenue_prior_ytd",
+                    value="70",
+                    unit="USD",
+                    period_type="duration",
+                    period="Q3",
+                    period_start="2025-01-01",
+                    period_end="2025-09-30",
+                    fiscal_year=2025,
+                    fiscal_period="Q3",
+                    source_reference="sec:test-revenue-prior-ytd",
+                ),
+            }
+        },
         filings=[filing],
     )
     calculator_tool = Mock()
@@ -265,6 +308,14 @@ def _valid_pipeline_fakes():
         "implied_growth": "0.11",
         "input_evidence_ids": ["ev_market_price", "ev_revenue"],
     }
+    ttm_builder_tool = Mock()
+    ttm_builder_tool.run.return_value = {
+        "status": "unavailable",
+        "company_name": "Apple Inc.",
+        "ticker": "AAPL",
+        "metrics": [],
+        "warnings": [],
+    }
     return parser_result, {
         "edgar_tool": edgar_tool,
         "calculator_tool": calculator_tool,
@@ -273,6 +324,7 @@ def _valid_pipeline_fakes():
         "market_price_data": market_price_data,
         "historical_valuation_tool": historical_valuation_tool,
         "reverse_dcf_tool": reverse_dcf_tool,
+        "ttm_builder_tool": ttm_builder_tool,
     }
 
 
@@ -653,6 +705,7 @@ class EntrypointTests(unittest.TestCase):
             report_crew=report_crew,
             historical_valuation_tool=tools["historical_valuation_tool"],
             reverse_dcf_tool=tools["reverse_dcf_tool"],
+            ttm_builder_tool=tools["ttm_builder_tool"],
         )
         flow.kickoff.assert_called_once_with(
             inputs={"request": "分析苹果公司未来 3 年投资价值"}

@@ -1,6 +1,6 @@
 # stockcrewai
 
-基于 CrewAI 的美国上市公司投资研究系统。当前线路包含请求解析、SEC EDGAR facts/申报文本、Decimal 财务计算、确定性验证、yfinance 行情、当前估值、历史估值、反向 DCF 和版本化确定性 Verdict。缺少必要证据时返回结构化 `unavailable`/`insufficient_data`，不补造数据。
+基于 CrewAI 的美国上市公司投资研究系统。当前线路包含请求解析、SEC EDGAR facts/申报文本、确定性 TTM Builder、Decimal 财务计算、确定性验证、yfinance 行情、当前估值、历史估值、反向 DCF 和版本化确定性 Verdict。TTM 本轮只生成并展示，不切换当前估值输入；缺少必要证据时返回结构化 `unavailable`/`insufficient_data`，不补造数据。
 
 ## 环境配置
 
@@ -22,11 +22,12 @@ EDGAR_IDENTITY=Your Name your.email@example.com
 - `analysis`：分别分析财务质量、SEC 风险和已验证估值结果。
 - `report`：将已验证 Claims、确定性 Verdict 和来源元数据整理为中文 Markdown 报告。
 
-总计 3 个 Crew、5 个 Agent、5 个 Task。FinancialQualityAgent、RiskAnalysisAgent 和 ValuationAnalysisAgent 只通过确定性工具获取或验证结构化结果，再由 LLM 解释；Agent 不负责编造事实、直接计算或最终评级。
+总计 3 个 Crew、4 个 LLM Agent、4 个 Task：RequestParserAgent、FinancialQualityAgent、RiskAnalysisAgent、ReportWriterAgent。前述 Agent 只解释或整理已验证的结构化结果；估值 Claims 由确定性 Python 逻辑生成，不设置估值 LLM Agent。Agent 不负责编造事实、直接计算或最终评级。
 
 工具位置：
 
 - `src/stockcrewai/tools/edgar_tool.py`：接受公司名或 ticker，输出带 Evidence ID 的 SEC 公司、facts 和固定范围 filings。
+- `src/stockcrewai/tools/ttm_tool.py`：根据已验证的 `latest_fy`、`current_ytd` 和 `prior_ytd` Evidence 使用 Decimal 构建并展示 TTM；本轮不替换当前估值、历史估值、反向 DCF 或 Verdict 的输入。
 - `src/stockcrewai/tools/calculator_tool.py`：根据结构化 facts 使用 Decimal 计算指标。
 - `src/stockcrewai/tools/validation_tool.py`：重算 CalculationResult 并返回验证状态。
 - `src/stockcrewai/tools/valuation_tool.py`：绑定市场价格 provenance 和 Evidence ID，计算当前估值。
@@ -39,10 +40,9 @@ EDGAR_IDENTITY=Your Name your.email@example.com
 配置 `.env` 后，可通过以下入口启动完整研究线路；这会调用 DeepSeek、SEC 和市场行情接口：
 
 ```bash
-uv sync
 set -a; source .env; set +a
-uv run crewai run          # 启动完整 ResearchFlow
-uv run crewai flow plot    # 在 CrewAI 临时目录生成并打开流程图，不污染项目目录
+uv run --no-sync crewai run          # 启动完整 ResearchFlow
+uv run --no-sync crewai flow plot    # 在 CrewAI 临时目录生成并打开流程图，不污染项目目录
 ```
 
 脚本或 CI 若需要可靠获取失败退出码，请使用 `uv run --no-sync kickoff`；
@@ -56,10 +56,10 @@ CrewAI 1.15.11 的外层 `crewai flow kickoff` 会显示子进程错误，但可
 默认请求包含未来 3 年；显式请求未提供投资期限时，结果会标记 `input_requirements.status=needs_input`，不会擅自补充期限。可通过环境变量传入完整请求：
 
 ```bash
-STOCKCREWAI_REQUEST='分析苹果公司未来 3 年投资价值' crewai run
+STOCKCREWAI_REQUEST='分析苹果公司未来 3 年投资价值' uv run --no-sync crewai run
 ```
 
-当前入口线路是：请求解析 → Edgartools SEC 公司、Company Facts 和申报文本查询 → Decimal 财务计算 → 确定性结果验证 → yfinance 行情 → 当前估值 → 历史估值/反向 DCF → v1 确定性 Verdict → AnalysisCrew → ReportCrew。运行时关闭 CrewAI 任务输出 SQLite 持久化；工具默认关闭 Edgartools 的本地 HTTP 文件缓存，避免运行时写入 `~/.edgar/_tcache`。需要时可通过 `EDGAR_HTTP_TIMEOUT` 调整单次请求超时。SEC、Yahoo 或 DeepSeek 某个端点不可用时，结果会保留 `partial`/`unavailable`/`insufficient_data` 状态和来源原因，不生成伪造数据。
+当前入口线路是：请求解析 → Edgartools SEC 公司、Company Facts 和申报文本查询 → Decimal 基础财务计算与确定性验证 → TTM Evidence 独立验证与 TTM Builder → yfinance 行情 → 当前估值 → 历史估值/反向 DCF → v1 确定性 Verdict → AnalysisCrew → ReportCrew。TTM Builder 在基础 Evidence 验证后生成并展示可用性，但本轮不切换当前估值输入。运行时关闭 CrewAI 任务输出 SQLite 持久化；工具默认关闭 Edgartools 的本地 HTTP 文件缓存，避免运行时写入 `~/.edgar/_tcache`。需要时可通过 `EDGAR_HTTP_TIMEOUT` 调整单次请求超时。SEC、Yahoo 或 DeepSeek 某个端点不可用时，结果会保留 `partial`/`unavailable`/`insufficient_data` 状态和来源原因，不生成伪造数据。
 
 也可以在 Python 中传入请求：
 

@@ -11,6 +11,29 @@ from unittest.mock import patch
 
 
 class RunAndSaveOutputTests(unittest.TestCase):
+    def test_successful_run_output_names_report_without_including_body(self):
+        from stockcrewai.main import cli
+
+        report = "# 机密正式报告正文"
+        run_result = {"status": "ok", "stage": "report", "report": report}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "run-output.md"
+            terminal = io.StringIO()
+            with (
+                patch.dict(os.environ, {"STOCKCREWAI_REQUEST": "测试请求"}, clear=True),
+                patch("stockcrewai.main.sys.argv", ["kickoff"]),
+                patch("stockcrewai.main.run_research", return_value=run_result),
+                redirect_stdout(terminal),
+            ):
+                cli(output_path)
+
+            saved = output_path.read_text(encoding="utf-8")
+
+        self.assertIn("正式报告：investment-report.md", saved)
+        self.assertNotIn(report, saved)
+        self.assertIn("正式报告：investment-report.md", terminal.getvalue())
+        self.assertNotIn(report, terminal.getvalue())
+
     def test_cli_saves_crewai_run_output_without_extra_command(self):
         from stockcrewai.main import cli
 

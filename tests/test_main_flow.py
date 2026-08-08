@@ -190,6 +190,7 @@ class MainFlowDefinitionTests(unittest.TestCase):
             "valuation",
             "historical_valuation",
             "reverse_dcf",
+            "ttm",
             "analysis",
             "analysis_diagnostics",
             "verdict",
@@ -217,6 +218,7 @@ class MainFlowDefinitionTests(unittest.TestCase):
             "valuation",
             "historical_valuation",
             "reverse_dcf",
+            "ttm",
             "analysis",
             "required_data",
             "analysis_diagnostics",
@@ -278,6 +280,226 @@ class MainFlowDefinitionTests(unittest.TestCase):
 
 
 class MainFlowExecutionTests(unittest.TestCase):
+    def test_real_edgar_ttm_evidence_is_validated_before_builder(self):
+        from datetime import date
+
+        from tests.test_financial_tools import TTMEdgar
+        from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
+        from stockcrewai.tools.edgar_tool import EdgarTool
+        from stockcrewai.tools.ttm_tool import TTMBuilderTool
+        from stockcrewai.tools.validation_tool import FinancialValidationTool
+
+        parser_result, dependencies = _flow_dependencies()
+        edgar_tool = EdgarTool(
+            edgar_module=TTMEdgar(),
+            as_of=date(2026, 8, 5),
+        )
+        initial_edgar_result = edgar_tool.run(ticker="AAPL")
+        self.assertTrue(initial_edgar_result.ttm_inputs)
+        self.assertTrue(
+            all(
+                fact.validation_status == "unvalidated"
+                for by_role in initial_edgar_result.ttm_inputs.values()
+                for fact in by_role.values()
+            )
+        )
+
+        validation_tool = Mock(wraps=FinancialValidationTool())
+        ttm_builder_tool = Mock(wraps=TTMBuilderTool())
+        dependencies.update(
+            {
+                "edgar_tool": edgar_tool,
+                "calculator_tool": FinancialCalculatorTool(),
+                "validation_tool": validation_tool,
+                "ttm_builder_tool": ttm_builder_tool,
+            }
+        )
+        analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
+        _, flow_class = _flow_class()
+        flow = flow_class(
+            **dependencies,
+            analysis_crew=analysis_crew,
+            report_crew=report_crew,
+        )
+
+        with _offline_flow_patches(parser_result, verdict={"status": "ready"}):
+            result = _run_flow(flow)
+
+        ttm_validation_calls = [
+            call
+            for call in validation_tool.run.call_args_list
+            if call.kwargs.get("calculations") == []
+        ]
+        self.assertEqual(len(ttm_validation_calls), 1)
+        ttm_validation_call = ttm_validation_calls[0]
+        self.assertEqual(
+            set(ttm_validation_call.kwargs["facts"]),
+            {
+                f"{metric_id}:{role}"
+                for metric_id in initial_edgar_result.ttm_inputs
+                for role in ("latest_fy", "current_ytd", "prior_ytd")
+            },
+        )
+
+        projected_inputs = ttm_builder_tool.run.call_args.kwargs["metric_inputs"]
+        self.assertTrue(
+            all(
+                fact["validation_status"] == "valid"
+                for by_role in projected_inputs.values()
+                for fact in by_role.values()
+            )
+        )
+        self.assertEqual(result["ttm"]["status"], "ok")
+        self.assertTrue(
+            all(
+                metric["status"] == "available"
+                and metric["validation_status"] == "valid"
+                for metric in result["ttm"]["metrics"]
+            )
+        )
+        self.assertEqual(result["ttm"]["evidence_validation"]["status"], "valid")
+
+    def test_ttm_builder_result_is_saved_and_stage_summary_only_exposes_counts(self):
+        from stockcrewai.tools.validation_tool import ValidationResult
+
+        analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
+        parser_result, dependencies = _flow_dependencies()
+        validation_tool = dependencies["validation_tool"]
+        ttm_builder_tool = dependencies["ttm_builder_tool"]
+        expected_ttm_evidence_ids = {
+            "ev_revenue_latest_fy",
+            "ev_revenue_current_ytd",
+            "ev_revenue_prior_ytd",
+        }
+        base_validation_result = validation_tool.run.return_value
+
+        def validation_side_effect(**kwargs):
+            if kwargs.get("calculations") == []:
+                return ValidationResult(
+                    status="valid",
+                    validated=True,
+                    company_name=kwargs["company_name"],
+                    ticker=kwargs["ticker"],
+                    validated_evidence_ids=sorted(expected_ttm_evidence_ids),
+                )
+            return base_validation_result
+
+        validation_tool.run.side_effect = validation_side_effect
+        ttm_builder_tool.run.return_value = {
+            "status": "available",
+            "company_name": "Apple Inc.",
+            "ticker": "AAPL",
+            "metrics": [
+                {
+                    "metric_id": "revenue",
+                    "status": "available",
+                    "validation_status": "valid",
+                    "raw_result": "123.45",
+                }
+            ],
+            "warnings": [],
+        }
+        _, flow_class = _flow_class()
+        flow = flow_class(
+            **dependencies,
+            analysis_crew=analysis_crew,
+            report_crew=report_crew,
+        )
+        events = []
+        flow._progress_callback = events.append
+
+        with _offline_flow_patches(parser_result, verdict={"status": "ready"}):
+            result = _run_flow(flow)
+
+        self.assertEqual(result["status"], "ok")
+        builder_output = ttm_builder_tool.run.return_value
+        for key in ("status", "metrics", "warnings"):
+            self.assertEqual(flow.state.ttm[key], builder_output[key])
+            self.assertEqual(result["ttm"][key], builder_output[key])
+
+        self.assertIn("evidence_validation", flow.state.ttm)
+        evidence_validation = flow.state.ttm["evidence_validation"]
+        self.assertEqual(evidence_validation["status"], "valid")
+        self.assertTrue(evidence_validation["validated"])
+        self.assertEqual(
+            set(evidence_validation["validated_evidence_ids"]),
+            expected_ttm_evidence_ids,
+        )
+        ttm_validation_call = next(
+            call
+            for call in validation_tool.run.call_args_list
+            if call.kwargs.get("calculations") == []
+        )
+        self.assertEqual(
+            set(ttm_validation_call.kwargs["facts"]),
+            {
+                "revenue:latest_fy",
+                "revenue:current_ytd",
+                "revenue:prior_ytd",
+            },
+        )
+
+        ttm_builder_tool.run.assert_called_once()
+        builder_call = ttm_builder_tool.run.call_args
+        self.assertEqual(builder_call.kwargs["company_name"], "Apple Inc.")
+        self.assertEqual(builder_call.kwargs["ticker"], "AAPL")
+        projected_inputs = builder_call.kwargs["metric_inputs"]
+        self.assertEqual(set(projected_inputs), {"revenue"})
+        self.assertEqual(
+            set(projected_inputs["revenue"]),
+            {"latest_fy", "current_ytd", "prior_ytd"},
+        )
+        projected_facts = projected_inputs["revenue"].values()
+        self.assertTrue(all(isinstance(fact, dict) for fact in projected_facts))
+        self.assertEqual(
+            {fact["evidence_id"] for fact in projected_inputs["revenue"].values()},
+            expected_ttm_evidence_ids,
+        )
+        self.assertTrue(
+            all(
+                fact["validation_status"] == "valid"
+                for fact in projected_inputs["revenue"].values()
+            )
+        )
+        evidence_event = next(event for event in events if event.step == 2)
+        self.assertIn("ttm=1/1", evidence_event.output_summary)
+        self.assertNotIn("123.45", evidence_event.output_summary)
+        self.assertNotIn("raw_result", evidence_event.output_summary)
+        self.assertNotIn("ttm_builder_tool", flow.state.model_dump(mode="json"))
+        self.assertNotIn("ttm_builder_tool", result)
+        valuation_facts = dependencies["valuation_tool"].run.call_args.kwargs["facts"]
+        self.assertNotIn("ttm", valuation_facts)
+
+    def test_ttm_builder_failure_becomes_unavailable_without_changing_gates(self):
+        analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
+        parser_result, dependencies = _flow_dependencies()
+        dependencies["ttm_builder_tool"].run.side_effect = RuntimeError(
+            "ttm implementation detail must stay hidden"
+        )
+        _, flow_class = _flow_class()
+        flow = flow_class(
+            **dependencies,
+            analysis_crew=analysis_crew,
+            report_crew=report_crew,
+        )
+
+        with _offline_flow_patches(parser_result, verdict={"status": "ready"}):
+            result = _run_flow(flow)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["stage"], "report")
+        self.assertEqual(result["validation"]["status"], "valid")
+        self.assertEqual(result["verdict"], {"status": "ready"})
+        self.assertTrue(result["report"])
+        self.assertEqual(result["ttm"]["status"], "unavailable")
+        self.assertEqual(result["ttm"]["reason_code"], "ttm_builder_error")
+        self.assertNotIn("implementation detail", json.dumps(result))
+        valuation_facts = dependencies["valuation_tool"].run.call_args.kwargs["facts"]
+        self.assertNotIn("ttm", valuation_facts)
+
     def test_invalid_parser_output_keeps_request_stage_and_skips_downstream_calls(self):
         _, flow_class = _flow_class()
         parser_result = Mock(json_dict=None, raw="not JSON")
@@ -340,6 +562,7 @@ class MainFlowExecutionTests(unittest.TestCase):
                 "valuation",
                 "historical_valuation",
                 "reverse_dcf",
+                "ttm",
                 "status",
                 "stage",
                 "analysis",
@@ -882,6 +1105,51 @@ class MainFlowExecutionTests(unittest.TestCase):
 
 
 class MainEntrypointTests(unittest.TestCase):
+    def test_kickoff_exports_validated_report_with_one_trailing_newline(self):
+        module = _main_module()
+        report = "# 正式报告\n\n"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "run-output.md"
+            with patch.object(
+                module,
+                "run_research",
+                return_value={"status": "ok", "stage": "report", "report": report},
+            ):
+                module.kickoff(REQUEST, output_path=output_path)
+
+            exported = output_path.with_name("investment-report.md")
+            self.assertEqual(exported.read_text(encoding="utf-8"), "# 正式报告\n")
+
+    def test_kickoff_does_not_export_blocked_or_empty_report(self):
+        module = _main_module()
+        results = (
+            {"status": "blocked", "stage": "analysis", "report": "# 不应导出"},
+            {"status": "ok", "stage": "report", "report": None},
+        )
+        for run_result in results:
+            with self.subTest(run_result=run_result), tempfile.TemporaryDirectory() as temp_dir:
+                output_path = Path(temp_dir) / "run-output.md"
+                with patch.object(module, "run_research", return_value=run_result):
+                    module.kickoff(REQUEST, output_path=output_path)
+
+                self.assertFalse(
+                    output_path.with_name("investment-report.md").exists()
+                )
+
+    def test_kickoff_exports_report_next_to_custom_output_path(self):
+        module = _main_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "nested" / "run-output.md"
+            with patch.object(
+                module,
+                "run_research",
+                return_value={"status": "ok", "stage": "report", "report": "正文"},
+            ):
+                module.kickoff(REQUEST, output_path=output_path)
+
+            exported = output_path.with_name("investment-report.md")
+            self.assertEqual(exported.read_text(encoding="utf-8"), "正文\n")
+
     def test_kickoff_swallows_error_reporter_failure_and_does_not_append_raw_error(self):
         module = _main_module()
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -256,6 +256,103 @@ def _edgar_error(
     )
 
 
+def _ttm_unavailable(
+    company_name: str | None,
+    ticker: str | None,
+    reason_code: str,
+) -> dict[str, Any]:
+    """构造不会阻断既有流水线的结构化 TTM unavailable 结果。"""
+    return {
+        "status": "unavailable",
+        "company_name": company_name,
+        "ticker": ticker,
+        "metrics": [],
+        "warnings": [],
+        "reason_code": reason_code,
+    }
+
+
+def validate_ttm_evidence(
+    ttm_inputs: Mapping[str, Mapping[str, Any]] | None,
+    *,
+    company_name: str | None,
+    ticker: str | None,
+    validation_tool: Any,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """独立验证 TTM Evidence，并把验证状态投影回三层输入字典。
+
+    TTM 输入的 ``metric_id`` 和角色不能直接作为验证器顶层字典的同一键，
+    因此先使用 ``metric_id:role`` 组成唯一 fact key。验证器只接收这些
+    Evidence，不接收基础 Calculation；返回的 Evidence ID 白名单随后由
+    ``sync_validation_status`` 投影回 ``metric -> role -> fact``，避免 Flow
+    直接信任 SEC 原始 ``unvalidated`` 状态。
+    """
+    raw_inputs = ttm_inputs if isinstance(ttm_inputs, Mapping) else {}
+    flattened: dict[str, Any] = {}
+    locations: dict[str, tuple[str, str]] = {}
+    for metric_id, by_role in raw_inputs.items():
+        if not isinstance(by_role, Mapping):
+            continue
+        for role, raw_fact in by_role.items():
+            metric_key = str(metric_id)
+            role_key = str(role)
+            fact_key = f"{metric_key}:{role_key}"
+            flattened[fact_key] = raw_fact
+            locations[fact_key] = (metric_key, role_key)
+
+    fact_keys = list(flattened)
+    if not flattened:
+        return _json_safe(raw_inputs), {
+            "status": "unavailable",
+            "validated": False,
+            "validated_evidence_ids": [],
+            "validated_calculation_ids": [],
+            "fact_keys": fact_keys,
+            "reason_code": "ttm_evidence_missing",
+        }
+
+    try:
+        validation_result = validation_tool.run(
+            company_name=company_name,
+            ticker=ticker,
+            facts=flattened,
+            calculations=[],
+        )
+        synced = sync_validation_status(flattened, [], validation_result)
+        projected: dict[str, dict[str, Any]] = {}
+        for fact_key, raw_fact in synced["facts"].items():
+            metric_key, role_key = locations[fact_key]
+            projected.setdefault(metric_key, {})[role_key] = raw_fact
+        diagnostic = _json_safe(validation_result)
+        if not isinstance(diagnostic, dict):
+            diagnostic = {
+                "status": "unavailable",
+                "validated": False,
+                "validated_evidence_ids": [],
+                "validated_calculation_ids": [],
+            }
+        diagnostic["fact_keys"] = fact_keys
+        diagnostic["fact_count"] = len(flattened)
+        return projected, diagnostic
+    except Exception as exc:
+        return _json_safe(raw_inputs), {
+            "status": "unavailable",
+            "validated": False,
+            "validated_evidence_ids": [],
+            "validated_calculation_ids": [],
+            "fact_keys": fact_keys,
+            "fact_count": len(flattened),
+            "issues": [
+                {
+                    "code": "ttm_validation_error",
+                    "severity": "error",
+                    "field": "ttm_inputs",
+                    "message": f"TTM Evidence 验证失败：{type(exc).__name__}",
+                }
+            ],
+        }
+
+
 def _json_safe(value: Any) -> Any:
     """递归把模型、日期、Decimal 和容器转换为安全的 JSON 值。
 
