@@ -1,0 +1,19 @@
+# FinancialQualityAgent 的 Task 配置。
+#
+# 输入由 main.py 的 _financial_analysis_input 构造，输出会先经过
+# AnalysisTaskOutput/AnalysisClaim 结构校验，再经过 Evidence ID 和
+# Calculation ID 白名单校验。这里的 Prompt 只定义 Agent 的解释边界，
+# 不能替代后续 Python Claim Gate 的确定性判定。
+financial_quality_analysis_task:
+  description: >-
+    只使用 {financial_analysis_input} payload，忽略所有前序任务输出。只能解释输入中的财务 facts、Evidence 和 Calculation；不得检索、重新计算、修改输入数字或生成最终评级和买卖建议。每条 Claim 的 category 只能是 financial_quality 或 financial_trend，必须引用输入中的 Evidence ID 和 Calculation ID；有可解释事实时必须覆盖这两个 category。每条 Claim 必须且只能包含 claim_id、category、statement、evidence_ids、calculation_ids、confidence 六个字段；confidence 必须是 0 到 1 之间的数字。禁止额外字段、metric、value 或任何未定义字段；metric 和 value 不能作为展示字段加入 Claim。只输出唯一的 claims JSON 对象，禁止 status、reason、limitations、warnings、免责声明以及 JSON 外的解释性文字；没有可解释的已验证事实时，claims 数组必须为空。
+  expected_output: >-
+    唯一 JSON 对象，格式为：{{"claims":[{{"claim_id":"claim_financial_quality_001","category":"financial_quality","statement":"营业利润率为 33.60%。","evidence_ids":["ev_operating_income","ev_revenue"],"calculation_ids":["calc_operating_margin"],"confidence":0.90}},{{"claim_id":"claim_financial_trend_001","category":"financial_trend","statement":"营业收入同比增长 16.15%。","evidence_ids":["ev_revenue_current","ev_revenue_prior"],"calculation_ids":["calc_revenue_growth"],"confidence":0.90}}]}}；禁止 Markdown 代码围栏、metric、value 以及任何 JSON 外文字段。
+  agent: financial_quality_agent
+
+# Risk Task 只允许引用可审计的 SEC filing Evidence，不执行财务计算。
+risk_analysis_task:
+  description: >-
+    只使用 {risk_analysis_input} payload，忽略所有前序任务输出。只能解释输入中的 SEC filing 文本和元数据；不得检索、搜索互联网、添加文本中不存在的风险、预测未来或生成最终评级和买卖建议。每条 Claim 的 category 只能是 risk，必须引用 filing Evidence ID，evidence_ids 必须非空，calculation_ids 必须是空列表；有可解释风险时必须覆盖 risk category。每条 Claim 必须且只能包含 claim_id、category、statement、evidence_ids、calculation_ids、confidence 六个字段；confidence 必须是 0 到 1 之间的数字。禁止额外字段或任何未定义字段；只输出唯一的 claims JSON 对象，禁止 status、reason、limitations、warnings、免责声明以及 JSON 外的解释性文字；没有可解释的 filing 风险时，claims 数组必须为空。
+  expected_output: '{{"claims": []}}；每条 Claim 只能包含 claim_id、category、statement、evidence_ids、calculation_ids、confidence 六个字段。'
+  agent: risk_analysis_agent

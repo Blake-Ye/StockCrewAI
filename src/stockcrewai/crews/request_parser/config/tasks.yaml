@@ -1,0 +1,10 @@
+parse_investment_request_task:
+  description: >-
+    解析用户投资研究请求：{request}
+
+    只提取语义信息，不访问互联网或 SEC，不查询公司身份，不生成 CIK，不输出财务数字、股价、估值、评级或买卖建议。公司名称、Ticker 和交易所只能作为候选值输出，不能伪装成已确认事实。
+
+    输出字段必须且只能包含：company_mention、company_name_guess、ticker_guess、exchange_guess、request_type、investment_horizon、requested_focus、language、confidence。requested_focus 必须是字符串列表，confidence 必须是 0 到 1 之间的数字；禁止额外字段。只输出 JSON，不输出解释性文字。无法判断的字段使用 unspecified 或空值，并保留低置信度。
+  expected_output: >-
+    一个只包含 ParsedRequest 九个字段的 JSON 对象：company_mention、company_name_guess、ticker_guess、exchange_guess、request_type、investment_horizon、requested_focus、language、confidence。confidence 必须是 0 到 1 之间的数字；requested_focus 必须是关注方向列表；不得包含额外字段、CIK、财务数字、股价、评级或投资建议。无法判断时保留 unspecified 或空值。
+  agent: request_parser_agent

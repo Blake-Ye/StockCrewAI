@@ -1,0 +1,23 @@
+[project]
+name = "stockcrewai"
+version = "0.1.0"
+description = "StockCrewAI using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]>=1.15.11,<2.0.0",
+    "edgartools>=5.45.1,<6.0.0",
+    "yfinance>=1.5.2",
+]
+
+[project.scripts]
+kickoff = "stockcrewai.main:kickoff"
+plot = "stockcrewai.main:plot"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "flow"
+project_id = "6c1aee37-4f94-44ad-a09e-0b14f77906a9"
