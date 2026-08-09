@@ -13,6 +13,7 @@ from stockcrewai.quant.cli import (
     main,
     run,
 )
+from stockcrewai.quant.storage import QuantSnapshotStorage
 from stockcrewai.services.market_data import (
     MarketDataCollectionError,
     MarketDataValidationError,
@@ -202,6 +203,43 @@ def test_build_writes_local_storage_metadata_with_provenance_ids(tmp_path: Path)
         "price_at_cutoff",
     ]
     assert output["artifacts"]["snapshots"]["calculation_ids"] == ["calc_margin"]
+
+
+def test_build_maps_point_in_time_fixture_records_to_aapl_by_provenance(
+    tmp_path: Path,
+) -> None:
+    fixture_dir = Path("tests/fixtures/quant/point_in_time")
+    artifact_root = tmp_path / "artifacts"
+
+    assert (
+        main(
+            [
+                "build",
+                "--universe",
+                "examples/universes/us-large-cap-v1.json",
+                "--evidence",
+                str(fixture_dir / "financial.json"),
+                "--calculations",
+                str(fixture_dir / "calculations.json"),
+                "--prices",
+                str(fixture_dir / "prices.json"),
+                "--artifact-root",
+                str(artifact_root),
+                "--as-of",
+                "2026-08-10T00:30:00+08:00",
+                "--as-of",
+                "2026-08-11T20:00:00+08:00",
+            ]
+        )
+        == 0
+    )
+
+    snapshots = QuantSnapshotStorage(artifact_root).read_snapshots()
+    assert len(snapshots) == 2
+    assert [snapshot.ticker for snapshot in snapshots] == ["AAPL", "AAPL"]
+    assert "ev_revenue_future_q" not in snapshots[0].available_evidence_ids
+    assert "ev_revenue_future_q" in snapshots[1].available_evidence_ids
+    assert all(snapshot.ticker != "MSFT" for snapshot in snapshots)
 
 
 def test_default_market_command_does_not_import_or_call_network_client(
