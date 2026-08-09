@@ -323,7 +323,7 @@ class EdgarTool(BaseTool):
                     r"[^\s.·…,:;_|-]",
                     section_body,
                 ) or re.fullmatch(
-                    r"[\s.·…,:;_|-]*(?:page\s*)?\d+[\s.·…,:;_|-]*",
+                    r"[\s.·…,:;_|-]*(?:page\s*)?\d+(?:\s+of\s+\d+)?[\s.·…,:;_|-]*",
                     section_body,
                     flags=re.IGNORECASE,
                 ):
@@ -385,9 +385,6 @@ class EdgarTool(BaseTool):
         items: list[str],
         raw_text: str | None,
         risk_sections: list[EdgarRiskSection],
-        text_retrieval_status: Literal[
-            "not_requested", "available", "unavailable"
-        ],
         filed_at: str | None,
         source_reference: str,
     ) -> EdgarRiskEligibility:
@@ -414,9 +411,7 @@ class EdgarTool(BaseTool):
                 source_reference=source_reference,
             )
 
-        if text_retrieval_status == "not_requested":
-            reason_code = "truncated"
-        elif not raw_text or not raw_text.strip():
+        if not raw_text or not raw_text.strip():
             reason_code = "missing_body"
         elif normalized_form == "8-K" and set(items) == {"2.02", "9.01"}:
             reason_code = "attachment_shell"
@@ -520,7 +515,6 @@ class EdgarTool(BaseTool):
             items,
             raw_text,
             risk_sections,
-            text_retrieval_status,
             filed_at,
             source,
         )

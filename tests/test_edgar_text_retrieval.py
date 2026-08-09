@@ -118,7 +118,8 @@ class Unsupported8KTextFiling(RiskTextFiling):
 class DirectoryOnly8KTextFiling(RiskTextFiling):
     directory_only_8k_text = (
         "TABLE OF CONTENTS\n"
-        "Item 5.02. Departure of Directors or Certain Officers .......... 3\n"
+        "Item 5.02. Departure of Directors or Certain Officers ..........\n"
+        "3 of 14\n"
     )
 
     def __init__(self, form: str, index: int):
@@ -379,7 +380,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         for filing in result.filings:
             self.assertEqual(filing.text_retrieval_status, "not_requested")
             self.assertEqual(filing.risk_sections, [])
-            self._assert_rejected_risk_eligibility(filing, "truncated")
+            self._assert_rejected_risk_eligibility(filing, "missing_body")
 
     def test_complete_10k_extracts_item_1a_without_item_1b(self):
         result = self._run(RiskTextEdgar(), max_text_chars=5000)
@@ -462,7 +463,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         self.assertEqual(filing.risk_eligibility.eligibility, "rejected")
         self.assertEqual(filing.risk_eligibility.reason_code, "unsupported_item")
 
-    def test_8k_item_5_02_directory_entry_is_rejected(self):
+    def test_8k_item_5_02_directory_page_range_entry_is_rejected(self):
         result = self._run(DirectoryOnly8KTextEdgar(), max_text_chars=5000)
 
         filing = self._filing(result, "8-K")
