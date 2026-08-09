@@ -12,7 +12,7 @@
 - 公司：`Apple Inc.`
 - Ticker：`AAPL`
 - 期限：`3年`
-- Focus 数量：`1`
+- Focus 数量：`3`
 
 ## 证据与验证摘要
 
@@ -24,14 +24,14 @@
 
 ## Analysis 与报告
 
-- 通过 Claim Gate Claims：14（财务 9；风险 2；估值 3）
+- 通过 Claim Gate Claims：16（财务 10；风险 3；估值 3）
 - 报告：已生成
 - 正式报告：investment-report.md
 
 ## 时间线
 
 ### 1. 请求解析 · completed
-- 执行者：Crew/Agent：Request Parser Crew；输入：request=provided；输出：company=Apple Inc.; ticker=AAPL; period=3年; focus=1
+- 执行者：Crew/Agent：Request Parser Crew；输入：request=provided；输出：company=Apple Inc.; ticker=AAPL; period=3年; focus=3
 - 决策：-；原因：-；下一节点：SEC 证据与财务验证
 ### 2. SEC 证据与财务验证 · completed
 - 执行者：确定性工具：Edgar + Calculator + Validation；输入：company=Apple Inc.; ticker=AAPL; period=3年；输出：facts=16; filings=11; risk_sections=4; calculations=10; ttm=7/7; validation=valid (16 evidence/10 calculations)
@@ -46,13 +46,13 @@
 - 执行者：Crew/Agent：Analysis Crew；输入：company=Apple Inc.; ticker=AAPL; period=3年; financial/risk=validated input; valuation=deterministic builder；输出：agent_tasks=2; deterministic_valuation_claims=3; attempts=1; Claims=awaiting Claim Gate; facts=16; calculations=10
 - 决策：-；原因：-；下一节点：Claim Gate
 ### 6. Claim Gate · completed
-- 执行者：Python Gate：Claim Gate；输入：Analysis Crew 原始结果（仅内部传递）；输出：READY; financial_claims=9; risk_claims=2; valuation_claims=3; domain=unavailable; reason_code=unavailable; required_data=none
+- 执行者：Python Gate：Claim Gate；输入：Analysis Crew 原始结果（仅内部传递）；输出：READY; financial_claims=10; risk_claims=3; valuation_claims=3; domain=unavailable; reason_code=unavailable; required_data=none
 - 决策：READY；原因：domain=unavailable; reason_code=unavailable；下一节点：Verdict 与 Report
 ### 7. Verdict 与 Report · completed
-- 执行者：Python：Deterministic Verdict + Crew/Agent：Report Crew；输入：financial_claims=9; risk_claims=2; valuation_claims=3；输出：Verdict=ready; Report=generated; draft_source=agent; PE=35.93x; FCF Yield=2.99%; historical percentile=83.05084745762711864406779661; reverse DCF growth=0.124648544813149416375912…
+- 执行者：Python：Deterministic Verdict + Crew/Agent：Report Crew；输入：financial_claims=10; risk_claims=3; valuation_claims=3；输出：Verdict=ready; Report=generated; draft_source=agent; PE=35.93x; FCF Yield=2.99%; historical percentile=83.05084745762711864406779661; reverse DCF growth=0.124648544813149416375912…
 - 决策：READY；原因：Claim Gate 已通过；下一节点：结束
 
 ## 运行时间
 
-- 开始：`2026-08-09T11:09:21.893249+08:00`
-- 结束：`2026-08-09T11:11:58.696079+08:00`
+- 开始：`2026-08-09T14:41:11.825687+08:00`
+- 结束：`2026-08-09T14:43:01.801759+08:00`
