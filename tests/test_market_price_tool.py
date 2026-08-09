@@ -7,6 +7,10 @@ import pandas as pd
 from yfinance.exceptions import YFRateLimitError
 
 
+class SSLError(Exception):
+    pass
+
+
 class _FakeTicker:
     def __init__(self, info):
         self.info = info
@@ -205,6 +209,42 @@ class _SslRetryTicker:
 class _SslRetryYFinance:
     def __init__(self):
         self.quote = _SslRetryTicker()
+
+    def Ticker(self, ticker):
+        return self.quote
+
+
+class _ThirdPartySslRetryTicker:
+    def __init__(self):
+        self.history_attempts = 0
+
+    @property
+    def info(self):
+        raise AssertionError("info should not be used after history succeeds")
+
+    def history(self, **kwargs):
+        self.history_attempts += 1
+        if self.history_attempts == 1:
+            raise SSLError("temporary third-party TLS failure")
+        return pd.DataFrame(
+            {"Close": [218.50]},
+            index=pd.DatetimeIndex(
+                [datetime(2026, 8, 5, 20, 0, tzinfo=timezone.utc)]
+            ),
+        )
+
+    @property
+    def history_metadata(self):
+        return {
+            "regularMarketPrice": 219.75,
+            "regularMarketTime": 1700000000,
+            "currency": "USD",
+        }
+
+
+class _ThirdPartySslRetryYFinance:
+    def __init__(self):
+        self.quote = _ThirdPartySslRetryTicker()
 
     def Ticker(self, ticker):
         return self.quote
@@ -589,6 +629,30 @@ class MarketPriceToolTests(unittest.TestCase):
         self.assertEqual(result.market_price, "219.75")
         self.assertEqual(result.price_timestamp, "2023-11-14T22:13:20Z")
         self.assertEqual(result.currency, "USD")
+        self.assertEqual(yfinance.quote.history_attempts, 2)
+        self.assertEqual(sleep_calls, [0.25])
+
+    def test_history_retries_third_party_ssl_error(self):
+        from stockcrewai.tools.market_price_tool import MarketPriceTool
+
+        self.assertFalse(issubclass(SSLError, ssl.SSLError))
+        yfinance = _ThirdPartySslRetryYFinance()
+        sleep_calls = []
+        result = MarketPriceTool(
+            yfinance_module=yfinance,
+            max_retries=1,
+            retry_delay=0.25,
+            sleeper=sleep_calls.append,
+        ).run(ticker="AAPL")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.market_price, "219.75")
+        self.assertEqual(result.price_timestamp, "2023-11-14T22:13:20Z")
+        self.assertEqual(result.currency, "USD")
+        self.assertEqual(
+            result.source_reference,
+            "https://finance.yahoo.com/quote/AAPL",
+        )
         self.assertEqual(yfinance.quote.history_attempts, 2)
         self.assertEqual(sleep_calls, [0.25])
 

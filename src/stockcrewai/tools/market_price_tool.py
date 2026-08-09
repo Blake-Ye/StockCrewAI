@@ -130,7 +130,18 @@ class MarketPriceTool(BaseTool):
         if isinstance(exc, (ConnectionError, TimeoutError, ssl.SSLError)):
             return True
         return any(
-            name in {"YFRateLimitError", "YFConnectionError", "YFTimeoutError"}
+            name
+            in {
+                "YFRateLimitError",
+                "YFConnectionError",
+                "YFTimeoutError",
+                "SSLError",
+                "ProxyError",
+                "ConnectionError",
+                "Timeout",
+                "ConnectTimeout",
+                "ReadTimeout",
+            }
             for name in (cls.__name__ for cls in type(exc).__mro__)
         )
 
