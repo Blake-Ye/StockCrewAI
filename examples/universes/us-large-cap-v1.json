@@ -1,0 +1,9 @@
+{
+  "universe_id": "us-large-cap-v1",
+  "tickers": ["AAPL", "MSFT"],
+  "selection_as_of": "2026-01-02T00:00:00Z",
+  "membership_source": "fixture:us-large-cap-v1",
+  "membership_basis": "fixed_synthetic_membership",
+  "known_biases": ["survivorship_bias_known", "synthetic_fixture"] ,
+  "manifest_version": "universe-manifest:v1"
+}
