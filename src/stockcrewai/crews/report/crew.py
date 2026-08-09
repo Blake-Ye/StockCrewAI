@@ -32,6 +32,33 @@ REPORT_DRAFT_FIELDS = (
     "non_investment_disclaimer",
 )
 
+REPORT_ERROR_CODES = (
+    "report_draft_not_json",
+    "report_draft_schema_invalid",
+    "report_draft_extra_fields",
+    "report_draft_forbidden_number",
+    "report_draft_forbidden_rating",
+    "report_draft_forbidden_advice",
+    "report_guardrail_retries_exhausted",
+    "report_provider_error",
+    "report_renderer_error",
+    "report_final_validation_error",
+)
+_REPORT_NARRATIVE_CATEGORIES = (
+    "financial_quality",
+    "financial_trend",
+    "valuation",
+    "risk",
+)
+_REPORT_NARRATIVE_CATEGORY_MAP = {
+    "financial_quality": "financial_quality",
+    "financial_trend": "financial_trend",
+    "current_valuation": "valuation",
+    "historical_valuation": "valuation",
+    "reverse_dcf": "valuation",
+    "risk": "risk",
+}
+
 _REPORT_ADVICE_RE = re.compile(
     r"买入|卖出|持有|增持|减持|推荐|\b(?:buy|sell|hold)\b",
     re.IGNORECASE,
@@ -167,23 +194,39 @@ _REPORT_NUMBER_RE = re.compile(
 )
 
 
+class ReportDraftError(ValueError):
+    """带稳定错误码的 ReportDraft 解析/校验错误。"""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        self.code = code
+        super().__init__(f"{code}: {message}" if message else code)
+
+
+def _draft_error_code(message: Any) -> str:
+    text = str(message)
+    for code in REPORT_ERROR_CODES:
+        if code in text:
+            return code
+    return "report_draft_schema_invalid"
+
+
 def _draft_text_violation(value: str, *, allow_advice: bool = False) -> str | None:
     if not value.strip():
-        return "字段必须是非空字符串。"
+        return "report_draft_schema_invalid: 字段必须是非空字符串。"
     if re.search(r"[0-9]", value):
-        return "草稿正文不得包含阿拉伯数字。"
+        return "report_draft_forbidden_number: 草稿正文不得包含阿拉伯数字。"
     if "```" in value:
-        return "草稿正文不得包含代码围栏。"
+        return "report_draft_schema_invalid: 草稿正文不得包含代码围栏。"
     if not allow_advice and _REPORT_DRAFT_ADVICE_RE.search(value):
-        return "草稿正文不得包含买入、卖出、持有或其他投资建议。"
+        return "report_draft_forbidden_advice: 草稿正文不得包含投资建议。"
     if not allow_advice and _REPORT_DRAFT_VERDICT_RE.search(value):
-        return "草稿正文不得表达投资结论；结论只能由确定性 Verdict 注入。"
+        return "report_draft_forbidden_advice: 草稿正文不得表达投资结论。"
     if _REPORT_RATING_RE.search(value):
-        return "草稿正文不得包含评级。"
+        return "report_draft_forbidden_rating: 草稿正文不得包含评级。"
     if _REPORT_CLAIM_ID_RE.search(value):
-        return "草稿正文不得包含 Claim ID。"
+        return "report_draft_schema_invalid: 草稿正文不得包含 Claim ID。"
     if _REPORT_STATUS_RE.search(value):
-        return "确定性 status 只能由 Python Renderer 注入。"
+        return "report_draft_schema_invalid: 确定性 status 只能由 Python Renderer 注入。"
     return None
 
 
@@ -848,6 +891,95 @@ def build_report_context(
     return context.model_dump(mode="json")
 
 
+def build_narrative_context(
+    report_context: Mapping[str, Any], max_bytes: int = 24 * 1024
+) -> dict[str, Any]:
+    """压缩 Report Context，只把有限叙述摘要交给 Report Crew。"""
+    company = report_context.get("company", {})
+    company = company if isinstance(company, Mapping) else {}
+    verdict = report_context.get("verdict", {})
+    verdict = verdict if isinstance(verdict, Mapping) else {}
+    status = _text(report_context.get("verdict_status")) or _text(verdict.get("status")) or "unavailable"
+    rating, risk, rule, action = _verdict_display(verdict, status)
+    identity = {
+        "company": (_text(company.get("name")) or _text(company.get("company")) or "unavailable")[:256],
+        "ticker": (_text(company.get("ticker")) or "unavailable")[:64],
+        "horizon": (_text(report_context.get("horizon")) or _text(company.get("horizon")) or _text(company.get("investment_horizon")) or "unavailable")[:128],
+    }
+    claims = report_context.get("claims", [])
+    claims = claims if isinstance(claims, Sequence) and not isinstance(claims, (str, bytes)) else []
+    summaries = {category: [] for category in _REPORT_NARRATIVE_CATEGORIES}
+    claim_sections: set[str] = set()
+    for claim in claims:
+        if not isinstance(claim, Mapping):
+            continue
+        category = _REPORT_NARRATIVE_CATEGORY_MAP.get(str(claim.get("category", "")).strip())
+        statement = _text(claim.get("statement"))
+        if category and statement:
+            summaries[category].append(" ".join(statement.split())[:512])
+        section = _CLAIM_CATEGORY_TO_SECTION.get(str(claim.get("category", "")).strip())
+        if section:
+            claim_sections.add(section)
+    metrics = report_context.get("metrics", [])
+    metrics = metrics if isinstance(metrics, Sequence) and not isinstance(metrics, (str, bytes)) else []
+    metric_sections = set()
+    for metric in metrics:
+        if not isinstance(metric, Mapping):
+            continue
+        section = metric.get("section")
+        metric_id = metric.get("metric_id")
+        if section == "financial":
+            section = "company_quality" if metric_id in _REPORT_QUALITY_METRIC_IDS else "financial_trend" if metric_id in _REPORT_TREND_METRIC_IDS else None
+        if section:
+            metric_sections.add(str(section))
+    source_metadata = report_context.get("source_metadata", {})
+    source_metadata = source_metadata if isinstance(source_metadata, Mapping) else {}
+    def _count(value: Any) -> int:
+        return len(value) if isinstance(value, (Mapping, list, tuple, set)) else 0
+    counts = {
+        "claims": len(claims),
+        "accepted_claims": len(claims),
+        "metrics": len(metrics),
+        "facts": _count(source_metadata.get("facts")),
+        "risk_filings": _count(source_metadata.get("risk_filings")),
+        "historical_prices": _count(source_metadata.get("historical_prices")),
+        "ttm_metrics": _count((report_context.get("ttm") or {}).get("metrics")) if isinstance(report_context.get("ttm"), Mapping) else 0,
+    }
+    available_sections = [
+        section
+        for section, _ in _REPORT_SECTIONS
+        if section not in {"execution_summary", "sources_and_method", "non_investment_disclaimer"}
+        and section in claim_sections | metric_sections
+    ]
+    narrative = {
+        **identity,
+        "verdict": {
+            "status": status,
+            "rating": rating[:128],
+            "risk": risk[:128],
+            "rule": rule[:128],
+            "action": action[:128],
+        },
+        "accepted_claim_summaries": summaries,
+        "counts": counts,
+        "available_sections": available_sections,
+    }
+    def _size() -> int:
+        return len(json.dumps(narrative, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    while _size() > max_bytes:
+        candidates = [
+            (group, index, value)
+            for group in _REPORT_NARRATIVE_CATEGORIES
+            for index, value in enumerate(summaries[group])
+            if len(value) > 1
+        ]
+        if not candidates:
+            break
+        group, index, value = max(candidates, key=lambda item: (len(item[2]), -_REPORT_NARRATIVE_CATEGORIES.index(item[0]), -item[1]))
+        summaries[group][index] = value[: max(1, len(value) // 2)]
+    return narrative
+
+
 class _DuplicateJsonKey(ValueError):
     pass
 
@@ -892,16 +1024,20 @@ def parse_report_draft(value: Any) -> ReportDraft:
                 parse_constant=_reject_json_constant,
             )
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("ReportDraft 必须是唯一且有效的 JSON 对象。") from exc
+            raise ReportDraftError("report_draft_not_json", "必须是唯一且有效的 JSON 对象。") from exc
     else:
-        raise ValueError("ReportDraft 必须是非空 JSON 对象。")
+        raise ReportDraftError("report_draft_not_json", "必须是非空 JSON 对象。")
 
     if not isinstance(decoded, dict):
-        raise ValueError("ReportDraft 顶层必须是唯一 JSON 对象。")
+        raise ReportDraftError("report_draft_not_json", "顶层必须是唯一 JSON 对象。")
+    extra = set(decoded) - set(REPORT_DRAFT_FIELDS)
+    if extra:
+        raise ReportDraftError("report_draft_extra_fields", "包含额外字段。")
     try:
         return ReportDraft.model_validate(decoded)
     except ValidationError as exc:
-        raise ValueError("ReportDraft 字段不符合固定九字段契约。") from exc
+        code = _draft_error_code(" ".join(str(error.get("msg", "")) for error in exc.errors()))
+        raise ReportDraftError(code, "字段不符合固定九字段契约。") from exc
 
 
 def validate_report_draft(output: TaskOutput) -> tuple[bool, Any]:
@@ -910,7 +1046,7 @@ def validate_report_draft(output: TaskOutput) -> tuple[bool, Any]:
     try:
         parse_report_draft(payload)
     except ValueError as exc:
-        return False, str(exc)
+        return False, getattr(exc, "code", _draft_error_code(exc))
     return True, payload
 
 

@@ -1084,11 +1084,11 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "report")
         self.assertIsNone(result["report"])
-        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["required_data"], ["report_provider_error"])
         self.assertEqual(result["analysis_diagnostics"]["domain"], "report")
         self.assertEqual(
             result["analysis_diagnostics"]["reason_code"],
-            "report_output_invalid",
+            "report_provider_error",
         )
         report_event = next(
             event
@@ -1104,7 +1104,63 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertNotIn(secret, serialized)
         self.assertEqual(report_crew.kickoff_calls, 1)
 
-    def test_report_renderer_failure_remains_report_output_invalid(self):
+    def test_report_guardrail_exhaustion_uses_deterministic_safe_draft(self):
+        for last_error in ("report_draft_not_json", "report_draft_forbidden_number"):
+            with self.subTest(last_error=last_error):
+                class GuardrailExhaustedReportCrew:
+                    kickoff_calls = 0
+
+                    def kickoff(self, *, inputs):
+                        self.kickoff_calls += 1
+                        raise RuntimeError(
+                            "Task failed guardrail validation after 2 retries. "
+                            f"Last error: {last_error}"
+                        )
+
+                analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+                report_crew = GuardrailExhaustedReportCrew()
+                parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
+                events = []
+                flow._progress_callback = events.append
+
+                with _offline_flow_patches(parser_result, verdict={"status": "ready"}):
+                    result = _run_flow(flow)
+
+                self.assertEqual(result["status"], "ok")
+                self.assertIn("报告由已验证研究结果生成。", result["report"])
+                self.assertEqual(report_crew.kickoff_calls, 1)
+                report_event = next(
+                    event
+                    for event in events
+                    if event.step == 7 and event.status == "completed"
+                )
+                self.assertIn("draft_source=deterministic_safe_draft", report_event.output_summary)
+                self.assertIn("report_guardrail_retries_exhausted", report_event.reason)
+
+    def test_report_provider_connection_error_blocks_with_stable_code(self):
+        secret = "provider raw secret"
+
+        class ProviderFailureReportCrew:
+            kickoff_calls = 0
+
+            def kickoff(self, *, inputs):
+                self.kickoff_calls += 1
+                raise ConnectionError(secret)
+
+        analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+        report_crew = ProviderFailureReportCrew()
+        parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
+
+        with _offline_flow_patches(parser_result, verdict={"status": "ready"}):
+            result = _run_flow(flow)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["required_data"], ["report_provider_error"])
+        self.assertIsNone(result["report"])
+        self.assertNotIn("deterministic_safe_draft", json.dumps(result))
+        self.assertNotIn(secret, json.dumps(result))
+
+    def test_report_renderer_failure_blocks_with_renderer_error(self):
         module = _main_module()
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
         report_crew = RecordingCrew(VALID_REPORT_DRAFT)
@@ -1124,10 +1180,10 @@ class MainFlowExecutionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "report")
-        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["required_data"], ["report_renderer_error"])
         self.assertIsNone(result["report"])
         self.assertEqual(
-            result["analysis_diagnostics"]["reason_code"], "report_output_invalid"
+            result["analysis_diagnostics"]["reason_code"], "report_renderer_error"
         )
         self.assertNotIn("renderer implementation detail", json.dumps(result))
         report_event = next(
@@ -1186,7 +1242,7 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "report")
         self.assertIsNone(result["report"])
-        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["required_data"], ["report_provider_error"])
         report_event = next(
             event
             for event in events
@@ -1219,7 +1275,7 @@ class MainFlowExecutionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "report")
-        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["required_data"], ["report_draft_forbidden_number"])
         self.assertIsNone(result["report"])
         renderer.assert_not_called()
         report_event = next(
@@ -1227,8 +1283,8 @@ class MainFlowExecutionTests(unittest.TestCase):
             for event in events
             if event.step == 7 and event.status == "blocked"
         )
-        self.assertIn("report_parse:ValueError", report_event.output_summary)
-        self.assertIn("report_parse:ValueError", report_event.reason)
+        self.assertIn("report_parse:ReportDraftError", report_event.output_summary)
+        self.assertIn("report_parse:ReportDraftError", report_event.reason)
         serialized = json.dumps(
             {"result": result, "events": [event.__dict__ for event in events]},
             ensure_ascii=False,
@@ -1257,8 +1313,9 @@ class MainFlowExecutionTests(unittest.TestCase):
             result = _run_flow(flow)
 
         self.assertEqual(result["status"], "ok")
-        report_context = report_crew.inputs["report_context"]
-        self.assertIs(report_context, rendered_context["value"])
+        report_context = rendered_context["value"]
+        self.assertNotIn("report_context", report_crew.inputs)
+        self.assertIn("narrative_context", report_crew.inputs)
         json.dumps(report_context, ensure_ascii=False, allow_nan=False)
 
     def test_broken_pipe_progress_callback_is_disabled_without_interrupting_flow(self):

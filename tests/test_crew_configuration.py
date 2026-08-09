@@ -1556,11 +1556,11 @@ class AnalysisGateTests(unittest.TestCase):
         self.assertIn("财务质量稳定。", result["report"])
         self.assertIn("本文不构成任何投资建议。", result["report"])
         self.assertNotIn("limitations", result)
-        self.assertEqual(set(report_crew.inputs), {"report_context"})
+        self.assertEqual(set(report_crew.inputs), {"narrative_context"})
         self.assertEqual(
-            report_crew.inputs["report_context"]["verdict_status"], "ready"
+            report_crew.inputs["narrative_context"]["verdict"]["status"], "ready"
         )
-        self.assertTrue(report_crew.inputs["report_context"]["metrics"])
+        self.assertGreater(report_crew.inputs["narrative_context"]["counts"]["metrics"], 0)
         self.assertIn("25.00x", result["report"])
         self.assertNotIn("analysis notice", json.dumps(result, ensure_ascii=False))
         self.assertNotIn("rejected", json.dumps(result, ensure_ascii=False))
@@ -1577,17 +1577,17 @@ class AnalysisGateTests(unittest.TestCase):
         result, verdict = _run_valid_pipeline(
             analysis_crew,
             report_crew,
-            verdict_value={"status": "insufficient_data"},
+            verdict_value={"status": "ready"},
         )
 
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "report")
         self.assertIsNone(result["report"])
-        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["required_data"], ["report_draft_schema_invalid"])
         self.assertEqual(result["analysis_diagnostics"]["domain"], "report")
         self.assertEqual(
             result["analysis_diagnostics"]["reason_code"],
-            "report_output_invalid",
+            "report_draft_schema_invalid",
         )
         self.assertEqual(report_crew.kickoff_calls, 1)
         verdict.assert_called_once()
@@ -2054,6 +2054,86 @@ class ReportContractTests(unittest.TestCase):
 
         self.assertEqual(context["metrics"], [])
 
+    def test_narrative_context_bounds_nvda_claims_and_preserves_raw_counts(self):
+        from stockcrewai.crews.report.crew import (
+            build_narrative_context,
+            build_report_context,
+        )
+
+        inputs = self._canonical_context_inputs()
+        inputs["company"] = {
+            "name": "NVIDIA Corporation",
+            "ticker": "NVDA",
+            "horizon": "五年",
+        }
+        categories = (
+            ["financial_quality"] * 4
+            + ["financial_trend"] * 4
+            + ["current_valuation"] * 3
+            + ["historical_valuation"] * 2
+            + ["reverse_dcf"] * 2
+            + ["risk"] * 2
+        )
+        inputs["validated_claims"] = [
+            {
+                "claim_id": f"claim_nvda_{index}",
+                "category": category,
+                "statement": f"{category} 的已验证叙述。" + "长" * 1800,
+                "evidence_ids": ["ev_revenue"],
+                "calculation_ids": [],
+                "confidence": 0.9,
+            }
+            for index, category in enumerate(categories)
+        ]
+        inputs["source_metadata"] = {
+            "facts": {
+                "raw": {
+                    "evidence_id": "ev_raw",
+                    "source_reference": "sec:full-source-list",
+                    "text": "SEC raw evidence that must not enter narrative context",
+                }
+            },
+            "historical_prices": [{"date": str(index)} for index in range(500)],
+            "rejected_claims": [{"statement": "rejected claim must not enter"}],
+        }
+
+        context = build_report_context(**inputs)
+        narrative = build_narrative_context(context)
+        encoded = json.dumps(narrative, ensure_ascii=False, separators=(",", ":"))
+
+        self.assertLessEqual(len(encoded.encode("utf-8")), 24 * 1024)
+        self.assertEqual(narrative["company"], "NVIDIA Corporation")
+        self.assertEqual(narrative["ticker"], "NVDA")
+        self.assertEqual(narrative["horizon"], "五年")
+        self.assertEqual(
+            list(narrative["accepted_claim_summaries"]),
+            ["financial_quality", "financial_trend", "valuation", "risk"],
+        )
+        self.assertEqual(narrative["counts"]["claims"], 17)
+        self.assertEqual(narrative["counts"]["accepted_claims"], 17)
+        self.assertEqual(
+            [
+                len(narrative["accepted_claim_summaries"][key])
+                for key in narrative["accepted_claim_summaries"]
+            ],
+            [4, 4, 7, 2],
+        )
+        self.assertNotIn("SEC raw evidence", encoded)
+        self.assertNotIn("full-source-list", encoded)
+        self.assertNotIn("rejected claim", encoded)
+        self.assertNotIn("claim_nvda_", encoded)
+        self.assertEqual(
+            narrative["available_sections"],
+            [
+                "company_quality",
+                "financial_trend",
+                "current_valuation",
+                "historical_valuation",
+                "reverse_dcf",
+                "key_risks",
+            ],
+        )
+
     def test_renderer_uses_canonical_metric_not_conflicting_claim_number(self):
         from stockcrewai.crews.report.crew import (
             build_report_context,
@@ -2336,7 +2416,7 @@ class ReportContractTests(unittest.TestCase):
         crew = ReportCrew()
         prompt = crew.tasks_config["generate_validated_report_task"]["description"]
         for phrase in (
-            "report_context",
+            "narrative_context",
             "唯一 JSON",
             "不得输出数字",
             "不得输出 Claim ID",

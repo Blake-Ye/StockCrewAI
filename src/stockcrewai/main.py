@@ -29,6 +29,8 @@ from stockcrewai.crews.analysis.crew import AnalysisCrew
 from stockcrewai.crews.report.crew import (
     ReportCrew,
     ReportDraft,
+    build_deterministic_report_draft,
+    build_narrative_context,
     build_report_context,
     parse_report_draft,
     render_validated_report,
@@ -1340,8 +1342,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
         source_metadata = _json_safe(source_metadata)
         report_context = build_report_context(
             company={
-                "name": self._pipeline_state.get("company_name"),
-                "ticker": self._pipeline_state.get("ticker"),
+            "name": self._pipeline_state.get("company_name"),
+            "ticker": self._pipeline_state.get("ticker"),
+            "horizon": self.state.parsed_request.get("investment_horizon"),
             },
             validated_claims=self.state.analysis,
             deterministic_verdict=verdict,
@@ -1352,9 +1355,10 @@ class ResearchFlow(Flow[ResearchFlowState]):
             ttm=self.state.ttm,
             source_metadata=source_metadata,
         )
-        report_inputs = {"report_context": report_context}
+        report_inputs = {"narrative_context": build_narrative_context(report_context)}
         self.state.verdict = _json_safe(verdict)
         draft_source = "agent"
+        fallback_reason = None
 
         def _failure_summary(phase: str, exc: BaseException) -> str:
             """只保留异常阶段和类型，不把模型文本写入运行输出。"""
@@ -1371,16 +1375,16 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 current = current.__cause__ or current.__context__
             return sanitize_text(f"{phase}:{'->'.join(exception_types)}", 120)
 
-        def _block_report_output_invalid(reason: Any) -> dict[str, Any]:
+        def _block_report_output_invalid(code: str, reason: Any) -> dict[str, Any]:
             """报告 Draft、Renderer 或最终安全检查失败时 fail closed。"""
             safe_reason = sanitize_text(str(reason), 240) or "unknown"
             self.state.report = None
             self.state.status = "blocked"
             self.state.stage = "report"
-            self.state.required_data = ["report_output_invalid"]
+            self.state.required_data = [code]
             self.state.analysis_diagnostics = {
                 "domain": "report",
-                "reason_code": "report_output_invalid",
+                "reason_code": code,
                 "reason": safe_reason,
                 "message": "ReportDraft、Renderer 或最终 Markdown 安全检查失败；原始 Agent 输出未写入结果。",
             }
@@ -1395,7 +1399,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
                         f"draft_source={draft_source}"
                     ),
                     output_summary=(
-                        "BLOCKED; reason_code=report_output_invalid; "
+                        f"BLOCKED; reason_code={code}; "
                         f"draft_source={draft_source}; reason={safe_reason}"
                     ),
                     decision="BLOCKED",
@@ -1405,27 +1409,42 @@ class ResearchFlow(Flow[ResearchFlowState]):
             )
             return self._flow_result()
 
+        def _guardrail_exhausted(exc: BaseException) -> bool:
+            current: BaseException | None = exc
+            seen: set[int] = set()
+            while isinstance(current, BaseException) and id(current) not in seen:
+                seen.add(id(current))
+                text = str(current).lower()
+                if "report_guardrail_retries_exhausted" in text or (
+                    "guardrail" in text and "after" in text and "retries" in text
+                ):
+                    return True
+                current = current.__cause__ or current.__context__
+            return False
+
+        report_draft: ReportDraft | None = None
         try:
             report_crew = _crew_instance(self._report_crew, ReportCrew)
             report_result = report_crew.kickoff(inputs=report_inputs)
         except Exception as exc:
-            return _block_report_output_invalid(
-                _failure_summary("report_kickoff", exc)
-            )
+            if _guardrail_exhausted(exc) and str(verdict.get("status")) == "ready":
+                report_draft = build_deterministic_report_draft()
+                draft_source = "deterministic_safe_draft"
+                fallback_reason = "report_guardrail_retries_exhausted"
+            else:
+                code = "report_guardrail_retries_exhausted" if _guardrail_exhausted(exc) else "report_provider_error"
+                return _block_report_output_invalid(code, _failure_summary("report_kickoff", exc))
 
-        try:
-            report_output = _crew_output(report_result)
-        except Exception as exc:
-            return _block_report_output_invalid(
-                _failure_summary("report_output", exc)
-            )
+        if report_draft is None:
+            try:
+                report_output = _crew_output(report_result)
+            except Exception as exc:
+                return _block_report_output_invalid("report_provider_error", _failure_summary("report_output", exc))
 
-        try:
-            report_draft: ReportDraft = parse_report_draft(report_output)
-        except Exception as exc:
-            return _block_report_output_invalid(
-                _failure_summary("report_parse", exc)
-            )
+            try:
+                report_draft = parse_report_draft(report_output)
+            except Exception as exc:
+                return _block_report_output_invalid(getattr(exc, "code", "report_draft_schema_invalid"), _failure_summary("report_parse", exc))
 
         try:
             report = render_validated_report(
@@ -1433,20 +1452,16 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 report_draft=report_draft,
             )
         except Exception as exc:
-            return _block_report_output_invalid(_failure_summary("renderer", exc))
+            return _block_report_output_invalid("report_renderer_error", _failure_summary("renderer", exc))
 
         try:
             report_passed, report_message = validate_rendered_report(
                 report, str(verdict.get("status"))
             )
         except Exception as exc:
-            return _block_report_output_invalid(
-                _failure_summary("final_safety", exc)
-            )
+            return _block_report_output_invalid("report_final_validation_error", _failure_summary("final_safety", exc))
         if not report_passed:
-            return _block_report_output_invalid(
-                sanitize_text(str(report_message), 240)
-            )
+            return _block_report_output_invalid("report_final_validation_error", sanitize_text(str(report_message), 240))
 
         self.state.report = report
         self.state.status = "ok"
@@ -1478,7 +1493,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     f"reverse DCF growth={snapshot['reverse_dcf_growth']}"
                 ),
                 decision="READY",
-                reason="Claim Gate 已通过",
+                reason=("Claim Gate 已通过" if fallback_reason is None else f"Claim Gate 已通过; reason_code={fallback_reason}"),
                 next_step="结束",
             )
         )
@@ -1594,7 +1609,12 @@ def run_research(
         }
 
     if result.get("status") == "blocked":
-        if result.get("required_data") == ["report_output_invalid"]:
+        report_errors = result.get("required_data")
+        if (
+            isinstance(report_errors, list)
+            and len(report_errors) == 1
+            and str(report_errors[0]).startswith("report_")
+        ):
             output = {
                 **deterministic_outputs,
                 "status": "blocked",
@@ -1602,7 +1622,7 @@ def run_research(
                 "analysis": result.get("analysis"),
                 "verdict": result.get("verdict"),
                 "report": None,
-                "required_data": ["report_output_invalid"],
+                "required_data": report_errors,
                 "next_action": "修正报告输出后重新运行",
             }
             if result.get("analysis_diagnostics"):
