@@ -154,6 +154,10 @@ class ReportVisualsTests(unittest.TestCase):
 
         maximum_text, maximum_extent, maximum_bar = by_label["115.31%"]
         self.assertGreater(maximum_extent.x0, maximum_bar.x1)
+        self.assertGreaterEqual(
+            axes_bbox.x1 - maximum_extent.x1,
+            axes_bbox.width * 0.05,
+        )
         self.assertEqual(maximum_text.get_color(), "black")
 
         negative_text, negative_extent, _ = by_label["-1.67%"]
@@ -246,7 +250,7 @@ class ReportVisualsTests(unittest.TestCase):
             "share_dilution": -5.0,
         }
         negative_chart = render(negative_values)
-        expected_negative_xlim = (-16.0, 55.5)
+        expected_negative_xlim = (-16.0, 61.0)
         expected_negative_zero_fraction = (
             -expected_negative_xlim[0]
             / (expected_negative_xlim[1] - expected_negative_xlim[0])
@@ -256,11 +260,11 @@ class ReportVisualsTests(unittest.TestCase):
             expected_negative_zero_fraction,
             delta=0.01,
         )
-        self.assertGreaterEqual(negative_chart["negative_left_fraction"], 0.15)
+        self.assertGreaterEqual(negative_chart["negative_left_fraction"], 0.14)
 
         positive_values = {**negative_values, "share_dilution": 5.0}
         positive_chart = render(positive_values)
-        expected_positive_xlim = (-5.0, 55.0)
+        expected_positive_xlim = (-5.0, 60.0)
         expected_positive_zero_fraction = (
             -expected_positive_xlim[0]
             / (expected_positive_xlim[1] - expected_positive_xlim[0])

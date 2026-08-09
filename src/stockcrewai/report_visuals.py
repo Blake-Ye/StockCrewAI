@@ -199,7 +199,7 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
         data_max = max(0.0, max(values))
         span = max(data_max - data_min, 1.0)
         left_padding = span * (0.20 if data_min < 0 else 0.10)
-        right_padding = span * 0.10
+        right_padding = span * 0.20
         axes.set_xlim(data_min - left_padding, data_max + right_padding)
         axes.axvline(0, color="#555555", linewidth=0.8)
         axes.set_xlabel("百分比（%）")
