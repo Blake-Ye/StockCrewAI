@@ -432,9 +432,8 @@ class EdgarTextRetrievalTests(unittest.TestCase):
 
         filing = self._filing(result, "8-K")
         self.assertEqual(filing.risk_sections, [])
-        self.assertEqual(filing.risk_eligibility.eligibility, "rejected")
-        self.assertEqual(filing.risk_eligibility.reason_code, "attachment_shell")
-        self.assertIsNone(filing.risk_eligibility.evidence_kind)
+        self._assert_rejected_risk_eligibility(filing, "attachment_shell")
+        self.assertTrue(filing.risk_eligibility.evidence_id)
 
     def test_8k_substantive_item_is_eligible_event_section(self):
         result = self._run(Substantive8KTextEdgar(), max_text_chars=5000)
@@ -460,8 +459,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
 
         filing = self._filing(result, "8-K")
         self.assertEqual(filing.risk_sections, [])
-        self.assertEqual(filing.risk_eligibility.eligibility, "rejected")
-        self.assertEqual(filing.risk_eligibility.reason_code, "unsupported_item")
+        self._assert_rejected_risk_eligibility(filing, "unsupported_item")
 
     def test_8k_item_5_02_directory_page_range_entry_is_rejected(self):
         result = self._run(DirectoryOnly8KTextEdgar(), max_text_chars=5000)
