@@ -185,6 +185,7 @@ git commit -m "fix: qualify complete SEC risk evidence"
 - Modify: `src/stockcrewai/main.py`
 - Create: `tests/test_analysis_gate.py`
 - Modify: `tests/test_main_flow.py`
+- Modify: `tests/test_crew_configuration.py` (共享离线 fixture 与旧风险 Gate 错误码断言必须同步 Task 1 契约)
 
 **Interfaces:**
 - Consumes: Task 1 的 `EdgarFilingEvidence.risk_eligibility` 与完整 `risk_sections`。
