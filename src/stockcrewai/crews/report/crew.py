@@ -1472,6 +1472,7 @@ class ReportCrew:
         """装配本地 ReportDraft Guardrail，避免依赖模型原生响应格式。"""
         return Task(
             config=self.tasks_config["generate_validated_report_task"],  # type: ignore[index]
+            output_pydantic=ReportDraft,
             guardrail=validate_report_draft,
             guardrail_max_retries=2,
         )

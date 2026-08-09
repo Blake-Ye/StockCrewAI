@@ -2254,6 +2254,24 @@ class ReportContractTests(unittest.TestCase):
         passed, _ = validate_report_draft(SimpleNamespace(raw=duplicate))
         self.assertFalse(passed)
 
+    def test_report_draft_guardrail_accepts_structured_pydantic_output(self):
+        from stockcrewai.crews.report.crew import (
+            ReportDraft,
+            parse_report_draft,
+            validate_report_draft,
+        )
+
+        draft = ReportDraft.model_validate(json.loads(VALID_REPORT_DRAFT))
+        output = SimpleNamespace(
+            pydantic=draft,
+            raw="this is not JSON; the structured output is authoritative",
+        )
+
+        self.assertIs(parse_report_draft(output), draft)
+        passed, validated = validate_report_draft(output)
+        self.assertTrue(passed)
+        self.assertIs(validated, draft)
+
     def test_report_draft_parser_rejects_non_object_and_duplicate_keys(self):
         from stockcrewai.crews.report.crew import parse_report_draft
 
@@ -2283,12 +2301,16 @@ class ReportContractTests(unittest.TestCase):
         self.assertIn("投资建议", draft.non_investment_disclaimer)
 
     def test_report_task_has_local_guardrail_and_retries(self):
-        from stockcrewai.crews.report.crew import ReportCrew
+        from stockcrewai.crews.report.crew import (
+            ReportCrew,
+            ReportDraft,
+            validate_report_draft,
+        )
 
         task = ReportCrew().generate_validated_report_task()
-        self.assertIsNotNone(task.guardrail)
+        self.assertIs(task.guardrail, validate_report_draft)
         self.assertEqual(task.guardrail_max_retries, 2)
-        self.assertIsNone(task.output_pydantic)
+        self.assertIs(task.output_pydantic, ReportDraft)
         self.assertIsNone(task.output_json)
 
     def test_report_prompt_forbids_new_numbers_claims_and_advice(self):
