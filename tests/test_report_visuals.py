@@ -81,7 +81,7 @@ class ReportVisualsTests(unittest.TestCase):
         self.assertIsNotNone(builder, "必须提供 build_report_visuals")
         return builder
 
-    def test_financial_kpi_percentage_labels_stay_inside_axes(self):
+    def test_financial_kpi_percentage_labels_use_safe_positions(self):
         module = importlib.import_module("stockcrewai.report_visuals")
         values = {
             "revenue_growth": 16.15,
@@ -112,10 +112,15 @@ class ReportVisualsTests(unittest.TestCase):
                 rendered["labels"] = [
                     text.get_text() for text in percentage_texts
                 ]
+                rendered["texts"] = percentage_texts
                 rendered["extents"] = [
                     text.get_window_extent(renderer) for text in percentage_texts
                 ]
+                rendered["bars"] = [
+                    bar.get_window_extent(renderer) for bar in axes.patches
+                ]
                 rendered["axes_bbox"] = axes.bbox
+                rendered["zero_x"] = axes.transData.transform((0, 0))[0]
                 return "captured"
             finally:
                 module.plt.close(figure)
@@ -129,11 +134,33 @@ class ReportVisualsTests(unittest.TestCase):
             ["16.15%", "33.60%", "27.85%", "30.24%", "115.31%", "-1.67%"],
         )
         axes_bbox = rendered["axes_bbox"]
-        tolerance = 1e-6
         for label, extent in zip(rendered["labels"], rendered["extents"]):
             with self.subTest(label=label):
-                self.assertGreaterEqual(extent.x0, axes_bbox.x0 - tolerance)
-                self.assertLessEqual(extent.x1, axes_bbox.x1 + tolerance)
+                self.assertGreaterEqual(extent.x0, axes_bbox.x0)
+                self.assertLessEqual(extent.x1, axes_bbox.x1)
+
+        by_label = {
+            label: (text, extent, bar)
+            for label, text, extent, bar in zip(
+                rendered["labels"],
+                rendered["texts"],
+                rendered["extents"],
+                rendered["bars"],
+            )
+        }
+
+        maximum_text, maximum_extent, maximum_bar = by_label["115.31%"]
+        self.assertGreaterEqual(maximum_extent.x0, maximum_bar.x0)
+        self.assertLessEqual(maximum_extent.x1, maximum_bar.x1)
+        self.assertEqual(maximum_text.get_color(), "white")
+
+        negative_text, negative_extent, _ = by_label["-1.67%"]
+        self.assertGreater(negative_extent.x0, rendered["zero_x"])
+        self.assertNotEqual(negative_text.get_color(), "white")
+
+        for label in ("16.15%", "33.60%", "27.85%", "30.24%"):
+            _, extent, bar = by_label[label]
+            self.assertGreater(extent.x0, bar.x1)
 
     def test_builds_three_deterministic_png_data_uris_from_verified_inputs(self):
         builder = self._builder()
