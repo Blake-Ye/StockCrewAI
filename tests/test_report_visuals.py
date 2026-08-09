@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 def _financial_metrics():
@@ -79,6 +80,60 @@ class ReportVisualsTests(unittest.TestCase):
         builder = getattr(module, "build_report_visuals", None)
         self.assertIsNotNone(builder, "必须提供 build_report_visuals")
         return builder
+
+    def test_financial_kpi_percentage_labels_stay_inside_axes(self):
+        module = importlib.import_module("stockcrewai.report_visuals")
+        values = {
+            "revenue_growth": 16.15,
+            "operating_margin": 33.60,
+            "net_margin": 27.85,
+            "free_cash_flow_margin": 30.24,
+            "cash_conversion": 115.31,
+            "share_dilution": -1.67,
+        }
+        records = {
+            metric_id: {
+                "display_value": f"{value:.2f}%",
+                "unit": "percentage",
+            }
+            for metric_id, value in values.items()
+        }
+        rendered = {}
+
+        def inspect_png_uri(draw, *, size):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                renderer = figure.canvas.get_renderer()
+                percentage_texts = [
+                    text for text in axes.texts if text.get_text().endswith("%")
+                ]
+                rendered["labels"] = [
+                    text.get_text() for text in percentage_texts
+                ]
+                rendered["extents"] = [
+                    text.get_window_extent(renderer) for text in percentage_texts
+                ]
+                rendered["axes_bbox"] = axes.bbox
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
+            self.assertEqual(module._financial_kpi_png(records), "captured")
+
+        self.assertEqual(len(rendered["labels"]), 6)
+        self.assertEqual(
+            rendered["labels"],
+            ["16.15%", "33.60%", "27.85%", "30.24%", "115.31%", "-1.67%"],
+        )
+        axes_bbox = rendered["axes_bbox"]
+        tolerance = 1e-6
+        for label, extent in zip(rendered["labels"], rendered["extents"]):
+            with self.subTest(label=label):
+                self.assertGreaterEqual(extent.x0, axes_bbox.x0 - tolerance)
+                self.assertLessEqual(extent.x1, axes_bbox.x1 + tolerance)
 
     def test_builds_three_deterministic_png_data_uris_from_verified_inputs(self):
         builder = self._builder()

@@ -195,6 +195,7 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
             values,
             color="#3568a8",
         )
+        axes.margins(x=0.10)
         axes.axvline(0, color="#555555", linewidth=0.8)
         axes.set_xlabel("百分比（%）")
         axes.set_title(_FINANCIAL_KPI_TITLE)
