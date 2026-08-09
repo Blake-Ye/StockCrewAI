@@ -42,6 +42,9 @@ TTM_FACT_CONCEPTS = (
     "diluted_eps",
 )
 TTM_ROLES = ("latest_fy", "current_ytd", "prior_ytd")
+SUBSTANTIVE_8K_ITEMS = frozenset(
+    {"1.03", "2.05", "2.06", "3.01", "4.01", "4.02", "5.02", "8.01"}
+)
 
 
 class EdgarToolInput(BaseModel):
@@ -100,6 +103,25 @@ class EdgarFact(BaseModel):
 class EdgarRiskSection(BaseModel):
     section_type: Literal["10k_item_1a", "10q_item_1a", "8k_event"]
     text: str
+    section_title: str = ""
+    complete: bool = True
+
+
+class EdgarRiskEligibility(BaseModel):
+    evidence_id: str
+    eligibility: Literal["eligible", "rejected"]
+    reason_code: Literal[
+        "eligible_item_1a",
+        "eligible_8k_event",
+        "attachment_shell",
+        "truncated",
+        "unsupported_item",
+        "missing_body",
+    ]
+    source_reference: str
+    evidence_kind: Literal["item_1a", "substantive_8k_event"] | None = None
+    section_title: str | None = None
+    filed_at: str | None = None
 
 
 class EdgarFilingEvidence(BaseModel):
@@ -114,6 +136,14 @@ class EdgarFilingEvidence(BaseModel):
     text: str | None = None
     text_source_reference: str | None = None
     risk_sections: list[EdgarRiskSection] = Field(default_factory=list)
+    risk_eligibility: EdgarRiskEligibility = Field(
+        default_factory=lambda: EdgarRiskEligibility(
+            evidence_id="",
+            eligibility="rejected",
+            reason_code="missing_body",
+            source_reference="",
+        )
+    )
     text_retrieval_status: Literal["not_requested", "available", "unavailable"] = (
         "not_requested"
     )
@@ -246,48 +276,144 @@ class EdgarTool(BaseTool):
         return EdgarError(code=code, message=message)
 
     @staticmethod
+    def _normalize_filing_items(items: Any) -> list[str]:
+        if isinstance(items, str):
+            items = [items]
+        normalized: list[str] = []
+        for item in items or []:
+            if item is None:
+                continue
+            value = str(item).strip()
+            match = re.search(r"(?:item[ \t]*)?(\d+\.\d+)\b", value, re.IGNORECASE)
+            normalized.append(match.group(1) if match else value.upper())
+        return normalized
+
+    @staticmethod
     def _extract_risk_sections(
         form: str,
-        text: str | None,
-        text_retrieval_status: Literal["not_requested", "available", "unavailable"],
-        text_truncated: bool,
+        raw_text: str | None,
+        items: list[str],
     ) -> list[EdgarRiskSection]:
-        if (
-            text_retrieval_status != "available"
-            or not text
-            or not text.strip()
-            or text_truncated
-        ):
+        if not raw_text or not raw_text.strip():
             return []
 
         normalized_form = form.strip().upper().split("/", 1)[0]
         if normalized_form == "8-K":
-            return [EdgarRiskSection(section_type="8k_event", text=text)]
+            allowed_items = set(items) & SUBSTANTIVE_8K_ITEMS
+            if not allowed_items:
+                return []
+            pattern = (
+                r"^[ \t]*(?P<title>item[ \t]+(?P<item>\d+\.\d+)\b[^\n]*)"
+                r"(?:\n|$).*?"
+                r"(?=^[ \t]*item[ \t]+\d+\.\d+\b|\Z)"
+            )
+            matches: dict[str, tuple[int, EdgarRiskSection]] = {}
+            for match in re.finditer(
+                pattern,
+                raw_text,
+                flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+            ):
+                item = match.group("item")
+                if item not in allowed_items:
+                    continue
+                section = EdgarRiskSection(
+                    section_type="8k_event",
+                    section_title=match.group("title").strip(),
+                    text=match.group(0).strip(),
+                    complete=True,
+                )
+                current = matches.get(item)
+                if current is None or len(section.text) > len(current[1].text):
+                    matches[item] = (match.start(), section)
+            return [
+                section
+                for _, section in sorted(matches.values(), key=lambda value: value[0])
+            ]
 
         if normalized_form == "10-K":
             pattern = (
-                r"^[ \t]*item[ \t]+1a\b[^\n]*(?:\n|$).*?"
-                r"(?=^[ \t]*item[ \t]+1b\b)"
+                r"^[ \t]*(?P<title>item[ \t]+1a\b[^\n]*)(?:\n|$).*?"
+                r"(?=^[ \t]*item[ \t]+1b\b|\Z)"
             )
             section_type = "10k_item_1a"
         elif normalized_form == "10-Q":
             pattern = (
-                r"^[ \t]*(?:part[ \t]+ii[ \t]*[,.:;-]?[ \t]*)?"
-                r"item[ \t]+1a\b[^\n]*(?:\n|$).*?"
+                r"^[ \t]*(?P<title>(?:part[ \t]+ii[ \t]*[,.:;-]?[ \t]*)?"
+                r"item[ \t]+1a\b[^\n]*)(?:\n|$).*?"
                 r"(?=^[ \t]*(?:part[ \t]+[^,\n]+[ \t]*[,.:;-][ \t]*)?"
-                r"item[ \t]+\d+[a-z]?\b)"
+                r"item[ \t]+\d+[a-z]?\b|\Z)"
             )
             section_type = "10q_item_1a"
         else:
             return []
 
         matches = list(
-            re.finditer(pattern, text, flags=re.IGNORECASE | re.MULTILINE | re.DOTALL)
+            re.finditer(
+                pattern,
+                raw_text,
+                flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+            )
         )
         if not matches:
             return []
         match = max(matches, key=lambda candidate: len(candidate.group(0)))
-        return [EdgarRiskSection(section_type=section_type, text=match.group(0).strip())]
+        return [
+            EdgarRiskSection(
+                section_type=section_type,
+                section_title=match.group("title").strip(),
+                text=match.group(0).strip(),
+                complete=True,
+            )
+        ]
+
+    @staticmethod
+    def _build_risk_eligibility(
+        evidence_id: str,
+        form: str,
+        items: list[str],
+        raw_text: str | None,
+        risk_sections: list[EdgarRiskSection],
+        filed_at: str | None,
+        source_reference: str,
+    ) -> EdgarRiskEligibility:
+        normalized_form = form.strip().upper().split("/", 1)[0]
+        section = risk_sections[0] if risk_sections else None
+        if section is not None:
+            if section.section_type in {"10k_item_1a", "10q_item_1a"}:
+                return EdgarRiskEligibility(
+                    evidence_id=evidence_id,
+                    eligibility="eligible",
+                    evidence_kind="item_1a",
+                    reason_code="eligible_item_1a",
+                    section_title=section.section_title,
+                    filed_at=filed_at,
+                    source_reference=source_reference,
+                )
+            return EdgarRiskEligibility(
+                evidence_id=evidence_id,
+                eligibility="eligible",
+                evidence_kind="substantive_8k_event",
+                reason_code="eligible_8k_event",
+                section_title=section.section_title,
+                filed_at=filed_at,
+                source_reference=source_reference,
+            )
+
+        if not raw_text or not raw_text.strip():
+            reason_code = "missing_body"
+        elif normalized_form == "8-K" and set(items) == {"2.02", "9.01"}:
+            reason_code = "attachment_shell"
+        elif normalized_form == "8-K" and set(items) & SUBSTANTIVE_8K_ITEMS:
+            reason_code = "truncated"
+        else:
+            reason_code = "unsupported_item"
+        return EdgarRiskEligibility(
+            evidence_id=evidence_id,
+            eligibility="rejected",
+            reason_code=reason_code,
+            filed_at=filed_at,
+            source_reference=source_reference,
+        )
 
     def _resolve_company(self, module: Any, company_name: str | None, ticker: str | None) -> Any:
         if ticker:
@@ -322,9 +448,12 @@ class EdgarTool(BaseTool):
         source = _read_attr(filing, "url", "homepage_url", "filing_url")
         source = str(_call_if_needed(source) or "")
         items = _read_attr(filing, "items") or []
-        if isinstance(items, str):
-            items = [items]
+        items = self._normalize_filing_items(items)
+        evidence_id = "ev_filing_{}_{}".format(
+            _safe_id(form), _safe_id(accession or filed_at or "unknown")
+        )
         text = None
+        raw_text = None
         text_source_reference = None
         text_retrieval_status: Literal[
             "not_requested", "available", "unavailable"
@@ -353,8 +482,6 @@ class EdgarTool(BaseTool):
                         if isinstance(content, bytes):
                             content = content.decode("utf-8", errors="replace")
                         raw_text = str(content)
-                        text = raw_text[:max_text_chars]
-                        text_truncated = len(raw_text) > max_text_chars
                         text_retrieval_status = "available"
                     else:
                         warnings.append("申报文本不可用：返回内容为空")
@@ -362,14 +489,22 @@ class EdgarTool(BaseTool):
             except Exception as exc:
                 warnings.append(f"申报文本获取失败：{type(exc).__name__}")
                 text_retrieval_status = "unavailable"
+        if raw_text is not None:
+            text = raw_text[:max_text_chars]
+            text_truncated = len(raw_text) > max_text_chars
         risk_sections = self._extract_risk_sections(
             form,
-            text,
-            text_retrieval_status,
-            text_truncated,
+            raw_text,
+            items,
         )
-        evidence_id = "ev_filing_{}_{}".format(
-            _safe_id(form), _safe_id(accession or filed_at or "unknown")
+        risk_eligibility = self._build_risk_eligibility(
+            evidence_id,
+            form,
+            items,
+            raw_text,
+            risk_sections,
+            filed_at,
+            source,
         )
         return EdgarFilingEvidence(
             evidence_id=evidence_id,
@@ -383,6 +518,7 @@ class EdgarTool(BaseTool):
             text=text,
             text_source_reference=text_source_reference,
             risk_sections=risk_sections,
+            risk_eligibility=risk_eligibility,
             text_retrieval_status=text_retrieval_status,
             text_truncated=text_truncated,
             warnings=warnings,

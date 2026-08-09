@@ -69,6 +69,52 @@ class RiskTextFiling(FakeFiling):
         return "No risk section in this filing."
 
 
+class Shell8KTextFiling(RiskTextFiling):
+    shell_8k_text = (
+        "Item 2.02. Results of Operations and Financial Condition\n"
+        "Item 9.01. Financial Statements and Exhibits\n"
+        "Exhibit 99.1 is furnished herewith.\n"
+    )
+
+    def __init__(self, form: str, index: int):
+        super().__init__(form, index)
+        if form == "8-K":
+            self.items = ["2.02", "9.01"]
+
+    def text(self):
+        return self.shell_8k_text if self.form == "8-K" else super().text()
+
+
+class Substantive8KTextFiling(RiskTextFiling):
+    substantive_8k_text = (
+        "Item 5.02. Departure of Directors or Certain Officers\n"
+        "The company appointed a new chief financial officer.\n"
+    )
+
+    def __init__(self, form: str, index: int):
+        super().__init__(form, index)
+        if form == "8-K":
+            self.items = ["5.02"]
+
+    def text(self):
+        return self.substantive_8k_text if self.form == "8-K" else super().text()
+
+
+class Unsupported8KTextFiling(RiskTextFiling):
+    unsupported_8k_text = (
+        "Item 1.01. Entry into a Material Definitive Agreement\n"
+        "The company entered into a material agreement.\n"
+    )
+
+    def __init__(self, form: str, index: int):
+        super().__init__(form, index)
+        if form == "8-K":
+            self.items = ["1.01"]
+
+    def text(self):
+        return self.unsupported_8k_text if self.form == "8-K" else super().text()
+
+
 class DirectoryRiskTextFiling(RiskTextFiling):
     ten_k_text = (
         "TABLE OF CONTENTS\n"
@@ -198,6 +244,30 @@ class DirectoryRiskTextEdgar(FakeEdgar):
     company_class = DirectoryRiskTextCompany
 
 
+class Shell8KTextCompany(RiskTextCompany):
+    filing_class = Shell8KTextFiling
+
+
+class Shell8KTextEdgar(FakeEdgar):
+    company_class = Shell8KTextCompany
+
+
+class Substantive8KTextCompany(RiskTextCompany):
+    filing_class = Substantive8KTextFiling
+
+
+class Substantive8KTextEdgar(FakeEdgar):
+    company_class = Substantive8KTextCompany
+
+
+class Unsupported8KTextCompany(RiskTextCompany):
+    filing_class = Unsupported8KTextFiling
+
+
+class Unsupported8KTextEdgar(FakeEdgar):
+    company_class = Unsupported8KTextCompany
+
+
 class EdgarTextRetrievalTests(unittest.TestCase):
     def _run(self, edgar_module, max_text_chars=1000, include_filing_text=True):
         from stockcrewai.tools.edgar_tool import EdgarTool
@@ -303,23 +373,53 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         self.assertNotIn("ITEM 2", section.text)
         self.assertNotIn("This is not part of the risk section.", section.text)
 
-    def test_truncated_10k_has_no_risk_sections(self):
+    def test_truncated_10k_keeps_complete_item_1a_from_raw_text(self):
         result = self._run(RiskTextEdgar(), max_text_chars=1000)
 
         filing = self._filing(result, "10-K")
         self.assertTrue(filing.text_truncated)
-        self.assertEqual(getattr(filing, "risk_sections", None), [])
+        self.assertEqual(len(filing.risk_sections), 1)
+        self.assertTrue(filing.risk_sections[0].complete)
+        self.assertIn("Risk body that should be retained.", filing.risk_sections[0].text)
+        self.assertNotIn("ITEM 1B", filing.risk_sections[0].text)
+        self.assertEqual(filing.risk_eligibility.eligibility, "eligible")
+        self.assertEqual(filing.risk_eligibility.reason_code, "eligible_item_1a")
 
-    def test_complete_8k_keeps_full_text_as_event_section(self):
-        result = self._run(RiskTextEdgar(), max_text_chars=5000)
+    def test_8k_attachment_shell_is_rejected_without_risk_section(self):
+        result = self._run(Shell8KTextEdgar(), max_text_chars=5000)
 
         filing = self._filing(result, "8-K")
-        risk_sections = getattr(filing, "risk_sections", None)
-        self.assertIsNotNone(risk_sections)
-        self.assertEqual(len(risk_sections), 1)
-        section = risk_sections[0]
+        self.assertEqual(filing.risk_sections, [])
+        self.assertEqual(filing.risk_eligibility.eligibility, "rejected")
+        self.assertEqual(filing.risk_eligibility.reason_code, "attachment_shell")
+        self.assertIsNone(filing.risk_eligibility.evidence_kind)
+
+    def test_8k_substantive_item_is_eligible_event_section(self):
+        result = self._run(Substantive8KTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "8-K")
+        self.assertEqual(len(filing.risk_sections), 1)
+        section = filing.risk_sections[0]
         self.assertEqual(section.section_type, "8k_event")
-        self.assertEqual(section.text, RiskTextFiling.eight_k_text)
+        self.assertEqual(
+            section.section_title,
+            "Item 5.02. Departure of Directors or Certain Officers",
+        )
+        self.assertTrue(section.complete)
+        self.assertIn("appointed a new chief financial officer", section.text)
+        self.assertEqual(filing.risk_eligibility.eligibility, "eligible")
+        self.assertEqual(
+            filing.risk_eligibility.reason_code,
+            "eligible_8k_event",
+        )
+
+    def test_8k_unsupported_item_is_rejected(self):
+        result = self._run(Unsupported8KTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "8-K")
+        self.assertEqual(filing.risk_sections, [])
+        self.assertEqual(filing.risk_eligibility.eligibility, "rejected")
+        self.assertEqual(filing.risk_eligibility.reason_code, "unsupported_item")
 
 
 if __name__ == "__main__":
