@@ -192,6 +192,57 @@ class AnalysisGateRiskEvidenceTests(unittest.TestCase):
 
         self.assertEqual(builder(packet), [])
 
+    def test_risk_builder_orders_multiple_filings_by_allowlist_with_stable_ids(self):
+        item1a = self._filing(
+            "ev_item1a",
+            eligibility="eligible",
+            reason_code="eligible_item_1a",
+            evidence_kind="item_1a",
+            form="10-K",
+            section_type="10k_item_1a",
+            section_title="Item 1A. Risk Factors",
+            section_text="供应链与客户集中风险因素。",
+        )
+        event = self._filing(
+            "ev_8k",
+            eligibility="eligible",
+            reason_code="eligible_8k_event",
+            evidence_kind="substantive_8k_event",
+            form="8-K",
+            section_type="8k_event",
+            section_title="Item 2.02 Results of Operations",
+            section_text="公司披露了经营结果事件。",
+        )
+        shell = self._filings()[1]
+        packet = pipeline_support._risk_analysis_input(
+            EdgarResult(status="ok", filings=[item1a, event, shell]),
+            {"validated_filing_ids": ["ev_item1a", "ev_8k", "ev_shell"]},
+        )
+
+        claims = pipeline_support.build_deterministic_risk_disclosure_claims(packet)
+
+        expected_evidence_ids = ["ev_8k", "ev_item1a"]
+        expected_claim_ids = [
+            "claim_risk_disclosure_ev_8k",
+            "claim_risk_disclosure_ev_item1a",
+        ]
+        self.assertEqual(
+            [claim["evidence_ids"][0] for claim in claims],
+            expected_evidence_ids,
+        )
+        self.assertEqual(
+            [claim["claim_id"] for claim in claims],
+            expected_claim_ids,
+        )
+        self.assertEqual(
+            [claim["statement"] for claim in claims],
+            [
+                "该 filing 披露了 Item 2.02 事件。",
+                "该 filing 披露了 Item 1A 风险因素章节。",
+            ],
+        )
+        self.assertNotIn("ev_shell", [claim["evidence_ids"][0] for claim in claims])
+
 
 if __name__ == "__main__":
     unittest.main()

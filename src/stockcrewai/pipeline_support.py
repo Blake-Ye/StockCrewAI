@@ -1036,17 +1036,20 @@ def build_deterministic_risk_disclosure_claims(
         and isinstance(filings, list)
     ):
         return []
-    evidence_allowlist = set(validated_filing_ids)
+    filings_by_id = {
+        filing.get("evidence_id"): filing
+        for filing in filings
+        if isinstance(filing, Mapping)
+    }
     claims: list[dict[str, Any]] = []
-    for filing in filings:
+    for evidence_id in validated_filing_ids:
+        filing = filings_by_id.get(evidence_id)
         if not isinstance(filing, Mapping):
             continue
-        evidence_id = filing.get("evidence_id")
         eligibility = filing.get("risk_eligibility")
         sections = filing.get("risk_sections")
         if not (
             isinstance(evidence_id, str)
-            and evidence_id in evidence_allowlist
             and isinstance(eligibility, Mapping)
             and eligibility.get("eligibility") == "eligible"
             and eligibility.get("evidence_id") == evidence_id

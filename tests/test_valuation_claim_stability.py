@@ -529,7 +529,27 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
         self.assertIn("retry_notice", analysis_crew.inputs[1]["financial_analysis_input"])
         self.assertIn("retry_notice", analysis_crew.inputs[1]["risk_analysis_input"])
 
-    def test_financial_or_risk_empty_claims_retry_once_then_blocks(self):
+    def test_financial_empty_claims_retry_once_then_blocks(self):
+        analysis_crew = _SequenceAnalysisCrew(
+            [
+                [_financial_output(empty=True), _risk_output()],
+                [_financial_output(empty=True), _risk_output()],
+            ]
+        )
+        report_crew = _ReportCrew()
+
+        result, verdict = self._run_flow(analysis_crew, report_crew)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(
+            result["required_data"],
+            ["financial_analysis_claims_required"],
+        )
+        self.assertEqual(analysis_crew.kickoff_calls, 2)
+        self.assertEqual(report_crew.kickoff_calls, 0)
+        verdict.assert_not_called()
+
+    def test_risk_empty_claims_retry_once_uses_verified_builder_claims(self):
         analysis_crew = _SequenceAnalysisCrew(
             [
                 [_financial_output(), _risk_output(empty=True)],
@@ -540,13 +560,29 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
 
         result, verdict = self._run_flow(analysis_crew, report_crew)
 
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["required_data"], ["risk_analysis_claims_required"])
+        self.assertEqual(result["status"], "ok")
         self.assertEqual(analysis_crew.kickoff_calls, 2)
-        self.assertEqual(report_crew.kickoff_calls, 0)
-        verdict.assert_not_called()
-        self.assertIn(
-            '"claims"', result["analysis_diagnostics"]["raw_task_outputs"]["valuation"]
+        self.assertEqual(report_crew.kickoff_calls, 1)
+        verdict.assert_called_once()
+
+        risk_claims = [
+            claim
+            for claim in result["analysis"]
+            if claim["category"] == "risk"
+        ]
+        self.assertEqual(
+            [claim["claim_id"] for claim in risk_claims],
+            ["claim_risk_disclosure_ev_filing"],
+        )
+        input_allowlist = set(
+            analysis_crew.inputs[0]["risk_analysis_input"]["validated_filing_ids"]
+        )
+        self.assertEqual(input_allowlist, {"ev_filing"})
+        self.assertTrue(
+            all(
+                set(claim["evidence_ids"]) <= input_allowlist
+                for claim in risk_claims
+            )
         )
 
     def test_success_claim_counts_and_blocked_diagnostics_remain_domain_correct(self):

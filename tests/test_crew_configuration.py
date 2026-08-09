@@ -142,6 +142,7 @@ def _valid_pipeline_fakes():
         EdgarFact,
         EdgarFilingEvidence,
         EdgarResult,
+        EdgarRiskEligibility,
         EdgarRiskSection,
     )
     from stockcrewai.tools.validation_tool import ValidationResult
@@ -163,8 +164,22 @@ def _valid_pipeline_fakes():
         text_source_reference="sec:test-filing-text",
         text="Item 1A Risk Factors\n供应链风险\nItem 1B",
         risk_sections=[
-            EdgarRiskSection(section_type="10k_item_1a", text="供应链风险")
+            EdgarRiskSection(
+                section_type="10k_item_1a",
+                section_title="Item 1A. Risk Factors",
+                text="供应链风险",
+                complete=True,
+            )
         ],
+        risk_eligibility=EdgarRiskEligibility(
+            evidence_id="ev_filing",
+            eligibility="eligible",
+            reason_code="eligible_item_1a",
+            source_reference="sec:test-filing",
+            evidence_kind="item_1a",
+            section_title="Item 1A. Risk Factors",
+            filed_at="2026-01-01",
+        ),
         text_retrieval_status="available",
         text_truncated=False,
     )
@@ -1151,7 +1166,7 @@ class EdgarIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "blocked")
-        self.assertIn("risk_sections_required", result["required_data"])
+        self.assertIn("risk_evidence_missing", result["required_data"])
         self.assertEqual(analysis_crew.kickoff_calls, 0)
         self.assertEqual(report_crew.kickoff_calls, 0)
         self.assertIsNone(result["analysis"])
@@ -1310,21 +1325,24 @@ class AnalysisGateTests(unittest.TestCase):
         self.assertEqual(risk_input.get("policy_version"), "risk_claim_presence_v1")
         json.dumps(risk_input, ensure_ascii=False, allow_nan=False)
 
-    def test_missing_risk_claim_blocks_before_verdict(self):
-        """风险 Claim 缺失时 Claim Gate 应阻断并跳过 Verdict。"""
+    def test_missing_risk_claim_uses_deterministic_disclosure_fallback(self):
+        """风险 Claim 两次为空时应使用已验证披露事实继续通过 Gate。"""
         outputs = _valid_analysis_outputs()
         analysis_crew = RecordingCrew(
             task_raws=[outputs[0], json.dumps({"claims": []}), outputs[2]]
         )
-        report_crew = RecordingCrew("must not run")
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
 
         result, verdict = _run_valid_pipeline(analysis_crew, report_crew)
 
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["required_data"], ["risk_analysis_claims_required"])
+        self.assertEqual(result["status"], "ok")
         self.assertEqual(analysis_crew.kickoff_calls, 2)
-        self.assertEqual(report_crew.kickoff_calls, 0)
-        verdict.assert_not_called()
+        self.assertEqual(report_crew.kickoff_calls, 1)
+        verdict.assert_called_once()
+        self.assertIn(
+            "claim_risk_disclosure_ev_filing",
+            {claim["claim_id"] for claim in result["analysis"]},
+        )
 
     def test_missing_risk_sections_blocks_before_analysis_verdict_and_report(self):
         from stockcrewai.main import run_research
@@ -1349,7 +1367,7 @@ class AnalysisGateTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "analysis")
-        self.assertEqual(result["required_data"], ["risk_sections_required"])
+        self.assertEqual(result["required_data"], ["risk_evidence_missing"])
         self.assertIsNone(result["analysis"])
         self.assertIsNone(result["report"])
         self.assertEqual(analysis_crew.kickoff_calls, 0)
