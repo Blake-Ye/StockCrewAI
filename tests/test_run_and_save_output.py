@@ -52,6 +52,77 @@ class RunAndSaveOutputTests(unittest.TestCase):
             persisted["artifacts"]["report_bytes"], len(exported.encode("utf-8"))
         )
 
+    def test_finalize_leaves_pending_state_when_result_write_fails_after_report_replace(
+        self,
+    ):
+        from stockcrewai import run_output
+        from stockcrewai.run_output import CompactRunReporter
+
+        reporter = CompactRunReporter(io.StringIO())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "run-output.md"
+            result_path = Path(temp_dir) / "run-result.json"
+            reporter.finalize(
+                result={"status": "ok", "stage": "report", "report": "old"},
+                output_path=output_path,
+                result_path=result_path,
+                started_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 8, 9, 0, 1, tzinfo=timezone.utc),
+                exit_code=0,
+            )
+            old_persisted = json.loads(result_path.read_text(encoding="utf-8"))
+            real_atomic_write = run_output._atomic_write_text
+
+            def fail_final_result(path, text):
+                if (
+                    path == result_path
+                    and '"report_path": "investment-report.md"' in text
+                ):
+                    raise OSError("final result replace failed")
+                return real_atomic_write(path, text)
+
+            with (
+                patch.object(
+                    run_output,
+                    "_atomic_write_text",
+                    side_effect=fail_final_result,
+                ),
+                self.assertRaises(OSError),
+            ):
+                reporter.finalize(
+                    result={
+                        "status": "ok",
+                        "stage": "report",
+                        "report": "new",
+                    },
+                    output_path=output_path,
+                    result_path=result_path,
+                    started_at=datetime(2026, 8, 9, 0, 2, tzinfo=timezone.utc),
+                    finished_at=datetime(2026, 8, 9, 0, 3, tzinfo=timezone.utc),
+                    exit_code=0,
+                )
+
+            persisted = json.loads(result_path.read_text(encoding="utf-8"))
+            exported = output_path.with_name("investment-report.md").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(exported, "new\n")
+        self.assertEqual(persisted["report"], exported)
+        self.assertNotEqual(persisted["report"], old_persisted["report"])
+        artifacts = persisted["artifacts"]
+        self.assertEqual(artifacts["report_status"], "pending")
+        self.assertNotIn("report_path", artifacts)
+        self.assertNotIn("report_sha256", artifacts)
+        self.assertNotIn("report_bytes", artifacts)
+        pending = artifacts["pending_report"]
+        exported_bytes = exported.encode("utf-8")
+        self.assertEqual(pending["path"], "investment-report.md")
+        self.assertEqual(
+            pending["sha256"], hashlib.sha256(exported_bytes).hexdigest()
+        )
+        self.assertEqual(pending["bytes"], len(exported_bytes))
+
     def test_successful_run_output_names_report_without_including_body(self):
         from stockcrewai.main import cli
 

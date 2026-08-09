@@ -921,37 +921,75 @@ class CompactRunReporter:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.parent.mkdir(parents=True, exist_ok=True)
 
+        def write_result() -> None:
+            _atomic_write_text(
+                result_path,
+                json.dumps(
+                    persisted_result,
+                    ensure_ascii=False,
+                    indent=2,
+                    allow_nan=False,
+                )
+                + "\n",
+            )
+
         formal_report = None
         export_error = ""
         report_text = _formal_report_text(persisted_result)
         artifacts = persisted_result.get("artifacts")
         if isinstance(artifacts, dict):
-            for key in ("report_path", "report_sha256", "report_bytes"):
+            for key in (
+                "report_status",
+                "pending_report",
+                "report_error",
+                "report_path",
+                "report_sha256",
+                "report_bytes",
+            ):
                 artifacts.pop(key, None)
             if not artifacts:
                 persisted_result.pop("artifacts", None)
         if report_text is not None:
             persisted_result["report"] = report_text
+            report_bytes = report_text.encode("utf-8")
+            report_manifest = {
+                "path": "investment-report.md",
+                "sha256": hashlib.sha256(report_bytes).hexdigest(),
+                "bytes": len(report_bytes),
+            }
+            pending_artifacts = (
+                dict(persisted_result.get("artifacts", {}))
+                if isinstance(persisted_result.get("artifacts"), dict)
+                else {}
+            )
+            pending_artifacts.update(
+                {
+                    "report_status": "pending",
+                    "pending_report": report_manifest,
+                }
+            )
+            persisted_result["artifacts"] = pending_artifacts
+            write_result()
             try:
                 formal_report = _write_formal_report(persisted_result, output_path)
-            except Exception as exc:
+            except OSError as exc:
                 export_error = type(exc).__name__
+                pending_artifacts["report_status"] = "failed"
+                pending_artifacts["report_error"] = export_error
+                write_result()
             else:
-                report_bytes = report_text.encode("utf-8")
-                if formal_report is not None:
-                    manifest = (
-                        dict(persisted_result.get("artifacts", {}))
-                        if isinstance(persisted_result.get("artifacts"), dict)
-                        else {}
-                    )
-                    manifest.update(
-                        {
-                            "report_path": formal_report.name,
-                            "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
-                            "report_bytes": len(report_bytes),
-                        }
-                    )
-                    persisted_result["artifacts"] = manifest
+                if formal_report is None:
+                    raise RuntimeError("formal report was not written")
+                pending_artifacts.pop("pending_report", None)
+                pending_artifacts.update(
+                    {
+                        "report_status": "complete",
+                        "report_path": formal_report.name,
+                        "report_sha256": report_manifest["sha256"],
+                        "report_bytes": report_manifest["bytes"],
+                    }
+                )
+                write_result()
 
         report = summary.get("report")
         if isinstance(report, dict):
@@ -966,11 +1004,8 @@ class CompactRunReporter:
             elif export_error:
                 report["export_error"] = export_error
 
-        _atomic_write_text(
-            result_path,
-            json.dumps(persisted_result, ensure_ascii=False, indent=2, allow_nan=False)
-            + "\n",
-        )
+        if report_text is None:
+            write_result()
         _atomic_write_text(
             output_path,
             self._markdown(summary, result_path.name, started_at, finished_at, exit_code),
