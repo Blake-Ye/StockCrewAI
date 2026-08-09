@@ -206,26 +206,15 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
         axes.set_title(_FINANCIAL_KPI_TITLE)
         axes.grid(axis="x", alpha=0.25)
         axes.invert_yaxis()
-        for metric_id, bar, value in zip(_FINANCIAL_KPI_IDS, bars, values):
-            if metric_id == "cash_conversion":
-                axes.text(
-                    value - 0.5,
-                    bar.get_y() + bar.get_height() / 2,
-                    f"{value:.2f}%",
-                    va="center",
-                    ha="right",
-                    color="white",
-                    fontsize=8,
-                )
-            else:
-                axes.text(
-                    max(value + 0.5, 0.5) if value < 0 else value + 0.5,
-                    bar.get_y() + bar.get_height() / 2,
-                    f"{value:.2f}%",
-                    va="center",
-                    ha="left",
-                    fontsize=8,
-                )
+        for bar, value in zip(bars, values):
+            axes.text(
+                max(value + 0.5, 0.5) if value < 0 else value + 0.5,
+                bar.get_y() + bar.get_height() / 2,
+                f"{value:.2f}%",
+                va="center",
+                ha="left",
+                fontsize=8,
+            )
 
     return _png_uri(draw, size=(8.0, 4.2))
 

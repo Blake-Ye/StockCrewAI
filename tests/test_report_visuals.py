@@ -84,7 +84,7 @@ class ReportVisualsTests(unittest.TestCase):
         self.assertIsNotNone(builder, "必须提供 build_report_visuals")
         return builder
 
-    def test_financial_kpi_percentage_labels_use_safe_positions(self):
+    def test_financial_kpi_percentage_labels_render_outside_bars(self):
         module = importlib.import_module("stockcrewai.report_visuals")
         values = {
             "revenue_growth": 16.15,
@@ -153,9 +153,8 @@ class ReportVisualsTests(unittest.TestCase):
         }
 
         maximum_text, maximum_extent, maximum_bar = by_label["115.31%"]
-        self.assertGreaterEqual(maximum_extent.x0, maximum_bar.x0)
-        self.assertLessEqual(maximum_extent.x1, maximum_bar.x1)
-        self.assertEqual(maximum_text.get_color(), "white")
+        self.assertGreater(maximum_extent.x0, maximum_bar.x1)
+        self.assertEqual(maximum_text.get_color(), "black")
 
         negative_text, negative_extent, _ = by_label["-1.67%"]
         self.assertGreater(negative_extent.x0, rendered["zero_x"])
