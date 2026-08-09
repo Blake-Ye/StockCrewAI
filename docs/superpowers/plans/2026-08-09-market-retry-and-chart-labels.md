@@ -139,24 +139,23 @@ Generate one temporary first-chart PNG from the test records, visually confirm b
 - Consumes: Task 1 retry behavior and Task 2 unchanged visual data-URI contract.
 - Produces: evidence that the independent fixes coexist without changing gate semantics.
 
-- [ ] **Step 1: Run the full offline suite**
+- [x] **Step 1: Run the full offline suite**
 
 ```bash
 CREWAI_STORAGE_DIR=/private/tmp/stockcrewai-flow-storage CREWAI_TRACING_ENABLED=false OTEL_SDK_DISABLED=true MPLCONFIGDIR=/private/tmp/stockcrewai-matplotlib UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest discover -s tests -q
 ```
 
-- [ ] **Step 2: Run static checks**
+- [x] **Step 2: Run static checks**
 
 ```bash
 UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m compileall -q src tests
 git diff --check
 ```
 
-- [ ] **Step 3: Run one real flow for integration evidence**
+- [x] **Step 3: Run one real flow for integration evidence**
 
 ```bash
 CREWAI_STORAGE_DIR=/private/tmp/stockcrewai-flow-storage CREWAI_TRACING_ENABLED=false OTEL_SDK_DISABLED=true MPLCONFIGDIR=/private/tmp/stockcrewai-matplotlib UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync crewai run
 ```
 
 Accept `status=ok` as live success. If Yahoo remains unavailable after the configured retries, report the exact warning and fail-closed Gate result; do not alter the Gate or fabricate a report.
-

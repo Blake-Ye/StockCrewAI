@@ -38,4 +38,3 @@
 - `-1.67%` 与 `115.31%` 均完整位于第一张图坐标轴内。
 - `tests/test_market_price_tool.py`、`tests/test_report_visuals.py` 和全量离线测试通过。
 - 真实运行若外部 Yahoo 持续不可用，可以继续被 Gate 阻断；这属于正确的 fail-closed 行为。
-
