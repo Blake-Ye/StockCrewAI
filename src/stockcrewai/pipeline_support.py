@@ -13,13 +13,23 @@ import json
 import math
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 from typing import Any
 
 from stockcrewai.crews.analysis.crew import ANALYSIS_DOMAIN_RULES, AnalysisClaim
 from stockcrewai.crews.request_parser.crew import ParsedRequest, RequestParserCrew
+from stockcrewai.models.evidence import ValidationStatus
+from stockcrewai.models.policy import GateResult, PolicyDecision
+from stockcrewai.models.profile import ProfileResult
+from stockcrewai.pipelines.metric_registry import (
+    POLICY_VERSION,
+    evaluate_policy_decisions,
+    resolve_metric_policies,
+)
+from stockcrewai.pipelines.profile_registry import classify_profiles
 from stockcrewai.tools.edgar_tool import EdgarError, EdgarResult
 from stockcrewai.tools.historical_valuation_tool import (
     HISTORICAL_VALUATION_CALCULATION_ID,
@@ -28,6 +38,7 @@ from stockcrewai.tools.reverse_dcf_tool import REVERSE_DCF_CALCULATION_ID
 from stockcrewai.tools.validation_tool import sync_validation_status
 from stockcrewai.tools.verdict_tool import DeterministicVerdictTool
 from stockcrewai.tools.valuation_tool import VALUATION_FORMULAS
+from stockcrewai.validators.analysis_gate import evaluate_analysis_gate
 from pydantic import ValidationError
 
 
@@ -50,6 +61,227 @@ _SENSITIVE_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 _SENSITIVE_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def _profile_metadata_from_legacy(
+    profile: Mapping[str, Any] | None,
+    source_metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """把旧 profile 字段映射为 registry 的显式输入，不猜测缺失字段。"""
+    metadata = dict(source_metadata or {})
+    legacy = dict(profile or {})
+    issuer = legacy.get("issuer_profile", legacy.get("issuer_type"))
+    security = legacy.get("security_profile", legacy.get("security_type"))
+    reporting = legacy.get("reporting_profile")
+    issuer_aliases = {"operating_company": "standard_operating", "operating": "standard_operating"}
+    reporting_aliases = {"us_sec": "domestic_us_gaap", "us_gaap": "domestic_us_gaap"}
+    if issuer is not None:
+        metadata["sec_registrant_profile"] = issuer_aliases.get(str(issuer).lower(), issuer)
+    if security is not None:
+        metadata["sec_security_profile"] = security
+    if reporting is not None:
+        metadata["sec_reporting_profile"] = reporting_aliases.get(
+            str(reporting).lower(), reporting
+        )
+    evidence_ids = legacy.get("classification_evidence_ids")
+    if isinstance(evidence_ids, Sequence) and not isinstance(evidence_ids, (str, bytes, bytearray)):
+        metadata["classification_evidence_ids"] = list(evidence_ids)
+    return metadata
+
+
+def _profile_result(
+    profile: Mapping[str, Any] | ProfileResult | None,
+    source_metadata: Mapping[str, Any] | None,
+) -> ProfileResult:
+    if isinstance(profile, ProfileResult):
+        return profile
+    if isinstance(profile, Mapping) and profile:
+        try:
+            return ProfileResult.model_validate(profile)
+        except ValidationError:
+            pass
+    return classify_profiles(_profile_metadata_from_legacy(profile, source_metadata))
+
+
+def profile_metadata_from_edgar(edgar_result: Any) -> dict[str, Any]:
+    """提取 SEC/filing/security 元数据供 deterministic profile registry 使用。"""
+    payload = _json_safe(edgar_result)
+    if not isinstance(payload, Mapping):
+        return {}
+    metadata = {
+        key: payload[key]
+        for key in (
+            "sec_registrant_profile",
+            "sec_reporting_profile",
+            "sec_security_profile",
+            "sic",
+            "has_revenue",
+            "is_foreign_private_issuer",
+            "is_investment_company",
+            "security_type",
+            "security_class",
+            "recent_listing",
+            "listing_age_days",
+        )
+        if key in payload
+    }
+    filings = payload.get("filings", [])
+    if isinstance(filings, list):
+        metadata["filing_forms"] = [
+            filing.get("form")
+            for filing in filings
+            if isinstance(filing, Mapping) and filing.get("form")
+        ]
+    taxonomy: list[str] = []
+    facts = payload.get("facts", {})
+    if isinstance(facts, Mapping):
+        for fact in facts.values():
+            if isinstance(fact, Mapping) and isinstance(fact.get("taxonomy"), str):
+                taxonomy.append(fact["taxonomy"])
+    metadata["taxonomy"] = taxonomy
+    evidence_ids = [
+        fact.get("evidence_id")
+        for fact in facts.values()
+        if isinstance(fact, Mapping) and isinstance(fact.get("evidence_id"), str)
+    ] if isinstance(facts, Mapping) else []
+    if isinstance(filings, list):
+        evidence_ids.extend(
+            filing.get("evidence_id")
+            for filing in filings
+            if isinstance(filing, Mapping) and isinstance(filing.get("evidence_id"), str)
+        )
+    metadata["classification_evidence_ids"] = [item for item in evidence_ids if item]
+    return metadata
+
+
+def _policy_evidence_records(
+    facts: Mapping[str, Any] | None,
+    evidence_ids: Sequence[str] = (),
+) -> list[Any]:
+    records: list[Any] = []
+    seen: set[str] = set()
+    for raw_fact in (facts or {}).values():
+        if not isinstance(raw_fact, Mapping):
+            continue
+        evidence_id = raw_fact.get("evidence_id")
+        if not isinstance(evidence_id, str) or not evidence_id or evidence_id in seen:
+            continue
+        status = raw_fact.get("validation_status")
+        try:
+            status = ValidationStatus(status)
+        except ValueError:
+            status = ValidationStatus.UNVALIDATED
+        records.append(SimpleNamespace(evidence_id=evidence_id, validation_status=status))
+        seen.add(evidence_id)
+    for evidence_id in evidence_ids:
+        if isinstance(evidence_id, str) and evidence_id and evidence_id not in seen:
+            records.append(
+                SimpleNamespace(
+                    evidence_id=evidence_id,
+                    validation_status=ValidationStatus.VALID,
+                )
+            )
+            seen.add(evidence_id)
+    return records
+
+
+def _policy_calculation_records(
+    calculations: Any,
+    policies: Sequence[Any],
+) -> list[Any]:
+    if isinstance(calculations, Mapping):
+        calculations = calculations.get("calculations", [])
+    if not isinstance(calculations, Sequence) or isinstance(calculations, (str, bytes, bytearray)):
+        return []
+    formula_ids = {policy.metric_id: policy.formula_id for policy in policies}
+    records: list[Any] = []
+    for raw_calculation in calculations:
+        if not isinstance(raw_calculation, Mapping):
+            continue
+        calculation_id = raw_calculation.get("calculation_id")
+        input_evidence_ids = raw_calculation.get("input_evidence_ids", [])
+        formula_id = raw_calculation.get("formula_id")
+        if (
+            not isinstance(calculation_id, str)
+            or not calculation_id
+            or not isinstance(input_evidence_ids, list)
+            or not input_evidence_ids
+            or not isinstance(formula_id, str)
+        ):
+            continue
+        formula_id = formula_ids.get(formula_id, formula_id)
+        if not formula_id.endswith(":v1"):
+            continue
+        result = next(
+            (
+                raw_calculation.get(key)
+                for key in ("result", "raw_result", "normalized_result", "display_result")
+                if raw_calculation.get(key) not in (None, "")
+            ),
+            None,
+        )
+        if result is not None:
+            try:
+                result = Decimal(str(result))
+            except (InvalidOperation, TypeError, ValueError):
+                result = None
+        try:
+            status = ValidationStatus(raw_calculation.get("validation_status", "unvalidated"))
+        except ValueError:
+            status = ValidationStatus.UNVALIDATED
+        records.append(
+            SimpleNamespace(
+                calculation_id=calculation_id,
+                formula_id=formula_id,
+                input_evidence_ids=[item for item in input_evidence_ids if isinstance(item, str)],
+                result=result,
+                validation_status=status,
+            )
+        )
+    return records
+
+
+def _profile_policy_gate(
+    profile: ProfileResult,
+    decisions: Sequence[PolicyDecision],
+) -> GateResult:
+    """调用 WP02 的确定性 Analysis Gate；不从自然语言或 limitation 推断。"""
+    return evaluate_analysis_gate(profile, decisions)
+
+
+def build_profile_policy_context(
+    *,
+    profile: Mapping[str, Any] | ProfileResult | None = None,
+    source_metadata: Mapping[str, Any] | None = None,
+    facts: Mapping[str, Any] | None = None,
+    calculations: Any = None,
+    additional_evidence_ids: Sequence[str] = (),
+    additional_calculations: Any = None,
+) -> dict[str, Any]:
+    """构造 Flow 内唯一 JSON-safe 的 Profile/Policy/Gate 共享上下文。"""
+    profile_result = _profile_result(profile, source_metadata)
+    policies = resolve_metric_policies(profile_result)
+    calculation_values: list[Any] = []
+    for value in (calculations, additional_calculations):
+        if isinstance(value, Mapping):
+            value = value.get("calculations", [])
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            calculation_values.extend(value)
+    evidence = _policy_evidence_records(facts, additional_evidence_ids)
+    policy_records = _policy_calculation_records(calculation_values, policies)
+    decisions = evaluate_policy_decisions(policies, evidence, policy_records)
+    gate = _profile_policy_gate(profile_result, decisions)
+    return _json_safe(
+        {
+            "profile": profile_result.model_dump(mode="json"),
+            "coverage_level": profile_result.coverage_level.value,
+            "profile_registry_version": profile_result.registry_version,
+            "policies": [policy.model_dump(mode="json") for policy in policies],
+            "policy_decisions": [decision.model_dump(mode="json") for decision in decisions],
+            "policy_version": POLICY_VERSION,
+            "gate": gate.model_dump(mode="json"),
+        }
+    )
 
 
 class _NoopTaskOutputStorageHandler:
@@ -920,6 +1152,7 @@ def _financial_analysis_input(state: dict[str, Any]) -> dict[str, Any]:
         "validated_calculation_ids": list(
             state.get("validated_calculation_ids", [])
         ),
+        "policy_context": _json_safe(state.get("policy_context", {})),
     }
 
 
@@ -1009,6 +1242,7 @@ def _risk_analysis_input(
             for filing in filings
             if filing.get("evidence_id")
         ),
+        "policy_context": _json_safe(state.get("policy_context", {})),
     }
 
 
@@ -1146,6 +1380,7 @@ def _valuation_analysis_input(
         "reverse_dcf_result": _json_safe(reverse_dcf),
         "validated_evidence_ids": sorted(evidence_ids),
         "validated_calculation_ids": sorted(calculation_ids),
+        "policy_context": _json_safe(state.get("policy_context", {})),
     }
 
 
@@ -1183,6 +1418,21 @@ def build_deterministic_valuation_claims(
         return []
     evidence_allowlist = set(validated_evidence_ids)
     calculation_allowlist = set(validated_calculation_ids)
+    policy_context = valuation_input.get("policy_context")
+    policy_decisions = (
+        policy_context.get("policy_decisions")
+        if isinstance(policy_context, Mapping)
+        else None
+    )
+    if not isinstance(policy_decisions, list):
+        policy_decisions = []
+    not_applicable_metrics = {
+        decision.get("metric_id")
+        for decision in policy_decisions
+        if isinstance(decision, Mapping)
+        and decision.get("status") == "not_applicable"
+        and isinstance(decision.get("metric_id"), str)
+    }
 
     def evidence_ids_from(value: Any) -> list[str] | None:
         if not isinstance(value, list) or not value:
@@ -1216,6 +1466,8 @@ def build_deterministic_valuation_claims(
     ):
         for calculation in current_calculations:
             if not isinstance(calculation, Mapping):
+                continue
+            if calculation.get("formula_id") in not_applicable_metrics:
                 continue
             calculation_id = calculation.get("calculation_id")
             input_evidence_ids = evidence_ids_from(
@@ -1266,6 +1518,7 @@ def build_deterministic_valuation_claims(
         isinstance(historical_result, Mapping)
         and historical_result.get("status") == "ok"
         and historical_result.get("validation_status") == "valid"
+        and "historical_valuation" not in not_applicable_metrics
     ):
         historical_ids = auxiliary_ids(historical_result)
         if historical_ids is not None:
@@ -1302,6 +1555,7 @@ def build_deterministic_valuation_claims(
         isinstance(reverse_dcf_result, Mapping)
         and reverse_dcf_result.get("status") == "ok"
         and reverse_dcf_result.get("validation_status") == "valid"
+        and "reverse_dcf" not in not_applicable_metrics
         and not (
             reason_codes(reverse_dcf_result)
             & reverse_dcf_not_applicable_reasons
@@ -1826,6 +2080,7 @@ def _deterministic_verdict(
     historical_valuation: Mapping[str, Any] | None = None,
     reverse_dcf: Mapping[str, Any] | None = None,
     risk_input: Mapping[str, Any] | None = None,
+    policy_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """调用确定性 Verdict 工具生成 JSON 安全的决策状态。
 
@@ -1849,6 +2104,7 @@ def _deterministic_verdict(
         historical_valuation=dict(historical_valuation or {}),
         reverse_dcf=dict(reverse_dcf or {}),
         risk_input=dict(risk_input or {}),
+        policy_context=dict(policy_context or {}),
     )
     return _json_safe(result)
 

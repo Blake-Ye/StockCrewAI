@@ -1,0 +1,548 @@
+{
+  "fixture_version": "wp02-s03-profile-registry-v1",
+  "cases": {
+    "standard_operating": {
+      "source_metadata": {
+        "sec_registrant_profile": "standard_operating",
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": "3571",
+        "filing_forms": ["10-K", "10-Q"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": [
+          "ev_standard_sec",
+          "",
+          "  ",
+          17,
+          null,
+          " ev_standard_reporting "
+        ]
+      },
+      "expected": {
+        "issuer_profile": "standard_operating",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_standard_sec", "ev_standard_reporting"],
+        "reason_codes": [
+          "profile_classified_from_sec_metadata",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "bank_6020": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": 6020,
+        "filing_forms": ["10-K", "10-Q"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NYSE",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_bank_6020"],
+        "registry_version": "profile-registry:fixture-v2"
+      },
+      "expected": {
+        "issuer_profile": "bank",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_bank_6020"],
+        "reason_codes": [
+          "profile_classified_from_sic",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "bank_6022": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": "6022",
+        "filing_forms": ["10-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_bank_6022"]
+      },
+      "expected": {
+        "issuer_profile": "bank",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_bank_6022"],
+        "reason_codes": [
+          "profile_classified_from_sic",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "insurance_6300": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": "6300",
+        "filing_forms": ["10-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NYSE",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_insurance_6300"]
+      },
+      "expected": {
+        "issuer_profile": "insurance",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_insurance_6300"],
+        "reason_codes": [
+          "profile_classified_from_sic",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "insurance_6399": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": 6399,
+        "filing_forms": ["10-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NYSE",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_insurance_6399"]
+      },
+      "expected": {
+        "issuer_profile": "insurance",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_insurance_6399"],
+        "reason_codes": [
+          "profile_classified_from_sic",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "reit": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": "6798",
+        "filing_forms": ["10-K", "10-Q"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NYSE",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_reit"]
+      },
+      "expected": {
+        "issuer_profile": "reit",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_reit"],
+        "reason_codes": [
+          "profile_classified_from_sic",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "pre_revenue_boolean": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": "2834",
+        "filing_forms": ["10-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": false,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_pre_revenue_boolean"]
+      },
+      "expected": {
+        "issuer_profile": "pre_revenue",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_pre_revenue_boolean"],
+        "reason_codes": [
+          "profile_classified_from_sec_metadata",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "pre_revenue_sec": {
+      "source_metadata": {
+        "sec_registrant_profile": "pre_revenue",
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": "2834",
+        "filing_forms": ["10-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_pre_revenue_sec"]
+      },
+      "expected": {
+        "issuer_profile": "pre_revenue",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_pre_revenue_sec"],
+        "reason_codes": [
+          "profile_classified_from_sec_metadata",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "etf": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": ["N-1A"],
+        "taxonomy": ["investment_company"],
+        "security_type": "ETF",
+        "security_class": "etf",
+        "exchange": "NYSE Arca",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": true,
+        "has_revenue": null,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_etf_security"]
+      },
+      "expected": {
+        "issuer_profile": "unknown",
+        "security_profile": "unsupported_fund_security",
+        "reporting_profile": "investment_company_reporting",
+        "coverage_level": "unsupported_security",
+        "classification_evidence_ids": ["ev_etf_security"],
+        "reason_codes": [
+          "profile_classified_from_sec_metadata",
+          "profile_classified_from_security_metadata",
+          "unsupported_security"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "fund": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": ["N-1A"],
+        "taxonomy": ["mutual_fund"],
+        "security_type": "fund",
+        "security_class": "investment_company/fund",
+        "exchange": "",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": true,
+        "has_revenue": null,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_fund_security"]
+      },
+      "expected": {
+        "issuer_profile": "unknown",
+        "security_profile": "unsupported_fund_security",
+        "reporting_profile": "investment_company_reporting",
+        "coverage_level": "unsupported_security",
+        "classification_evidence_ids": ["ev_fund_security"],
+        "reason_codes": [
+          "profile_classified_from_sec_metadata",
+          "profile_classified_from_security_metadata",
+          "unsupported_security"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "utility": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": 4900,
+        "filing_forms": ["10-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NYSE",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_utility"]
+      },
+      "expected": {
+        "issuer_profile": "utility",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_utility"],
+        "reason_codes": [
+          "profile_classified_from_sic",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "commodity_producer": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": "1499",
+        "filing_forms": ["10-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NYSE",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_commodity"]
+      },
+      "expected": {
+        "issuer_profile": "commodity_producer",
+        "security_profile": "common_stock",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_commodity"],
+        "reason_codes": [
+          "profile_classified_from_sic",
+          "profile_classified_from_filing_metadata",
+          "profile_classified_from_security_metadata"
+        ],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "multi_class": {
+      "source_metadata": {
+        "sec_registrant_profile": "standard_operating",
+        "sec_reporting_profile": "domestic_us_gaap",
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": [],
+        "taxonomy": [],
+        "security_type": "common_stock",
+        "security_class": "multi_class",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_multi_class"]
+      },
+      "expected": {
+        "issuer_profile": "standard_operating",
+        "security_profile": "multi_class",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_multi_class"],
+        "reason_codes": ["profile_classified_from_sec_metadata", "profile_classified_from_security_metadata"],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "adr": {
+      "source_metadata": {
+        "sec_registrant_profile": "standard_operating",
+        "sec_reporting_profile": "foreign_private_issuer_ifrs",
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": ["20-F"],
+        "taxonomy": ["ifrs-full"],
+        "security_type": "ADR",
+        "security_class": "adr",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": true,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_adr"]
+      },
+      "expected": {
+        "issuer_profile": "standard_operating",
+        "security_profile": "adr",
+        "reporting_profile": "foreign_private_issuer_ifrs",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_adr"],
+        "reason_codes": ["profile_classified_from_sec_metadata", "profile_classified_from_security_metadata"],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "spac": {
+      "source_metadata": {
+        "sec_registrant_profile": "pre_revenue",
+        "sec_reporting_profile": "domestic_us_gaap",
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": [],
+        "taxonomy": [],
+        "security_type": "SPAC",
+        "security_class": "spac",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": false,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_spac"]
+      },
+      "expected": {
+        "issuer_profile": "pre_revenue",
+        "security_profile": "spac",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_spac"],
+        "reason_codes": ["profile_classified_from_sec_metadata", "profile_classified_from_security_metadata"],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "recent_listing": {
+      "source_metadata": {
+        "sec_registrant_profile": "standard_operating",
+        "sec_reporting_profile": "domestic_us_gaap",
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": [],
+        "taxonomy": [],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NASDAQ",
+        "is_foreign_private_issuer": false,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": true,
+        "listing_age_days": 30,
+        "classification_evidence_ids": ["ev_recent_listing"]
+      },
+      "expected": {
+        "issuer_profile": "standard_operating",
+        "security_profile": "recent_listing",
+        "reporting_profile": "domestic_us_gaap",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_recent_listing"],
+        "reason_codes": ["profile_classified_from_sec_metadata", "profile_classified_from_security_metadata"],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "foreign_private_issuer": {
+      "source_metadata": {
+        "sec_registrant_profile": "standard_operating",
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": ["20-F", "6-K"],
+        "taxonomy": ["ifrs-full"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "exchange": "NYSE",
+        "is_foreign_private_issuer": true,
+        "is_investment_company": false,
+        "has_revenue": true,
+        "recent_listing": false,
+        "classification_evidence_ids": ["ev_fpi"]
+      },
+      "expected": {
+        "issuer_profile": "standard_operating",
+        "security_profile": "common_stock",
+        "reporting_profile": "foreign_private_issuer_ifrs",
+        "coverage_level": "full",
+        "classification_evidence_ids": ["ev_fpi"],
+        "reason_codes": ["profile_classified_from_sec_metadata", "profile_classified_from_filing_metadata", "profile_classified_from_security_metadata"],
+        "registry_version": "profile-registry:v1"
+      }
+    },
+    "unknown_empty": {
+      "source_metadata": {
+        "sec_registrant_profile": null,
+        "sec_reporting_profile": null,
+        "sec_security_profile": null,
+        "sic": null,
+        "filing_forms": [],
+        "taxonomy": [],
+        "security_type": null,
+        "security_class": null,
+        "exchange": null,
+        "is_foreign_private_issuer": null,
+        "is_investment_company": null,
+        "has_revenue": null,
+        "recent_listing": null,
+        "classification_evidence_ids": []
+      },
+      "expected": {
+        "issuer_profile": "unknown",
+        "security_profile": "unknown",
+        "reporting_profile": "unknown",
+        "coverage_level": "evidence_only",
+        "classification_evidence_ids": [],
+        "reason_codes": ["profile_classification_unavailable"],
+        "registry_version": "profile-registry:v1"
+      }
+    }
+  }
+}

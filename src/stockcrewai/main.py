@@ -22,7 +22,7 @@ from typing import Any, ClassVar
 
 from crewai.flow.flow import Flow, listen, router, start
 from crewai.flow.persistence import persist
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 
 import stockcrewai.pipeline_support as pipeline_support
 from stockcrewai.crews.analysis.crew import AnalysisCrew
@@ -72,6 +72,8 @@ from stockcrewai.pipeline_support import (
     sync_validation_status,
 )
 from stockcrewai.run_output import CompactRunReporter, RunStageEvent, sanitize_text
+from stockcrewai.models.policy import PolicyDecision
+from stockcrewai.models.profile import ProfileResult
 from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
 from stockcrewai.tools.edgar_tool import EdgarError, EdgarResult, EdgarTool  # noqa: F401
 from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
@@ -184,6 +186,7 @@ class ResearchFlowState(BaseModel):
 
     request: str = ""
     profile: dict[str, Any] = Field(default_factory=dict)
+    policy_context: dict[str, Any] = Field(default_factory=dict)
     parsed_request: dict[str, Any] = Field(default_factory=dict)
     input_requirements: dict[str, Any] = Field(default_factory=dict)
     edgar: dict[str, Any] = Field(default_factory=dict)
@@ -618,7 +621,33 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self._calculation_result = calculation_result
         self._validation_result = validation_result
         self._pipeline_state = _json_safe(pipeline_state)
-        self._pipeline_state["profile"] = _json_safe(self.state.profile)
+        profile_payload = _json_safe(self.state.profile)
+        explicit_profile = (
+            profile_payload
+            if isinstance(profile_payload, Mapping) and profile_payload
+            else None
+        )
+        profile_metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
+        policy_context = pipeline_support.build_profile_policy_context(
+            profile=explicit_profile,
+            source_metadata=profile_metadata,
+            facts=self._pipeline_state.get("facts", {}),
+            calculations=self._pipeline_state.get("calculations", []),
+        )
+        policy_context = _json_safe(policy_context)
+        if not isinstance(policy_context, dict):
+            raise TypeError("profile policy context 必须是 JSON-safe 映射")
+        policy_context["policy_activation"] = (
+            "explicit_profile"
+            if explicit_profile is not None
+            else "sec_metadata"
+            if policy_context.get("policies")
+            else "legacy_analysis_gate"
+        )
+        self.state.profile = _json_safe(policy_context.get("profile", {}))
+        self.state.policy_context = policy_context
+        self._pipeline_state["profile"] = self.state.profile
+        self._pipeline_state["policy_context"] = policy_context
         self._risk_input = _json_safe(
             _risk_analysis_input(edgar_result, self._pipeline_state)
         )
@@ -878,15 +907,83 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 gate_state["profile"] = profile
                 for key, value in profile.items():
                     gate_state.setdefault(key, value)
-            gate = _analysis_gate(
-                self._validation_result,
-                gate_state,
-                self._risk_input,
-                dict(valuation or self.state.valuation),
-                self.state.historical_valuation,
-                self.state.reverse_dcf,
+            policy_context = gate_state.get("policy_context")
+            policy_activation = (
+                policy_context.get("policy_activation")
+                if isinstance(policy_context, Mapping)
+                else None
             )
-        if gate.get("status") == "blocked":
+            active_policy_context = (
+                policy_context if isinstance(policy_context, Mapping) else {}
+            )
+            use_profile_policy = policy_activation in {
+                "explicit_profile",
+                "sec_metadata",
+            }
+            if (
+                policy_activation is None
+                and isinstance(policy_context, Mapping)
+                and isinstance(policy_context.get("profile"), Mapping)
+                and isinstance(policy_context.get("policy_decisions"), list)
+                and isinstance(policy_context.get("policy_version"), str)
+            ):
+                # 保留直接注入完整 policy context 的旧集成调用方式。
+                use_profile_policy = True
+            if use_profile_policy:
+                try:
+                    profile_result = ProfileResult.model_validate(
+                        active_policy_context.get("profile")
+                    )
+                    decisions_payload = active_policy_context.get("policy_decisions")
+                    if not isinstance(decisions_payload, list):
+                        raise ValueError("policy_decisions must be a list")
+                    decisions = tuple(
+                        PolicyDecision.model_validate(decision)
+                        for decision in decisions_payload
+                    )
+                    profile_gate = pipeline_support._profile_policy_gate(
+                        profile_result,
+                        decisions,
+                    )
+                    gate = profile_gate.model_dump(mode="json")
+                    normalized_context = dict(active_policy_context)
+                    normalized_context["profile"] = profile_result.model_dump(
+                        mode="json"
+                    )
+                    normalized_context["gate"] = gate
+                    self.state.profile = normalized_context["profile"]
+                    self.state.policy_context = _json_safe(normalized_context)
+                    self._pipeline_state["profile"] = self.state.profile
+                    self._pipeline_state["policy_context"] = self.state.policy_context
+                except (TypeError, ValueError, ValidationError):
+                    gate = {
+                        "status": "blocked",
+                        "required_data": ["invalid_profile_policy_context"],
+                    }
+            else:
+                gate = _analysis_gate(
+                    self._validation_result,
+                    gate_state,
+                    self._risk_input,
+                    dict(valuation or self.state.valuation),
+                    self.state.historical_valuation,
+                    self.state.reverse_dcf,
+                )
+            if "blocking_decisions" in gate and gate.get("status") != "ready":
+                required_data = [
+                    f"{decision.get('metric_id')}:{decision.get('reason_code')}"
+                    for decision in gate.get("blocking_decisions", [])
+                    if isinstance(decision, Mapping)
+                    and decision.get("metric_id")
+                    and decision.get("reason_code")
+                ]
+                gate["required_data"] = required_data or [
+                    f"profile_policy_gate_{gate.get('status', 'blocked')}"
+                ]
+        profile_gate_blocked = (
+            "blocking_decisions" in gate and gate.get("status") != "ready"
+        )
+        if gate.get("status") == "blocked" or profile_gate_blocked:
             self.state.status = "blocked"
             self.state.stage = "request" if self._parser_failed else "analysis"
             self.state.required_data = list(gate.get("required_data", []))
@@ -1214,6 +1311,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             historical_valuation=self.state.historical_valuation,
             reverse_dcf=self.state.reverse_dcf,
             risk_input=verdict_risk_input,
+            policy_context=self.state.policy_context,
         )
         source_metadata = {
             "facts": {
@@ -1332,6 +1430,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             reverse_dcf=self.state.reverse_dcf,
             ttm=self.state.ttm,
             source_metadata=source_metadata,
+            policy_context=self.state.policy_context,
         )
         report_inputs = {"narrative_context": build_narrative_context(report_context)}
         self.state.verdict = _json_safe(verdict)
@@ -1576,8 +1675,11 @@ def run_research(
     deterministic_outputs = {
         key: result.get(key) for key in deterministic_keys
     }
-    if result.get("profile"):
-        deterministic_outputs["profile"] = result["profile"]
+    if profile_payload:
+        if result.get("profile"):
+            deterministic_outputs["profile"] = result["profile"]
+        if result.get("policy_context"):
+            deterministic_outputs["policy_context"] = result["policy_context"]
 
     if result.get("required_data") == ["invalid_parser_output"]:
         parsed_request = result.get("parsed_request")

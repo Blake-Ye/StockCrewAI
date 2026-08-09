@@ -349,6 +349,9 @@ class ReportContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     company: dict[str, Any] = Field(default_factory=dict)
+    profile: dict[str, Any] | None = None
+    coverage_level: StrictStr | None = None
+    policy_version: StrictStr | None = None
     claims: list[dict[str, Any]] = Field(default_factory=list)
     verdict_status: StrictStr
     metrics: list[ReportMetric] = Field(default_factory=list)
@@ -715,6 +718,7 @@ def build_report_context(
     historical_valuation: Mapping[str, Any] | None = None,
     reverse_dcf: Mapping[str, Any] | None = None,
     source_metadata: Mapping[str, Any] | None = None,
+    policy_context: Mapping[str, Any] | None = None,
     # 这两个别名只用于兼容早期离线调用，不改变规范化输出结构。
     company_name: Any = None,
     ticker: Any = None,
@@ -737,9 +741,20 @@ def build_report_context(
         }
     verdict_payload = dict(deterministic_verdict or {})
     source_payload = dict(source_metadata or {})
+    policy_payload = dict(policy_context or {})
     valuation_payload = dict(valuation or {})
     historical_payload = dict(historical_valuation or {})
     reverse_payload = dict(reverse_dcf or {})
+    policy_decisions = policy_payload.get("policy_decisions")
+    if not isinstance(policy_decisions, list):
+        policy_decisions = []
+    not_applicable_metrics = {
+        decision.get("metric_id")
+        for decision in policy_decisions
+        if isinstance(decision, Mapping)
+        and decision.get("status") == "not_applicable"
+        and isinstance(decision.get("metric_id"), str)
+    }
     calculation_payload = calculations if calculations is not None else financial_calculations
     ttm_payload = ttm if ttm is not None else source_payload.get("ttm")
 
@@ -774,18 +789,26 @@ def build_report_context(
     # 当前估值作为一个完整组处理：任一可用计算缺少直接行情来源时，
     # 整组不展示，避免只展示价格却把不完整的 P/E/FCF Yield 误认为同批结果。
     valuation_calculations = _calculation_items(valuation_payload)
-    valuation_ready = (
+    applicable_valuation_calculations = [
+        calculation
+        for calculation in valuation_calculations
+        if calculation.get("formula_id") not in not_applicable_metrics
+    ]
+    valuation_base_ready = (
         valuation_payload.get("validation_status") == "valid"
         and valuation_payload.get("readiness") == "ready"
-        and bool(valuation_calculations)
+    )
+    valuation_ready = (
+        valuation_base_ready
+        and bool(applicable_valuation_calculations)
         and all(
             item.get("status") == "available"
             and item.get("validation_status") == "valid"
             and _text(item.get("source_reference"))
-            for item in valuation_calculations
+            for item in applicable_valuation_calculations
         )
     )
-    if valuation_ready:
+    if valuation_ready or (not_applicable_metrics and valuation_base_ready):
         market_metric = _metric_from_payload(
             section="current_valuation",
             metric_id="market_price",
@@ -797,9 +820,9 @@ def build_report_context(
             direct_source=valuation_payload.get("source_reference"),
             direct_as_of=(valuation_payload.get("price_timestamp"),),
         )
-        if market_metric is not None:
+        if market_metric is not None and "market_price" not in not_applicable_metrics:
             metrics.append(market_metric)
-        for calculation in valuation_calculations:
+        for calculation in applicable_valuation_calculations if valuation_ready else []:
             metric = _metric_from_payload(
                 section="current_valuation",
                 metric_id=calculation.get("formula_id"),
@@ -826,6 +849,7 @@ def build_report_context(
         and historical_payload.get("validation_status") == "valid"
         and bool(historical_calculation_id)
         and bool(historical_ids)
+        and "historical_valuation" not in not_applicable_metrics
     )
     selected_dates = historical_payload.get("selected_dates", [])
     selected_date_values = (
@@ -868,6 +892,7 @@ def build_report_context(
         and reverse_payload.get("validation_status") == "valid"
         and reverse_calculation_id
         and reverse_ids
+        and "reverse_dcf" not in not_applicable_metrics
     ):
         metric = _metric_from_payload(
             section="reverse_dcf",
@@ -883,8 +908,21 @@ def build_report_context(
         if metric is not None:
             metrics.append(metric)
 
+    policy_profile = policy_payload.get("profile")
+    policy_fields: dict[str, Any] = {}
+    if policy_payload:
+        if isinstance(policy_profile, Mapping):
+            policy_fields["profile"] = _json_safe_context(policy_profile)
+        coverage_level = _text(policy_payload.get("coverage_level"))
+        if coverage_level:
+            policy_fields["coverage_level"] = coverage_level
+        policy_version = _text(policy_payload.get("policy_version"))
+        if policy_version:
+            policy_fields["policy_version"] = policy_version
+
     context = ReportContext(
         company=_json_safe_context(company_payload),
+        **policy_fields,
         claims=_json_safe_context(claims),
         verdict_status=verdict_status,
         metrics=metrics,
@@ -897,10 +935,22 @@ def build_report_context(
             }
         ),
         ttm=_verified_ttm_context(ttm_payload),
-        historical_valuation=_historical_visual_context(historical_payload),
-        reverse_dcf=_verified_reverse_dcf_context(reverse_payload),
+        historical_valuation=(
+            {}
+            if "historical_valuation" in not_applicable_metrics
+            else _historical_visual_context(historical_payload)
+        ),
+        reverse_dcf=(
+            {}
+            if "reverse_dcf" in not_applicable_metrics
+            else _verified_reverse_dcf_context(reverse_payload)
+        ),
     )
-    return context.model_dump(mode="json")
+    context_payload = context.model_dump(mode="json")
+    if not policy_payload:
+        for key in ("profile", "coverage_level", "policy_version"):
+            context_payload.pop(key, None)
+    return context_payload
 
 
 def build_narrative_context(
@@ -976,6 +1026,9 @@ def build_narrative_context(
         "counts": counts,
         "available_sections": available_sections,
     }
+    for key in ("profile", "coverage_level", "policy_version"):
+        if key in report_context and report_context[key] is not None:
+            narrative[key] = _json_safe_context(report_context[key])
     def _size() -> int:
         return len(json.dumps(narrative, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     while _size() > max_bytes:
@@ -1351,6 +1404,28 @@ def _render_report_from_context(
                     "",
                 )
             )
+            profile = context_payload.get("profile", {})
+            if isinstance(profile, Mapping):
+                profile_values = {
+                    key: _text(profile.get(key))
+                    for key in ("issuer_profile", "security_profile", "reporting_profile")
+                }
+                profile_values = {
+                    key: value for key, value in profile_values.items() if value
+                }
+                if profile_values:
+                    sections.append(
+                        "Profile："
+                        + "; ".join(
+                            f"{key.removesuffix('_profile')}={value}"
+                            for key, value in profile_values.items()
+                        )
+                    )
+            if coverage_level := _text(context_payload.get("coverage_level")):
+                sections.append(f"覆盖范围：{coverage_level}")
+            if policy_version := _text(context_payload.get("policy_version")):
+                sections.append(f"Policy version：{policy_version}")
+            sections.append("")
             if chart := _visual_markdown(visuals, "financial_kpis", "核心财务指标"):
                 sections.extend(
                     (

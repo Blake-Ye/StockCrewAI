@@ -39,14 +39,15 @@ WP01 在 `src/stockcrewai/models/` 中冻结共享 Pydantic 模型。以下字�
 
 | 模型 | 字段 | 类型与约束 |
 | --- | --- | --- |
-| `CompanyIdentity` | `company_name` | 非空字符串；去除首尾空白后长度至少为 1 |
-|  | `ticker` | 非空字符串；去除首尾空白后长度至少为 1 |
-|  | `cik` | 非空字符串；去除首尾空白后长度至少为 1 |
-|  | `exchange` | 非空字符串；去除首尾空白后长度至少为 1 |
-|  | `security_type` | 非空字符串；去除首尾空白后长度至少为 1 |
-|  | `source_reference` | 非空字符串；去除首尾空白后长度至少为 1 |
+| `CompanyIdentity` | `company_name` | 非空字符串或 `None`；字符串去除首尾空白后长度至少为 1 |
+|  | `ticker` | 非空字符串或 `None`；字符串去除首尾空白后长度至少为 1 |
+|  | `cik` | 非空字符串或 `None`；字符串去除首尾空白后长度至少为 1 |
+|  | `exchange` | 非空字符串或 `None`；字符串去除首尾空白后长度至少为 1 |
+|  | `security_type` | 非空字符串或 `None`；字符串去除首尾空白后长度至少为 1 |
+|  | `source_reference` | 非空字符串或 `None`；字符串去除首尾空白后长度至少为 1 |
 |  | `status` | `resolved`、`ambiguous`、`unsupported` 或 `unavailable` |
 |  | `reason_code` | 非空字符串；去除首尾空白后长度至少为 1 |
+
 | `ParsedResearchRequest` | `company_mention` | 非空字符串；去除首尾空白后长度至少为 1 |
 |  | `company_name_guess` | 非空字符串或 `None` |
 |  | `ticker_guess` | 非空字符串或 `None` |
@@ -57,6 +58,8 @@ WP01 在 `src/stockcrewai/models/` 中冻结共享 Pydantic 模型。以下字�
 |  | `language` | 非空字符串；去除首尾空白后长度至少为 1 |
 |  | `confidence` | `StrictFloat`，范围为 0 到 1（含边界） |
 | `ParsedRequest` | 与 `ParsedResearchRequest` 相同的九个字段 | 兼容类型；不接入现有 Request Parser Crew |
+
+六个身份字段均只能是非空字符串或 `None`。`status=resolved` 时，六个字段必须全部存在；`ambiguous`、`unsupported` 或 `unavailable` 只保留已知字段，缺失字段使用 `null`，不得使用 `unknown` 或 `unavailable` 作为字段占位值。
 
 ### 5.2 Profile/Policy
 

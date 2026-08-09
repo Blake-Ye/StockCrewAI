@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 
 
 VERDICT_RULES_VERSION = "v1"
+_CURRENT_VALUATION_METRICS = frozenset(
+    {"market_cap", "market_capitalization", "pe_ratio", "fcf_yield"}
+)
 
 
 class VerdictToolInput(BaseModel):
@@ -16,6 +19,7 @@ class VerdictToolInput(BaseModel):
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
     risk_input: dict[str, Any] = Field(default_factory=dict)
+    policy_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class VerdictResult(BaseModel):
@@ -72,35 +76,98 @@ class DeterministicVerdictTool(BaseTool):
         historical_valuation: dict[str, Any] | None = None,
         reverse_dcf: dict[str, Any] | None = None,
         risk_input: dict[str, Any] | None = None,
+        policy_context: dict[str, Any] | None = None,
     ) -> VerdictResult:
         valuation = valuation or {}
         historical_valuation = historical_valuation or {}
         reverse_dcf = reverse_dcf or {}
         risk_input = risk_input or {}
+        policy_context = policy_context or {}
         reasons: list[str] = []
-        required = (
-            ("validation_status", validation_status == "valid"),
-            (
-                "valuation",
-                valuation.get("readiness") == "ready"
-                and valuation.get("validation_status") == "valid",
-            ),
-            (
-                "historical_valuation",
-                historical_valuation.get("status") == "ok"
-                and historical_valuation.get("validation_status") == "valid",
-            ),
-            (
-                "reverse_dcf",
-                reverse_dcf.get("status") == "ok"
-                and reverse_dcf.get("validation_status") == "valid",
-            ),
-            (
-                "risk_input",
-                risk_input.get("status") == "available"
-                and risk_input.get("risk_level") in {"low", "medium", "high"},
-            ),
+        policy_decisions = policy_context.get("policy_decisions", [])
+        if not isinstance(policy_decisions, list):
+            policy_decisions = []
+        policy_aware = (
+            isinstance(policy_context.get("policy_version"), str)
+            and bool(policy_context["policy_version"].strip())
+            and isinstance(policy_context.get("policy_decisions"), list)
         )
+        not_applicable_metrics = {
+            decision.get("metric_id")
+            for decision in policy_decisions
+            if policy_aware
+            and isinstance(decision, dict)
+            and decision.get("status") == "not_applicable"
+            and isinstance(decision.get("metric_id"), str)
+        }
+        if policy_aware:
+            blocking_metrics = {
+                decision.get("metric_id")
+                for decision in policy_decisions
+                if isinstance(decision, dict)
+                and decision.get("blocking") is True
+                and decision.get("status") != "not_applicable"
+                and isinstance(decision.get("metric_id"), str)
+            }
+            current_valuation_required = bool(
+                blocking_metrics & _CURRENT_VALUATION_METRICS
+            )
+            required = (
+                ("validation_status", validation_status == "valid"),
+                (
+                    "valuation",
+                    not current_valuation_required
+                    or (
+                        valuation.get("readiness") == "ready"
+                        and valuation.get("validation_status") == "valid"
+                    ),
+                ),
+                (
+                    "historical_valuation",
+                    "historical_valuation" not in blocking_metrics
+                    or (
+                        historical_valuation.get("status") == "ok"
+                        and historical_valuation.get("validation_status") == "valid"
+                    ),
+                ),
+                (
+                    "reverse_dcf",
+                    "reverse_dcf" not in blocking_metrics
+                    or (
+                        reverse_dcf.get("status") == "ok"
+                        and reverse_dcf.get("validation_status") == "valid"
+                    ),
+                ),
+                (
+                    "risk_input",
+                    risk_input.get("status") == "available"
+                    and risk_input.get("risk_level") in {"low", "medium", "high"},
+                ),
+            )
+        else:
+            required = (
+                ("validation_status", validation_status == "valid"),
+                (
+                    "valuation",
+                    valuation.get("readiness") == "ready"
+                    and valuation.get("validation_status") == "valid",
+                ),
+                (
+                    "historical_valuation",
+                    historical_valuation.get("status") == "ok"
+                    and historical_valuation.get("validation_status") == "valid",
+                ),
+                (
+                    "reverse_dcf",
+                    reverse_dcf.get("status") == "ok"
+                    and reverse_dcf.get("validation_status") == "valid",
+                ),
+                (
+                    "risk_input",
+                    risk_input.get("status") == "available"
+                    and risk_input.get("risk_level") in {"low", "medium", "high"},
+                ),
+            )
         for name, ready in required:
             if not ready:
                 reasons.append(f"{name} unavailable or unvalidated")
@@ -112,11 +179,24 @@ class DeterministicVerdictTool(BaseTool):
                 reasons=reasons,
             )
 
-        pe = _calculation_value(valuation, "pe_ratio")
-        fcf_yield = _calculation_value(valuation, "fcf_yield")
-        percentile = _decimal(historical_valuation.get("current_percentile"))
+        pe = (
+            None
+            if "pe_ratio" in not_applicable_metrics
+            else _calculation_value(valuation, "pe_ratio")
+        )
+        fcf_yield = (
+            None
+            if "fcf_yield" in not_applicable_metrics
+            else _calculation_value(valuation, "fcf_yield")
+        )
+        percentile = (
+            None
+            if "historical_valuation" in not_applicable_metrics
+            else _decimal(historical_valuation.get("current_percentile"))
+        )
         risk_level = str(risk_input["risk_level"])
         triggered_rules: list[str] = []
+        overall: Literal["attractive", "reasonable", "watchlist", "expensive"]
         if risk_level == "high":
             overall = "watchlist"
             triggered_rules.append("high_risk_watchlist")

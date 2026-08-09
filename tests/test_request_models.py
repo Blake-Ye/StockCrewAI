@@ -89,6 +89,61 @@ def test_company_identity_rejects_unknown_fields_and_invalid_status() -> None:
         CompanyIdentity.model_validate(payload)
 
 
+def test_company_identity_allows_missing_fields_for_unavailable() -> None:
+    identity = CompanyIdentity(
+        status="unavailable",
+        reason_code="identity_unavailable",
+    )
+
+    assert identity.company_name is None
+    assert identity.ticker is None
+    assert identity.cik is None
+    assert identity.exchange is None
+    assert identity.security_type is None
+    assert identity.source_reference is None
+
+
+def test_company_identity_resolved_requires_all_identity_fields() -> None:
+    payload = {
+        "company_name": None,
+        "ticker": None,
+        "cik": None,
+        "exchange": None,
+        "security_type": None,
+        "source_reference": None,
+        "status": "resolved",
+        "reason_code": "sec_exact_match",
+    }
+
+    with pytest.raises(ValidationError, match="resolved"):
+        CompanyIdentity.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["company_name", "ticker", "cik", "exchange", "security_type", "source_reference"],
+)
+@pytest.mark.parametrize("value", ["unknown", "unavailable"])
+def test_company_identity_rejects_pseudo_missing_identity_values(
+    field: str,
+    value: str,
+) -> None:
+    payload = {
+        "company_name": None,
+        "ticker": None,
+        "cik": None,
+        "exchange": None,
+        "security_type": None,
+        "source_reference": None,
+        "status": "unavailable",
+        "reason_code": "identity_unavailable",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError, match="placeholder"):
+        CompanyIdentity.model_validate(payload)
+
+
 def test_parsed_research_request_accepts_current_nine_field_payload() -> None:
     request = ParsedResearchRequest.model_validate(PARSER_PAYLOAD)
 
