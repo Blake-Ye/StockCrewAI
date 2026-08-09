@@ -1,0 +1,71 @@
+{
+  "fixture_version": "1",
+  "fixture_kind": "negative",
+  "agent_id": "ReportWriterAgent",
+  "task_id": "generate_validated_report_task",
+  "prompt_version": "report_prompt_v1",
+  "schema_version": "report_draft_v1",
+  "input": {
+    "accepted_claim_ids": ["claim_accepted_001"]
+  },
+  "expected": {
+    "output": {
+      "execution_summary": "研究范围由已验证输入限定。",
+      "company_quality": "公司质量叙述来自已验证事实。",
+      "financial_trend": "财务趋势叙述来自已验证事实。",
+      "current_valuation": "当前估值叙述由确定性数据支撑。",
+      "historical_valuation": "历史估值叙述由确定性数据支撑。",
+      "reverse_dcf": "反向现金流折现叙述由确定性数据支撑。",
+      "key_risks": "主要风险叙述来自已验证事实。",
+      "sources_and_method": "来源与方法由确定性流程提供。",
+      "non_investment_disclaimer": "本文不构成、不提供也不代表任何投资建议。"
+    },
+    "required_sections": [
+      "execution_summary",
+      "company_quality",
+      "financial_trend",
+      "current_valuation",
+      "historical_valuation",
+      "reverse_dcf",
+      "key_risks",
+      "sources_and_method",
+      "non_investment_disclaimer"
+    ],
+    "report_claim_ids": ["claim_accepted_001"],
+    "numeric_values": {"operating_margin": "0.336"}
+  },
+  "actual": {
+    "output": {
+      "execution_summary": "研究范围由已验证输入限定。",
+      "company_quality": "公司质量叙述来自已验证事实。",
+      "financial_trend": "财务趋势叙述来自已验证事实。",
+      "current_valuation": "当前估值叙述由确定性数据支撑。",
+      "historical_valuation": "历史估值叙述由确定性数据支撑。",
+      "reverse_dcf": "反向现金流折现叙述由确定性数据支撑。",
+      "key_risks": "主要风险叙述来自已验证事实。",
+      "sources_and_method": "来源与方法由确定性流程提供。",
+      "non_investment_disclaimer": "本文不构成、不提供也不代表任何投资建议。"
+    },
+    "required_sections": [
+      "execution_summary",
+      "company_quality",
+      "financial_trend",
+      "current_valuation",
+      "historical_valuation",
+      "reverse_dcf",
+      "key_risks",
+      "sources_and_method",
+      "non_investment_disclaimer"
+    ],
+    "report_claim_ids": ["claim_rejected_001", "claim_new_001"],
+    "numeric_values": {"operating_margin": "0.336"},
+    "policy_violations": {
+      "investment_advice": true,
+      "injection_bypass": true
+    }
+  },
+  "accepted_evidence_ids": [],
+  "accepted_calculation_ids": [],
+  "accepted_claim_ids": ["claim_accepted_001"],
+  "rejected_claim_ids": ["claim_rejected_001"]
+}

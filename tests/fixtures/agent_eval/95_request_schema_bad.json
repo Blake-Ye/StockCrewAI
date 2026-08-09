@@ -1,0 +1,43 @@
+{
+  "fixture_version": "1",
+  "fixture_kind": "negative",
+  "agent_id": "RequestParserAgent",
+  "task_id": "parse_investment_request_task",
+  "prompt_version": "request_parser_prompt_v1",
+  "schema_version": "parsed_request_v1",
+  "input": {
+    "request": "请分析 Acme Corp。"
+  },
+  "expected": {
+    "output": {
+      "company_mention": "Acme Corp",
+      "company_name_guess": "Acme Corp",
+      "ticker_guess": null,
+      "exchange_guess": null,
+      "request_type": "investment_research",
+      "investment_horizon": null,
+      "requested_focus": [],
+      "language": "zh-CN",
+      "confidence": 0.7
+    },
+    "numeric_values": {}
+  },
+  "actual": {
+    "output": {
+      "company_mention": "Acme Corp",
+      "company_name_guess": "Acme Corp",
+      "ticker_guess": null,
+      "exchange_guess": null,
+      "request_type": "investment_research",
+      "investment_horizon": null,
+      "requested_focus": [],
+      "confidence": 0.7,
+      "untrusted": "extra field"
+    },
+    "numeric_values": {}
+  },
+  "accepted_evidence_ids": [],
+  "accepted_calculation_ids": [],
+  "accepted_claim_ids": [],
+  "rejected_claim_ids": []
+}
