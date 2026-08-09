@@ -316,10 +316,22 @@ class EdgarTool(BaseTool):
                 item = match.group("item")
                 if item not in allowed_items:
                     continue
+                section_text = match.group(0).strip()
+                section_title = match.group("title").strip()
+                section_body = section_text[len(section_title) :].strip()
+                if not section_body or not re.search(
+                    r"[^\s.·…,:;_|-]",
+                    section_body,
+                ) or re.fullmatch(
+                    r"[\s.·…,:;_|-]*(?:page\s*)?\d+[\s.·…,:;_|-]*",
+                    section_body,
+                    flags=re.IGNORECASE,
+                ):
+                    continue
                 section = EdgarRiskSection(
                     section_type="8k_event",
-                    section_title=match.group("title").strip(),
-                    text=match.group(0).strip(),
+                    section_title=section_title,
+                    text=section_text,
                     complete=True,
                 )
                 current = matches.get(item)
@@ -373,6 +385,9 @@ class EdgarTool(BaseTool):
         items: list[str],
         raw_text: str | None,
         risk_sections: list[EdgarRiskSection],
+        text_retrieval_status: Literal[
+            "not_requested", "available", "unavailable"
+        ],
         filed_at: str | None,
         source_reference: str,
     ) -> EdgarRiskEligibility:
@@ -399,7 +414,9 @@ class EdgarTool(BaseTool):
                 source_reference=source_reference,
             )
 
-        if not raw_text or not raw_text.strip():
+        if text_retrieval_status == "not_requested":
+            reason_code = "truncated"
+        elif not raw_text or not raw_text.strip():
             reason_code = "missing_body"
         elif normalized_form == "8-K" and set(items) == {"2.02", "9.01"}:
             reason_code = "attachment_shell"
@@ -503,6 +520,7 @@ class EdgarTool(BaseTool):
             items,
             raw_text,
             risk_sections,
+            text_retrieval_status,
             filed_at,
             source,
         )

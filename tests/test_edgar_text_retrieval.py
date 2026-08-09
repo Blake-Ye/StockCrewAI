@@ -115,6 +115,21 @@ class Unsupported8KTextFiling(RiskTextFiling):
         return self.unsupported_8k_text if self.form == "8-K" else super().text()
 
 
+class DirectoryOnly8KTextFiling(RiskTextFiling):
+    directory_only_8k_text = (
+        "TABLE OF CONTENTS\n"
+        "Item 5.02. Departure of Directors or Certain Officers .......... 3\n"
+    )
+
+    def __init__(self, form: str, index: int):
+        super().__init__(form, index)
+        if form == "8-K":
+            self.items = ["5.02"]
+
+    def text(self):
+        return self.directory_only_8k_text if self.form == "8-K" else super().text()
+
+
 class DirectoryRiskTextFiling(RiskTextFiling):
     ten_k_text = (
         "TABLE OF CONTENTS\n"
@@ -268,6 +283,14 @@ class Unsupported8KTextEdgar(FakeEdgar):
     company_class = Unsupported8KTextCompany
 
 
+class DirectoryOnly8KTextCompany(RiskTextCompany):
+    filing_class = DirectoryOnly8KTextFiling
+
+
+class DirectoryOnly8KTextEdgar(FakeEdgar):
+    company_class = DirectoryOnly8KTextCompany
+
+
 class EdgarTextRetrievalTests(unittest.TestCase):
     def _run(self, edgar_module, max_text_chars=1000, include_filing_text=True):
         from stockcrewai.tools.edgar_tool import EdgarTool
@@ -286,6 +309,19 @@ class EdgarTextRetrievalTests(unittest.TestCase):
     def _filing(result, form):
         return next(filing for filing in result.filings if filing.form == form)
 
+    def _assert_rejected_risk_eligibility(self, filing, reason_code):
+        self.assertEqual(filing.risk_eligibility.eligibility, "rejected")
+        self.assertIsNone(filing.risk_eligibility.evidence_kind)
+        self.assertEqual(
+            filing.risk_eligibility.evidence_id,
+            filing.evidence_id,
+        )
+        self.assertEqual(
+            filing.risk_eligibility.source_reference,
+            filing.source_reference,
+        )
+        self.assertEqual(filing.risk_eligibility.reason_code, reason_code)
+
     def test_empty_text_is_unavailable_with_warning(self):
         result = self._run(EmptyTextEdgar())
 
@@ -293,6 +329,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         self.assertIsNone(filing.text)
         self.assertEqual(filing.text_retrieval_status, "unavailable")
         self.assertEqual(filing.risk_sections, [])
+        self._assert_rejected_risk_eligibility(filing, "missing_body")
         self.assertTrue(any("返回内容为空" in warning for warning in filing.warnings))
 
     def test_missing_text_accessor_is_unavailable_with_warning(self):
@@ -302,6 +339,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         self.assertIsNone(filing.text)
         self.assertEqual(filing.text_retrieval_status, "unavailable")
         self.assertEqual(filing.risk_sections, [])
+        self._assert_rejected_risk_eligibility(filing, "missing_body")
         self.assertTrue(any("未提供 text" in warning for warning in filing.warnings))
 
     def test_text_accessor_exception_keeps_filing_unavailable_with_warning(self):
@@ -312,6 +350,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         self.assertIsNone(filing.text)
         self.assertEqual(filing.text_retrieval_status, "unavailable")
         self.assertEqual(filing.risk_sections, [])
+        self._assert_rejected_risk_eligibility(filing, "missing_body")
         self.assertTrue(any("RuntimeError" in warning for warning in filing.warnings))
 
     def test_text_source_exception_falls_back_to_filing_source(self):
@@ -331,6 +370,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         filing = result.filings[0]
         self.assertEqual(filing.text_retrieval_status, "available")
         self.assertEqual(filing.risk_sections, [])
+        self._assert_rejected_risk_eligibility(filing, "missing_body")
 
     def test_not_requested_text_has_no_risk_sections(self):
         result = self._run(RiskTextEdgar(), include_filing_text=False)
@@ -339,6 +379,7 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         for filing in result.filings:
             self.assertEqual(filing.text_retrieval_status, "not_requested")
             self.assertEqual(filing.risk_sections, [])
+            self._assert_rejected_risk_eligibility(filing, "truncated")
 
     def test_complete_10k_extracts_item_1a_without_item_1b(self):
         result = self._run(RiskTextEdgar(), max_text_chars=5000)
@@ -420,6 +461,13 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         self.assertEqual(filing.risk_sections, [])
         self.assertEqual(filing.risk_eligibility.eligibility, "rejected")
         self.assertEqual(filing.risk_eligibility.reason_code, "unsupported_item")
+
+    def test_8k_item_5_02_directory_entry_is_rejected(self):
+        result = self._run(DirectoryOnly8KTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "8-K")
+        self.assertEqual(filing.risk_sections, [])
+        self._assert_rejected_risk_eligibility(filing, "truncated")
 
 
 if __name__ == "__main__":
