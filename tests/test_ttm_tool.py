@@ -83,6 +83,57 @@ def complete_inputs() -> dict[str, dict[str, EdgarFact]]:
 
 
 class TTMBuilderToolTests(unittest.TestCase):
+    def test_builds_ttm_diluted_eps_with_three_evidence_ids(self):
+        inputs = {
+            role: fact("diluted_eps", role, value, unit="USD/share")
+            for role, value in zip(
+                ("latest_fy", "current_ytd", "prior_ytd"),
+                ("10.00", "7.00", "6.00"),
+            )
+        }
+
+        result = TTMBuilderTool().run(
+            company_name="Apple Inc.",
+            ticker="AAPL",
+            metric_inputs={"diluted_eps": inputs},
+        )
+
+        metric = result.metrics[0]
+        self.assertEqual(metric.metric_id, "diluted_eps")
+        self.assertEqual(metric.calculation_id, "calc_diluted_eps_ttm")
+        self.assertEqual(metric.formula_id, "ttm_diluted_eps")
+        self.assertEqual(metric.raw_result, "11.00")
+        self.assertEqual(metric.unit, "USD/share")
+        self.assertEqual(metric.period_basis, "TTM")
+        self.assertEqual(
+            metric.input_evidence_ids,
+            [
+                "ev_diluted_eps_latest_fy",
+                "ev_diluted_eps_current_ytd",
+                "ev_diluted_eps_prior_ytd",
+            ],
+        )
+
+    def test_missing_diluted_eps_role_is_unavailable(self):
+        inputs = {
+            role: fact("diluted_eps", role, value, unit="USD/share")
+            for role, value in zip(
+                ("latest_fy", "current_ytd"),
+                ("10.00", "7.00"),
+            )
+        }
+
+        result = TTMBuilderTool().run(
+            company_name="Apple Inc.",
+            ticker="AAPL",
+            metric_inputs={"diluted_eps": inputs},
+        )
+
+        metric = result.metrics[0]
+        self.assertEqual(metric.status, "unavailable")
+        self.assertIn("missing_input", metric.reasons)
+        self.assertIsNone(metric.raw_result)
+
     def test_builds_all_supported_ttm_metrics_and_derived_fcf(self):
         result = TTMBuilderTool().run(
             company_name="Apple Inc.",

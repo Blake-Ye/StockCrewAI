@@ -602,6 +602,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
         )
         pipeline_state["facts"] = state_synced["facts"]
         pipeline_state["calculations"] = state_synced["calculations"]
+        # 估值节点只从这里读取已验证 TTM 指标；不允许再从原始
+        # diluted EPS 或九个月自由现金流字段猜测口径。
+        pipeline_state["ttm"] = ttm_output
 
         validation_output = (
             validation_result.model_dump(mode="json")
@@ -727,6 +730,34 @@ class ResearchFlow(Flow[ResearchFlowState]):
             if snapshot.get("evidence_id")
         )
         auxiliary_allowed_ids.update(
+            str(evidence_id)
+            for snapshot in self._historical_financial_snapshots
+            if isinstance(snapshot, Mapping)
+            for evidence_id in snapshot.get("financial_evidence_ids", [])
+            if evidence_id
+        )
+        # 反向 DCF 和当前 FCF Yield 使用的是 TTM Builder 的输入 Evidence。
+        # 这些 Evidence 不一定属于基础 Calculator 的 validated_evidence_ids，
+        # 但 TTM 验证器已经单独确认过；必须把同一份白名单传给辅助估值，
+        # 否则 DCF 会被误标记为 unvalidated 并在 Gate 被阻断。
+        ttm_payload = self._pipeline_state.get("ttm", {})
+        ttm_validation = (
+            ttm_payload.get("evidence_validation", {})
+            if isinstance(ttm_payload, Mapping)
+            else {}
+        )
+        if (
+            isinstance(ttm_validation, Mapping)
+            and ttm_validation.get("status") == "valid"
+        ):
+            auxiliary_allowed_ids.update(
+                str(evidence_id)
+                for evidence_id in ttm_validation.get(
+                    "validated_evidence_ids", []
+                )
+                if evidence_id
+            )
+        auxiliary_allowed_ids.update(
             str(price["evidence_id"])
             for price in historical_prices
             if price.get("evidence_id")
@@ -759,12 +790,19 @@ class ResearchFlow(Flow[ResearchFlowState]):
 
         if self._historical_valuation_tool is None:
             self._historical_valuation_tool = HistoricalValuationTool()
-        historical_result = self._historical_valuation_tool.run(
-            company_name=pipeline_state.get("company_name"),
-            ticker=pipeline_state.get("ticker"),
-            historical_prices=historical_prices,
-            financial_snapshots=self._historical_financial_snapshots,
-        )
+        historical_kwargs = {
+            "company_name": pipeline_state.get("company_name"),
+            "ticker": pipeline_state.get("ticker"),
+            "historical_prices": historical_prices,
+            "financial_snapshots": self._historical_financial_snapshots,
+        }
+        try:
+            historical_kwargs["as_of"] = datetime.fromisoformat(
+                str(market_price_kwargs["price_timestamp"]).replace("Z", "+00:00")
+            ).date().isoformat()
+        except (KeyError, TypeError, ValueError):
+            pass
+        historical_result = self._historical_valuation_tool.run(**historical_kwargs)
         historical_valuation = _with_validation_status(
             historical_result,
             allowed_evidence_ids=auxiliary_allowed_ids,
@@ -1195,6 +1233,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     key: snapshot.get(key)
                     for key in (
                         "evidence_id",
+                        "financial_evidence_ids",
                         "as_of",
                         "filed_at",
                         "period_end",
@@ -1206,7 +1245,20 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 }
                 for snapshot in self._historical_financial_snapshots
             ],
+            "ttm_evidence": [],
+            "ttm_metrics": self.state.ttm.get("metrics", [])
+            if isinstance(self.state.ttm, Mapping)
+            else [],
         }
+        raw_ttm_inputs = getattr(self._edgar_result, "ttm_inputs", {})
+        if isinstance(raw_ttm_inputs, Mapping):
+            for by_role in raw_ttm_inputs.values():
+                if not isinstance(by_role, Mapping):
+                    continue
+                for raw_fact in by_role.values():
+                    fact_payload = _json_safe(raw_fact)
+                    if isinstance(fact_payload, Mapping):
+                        source_metadata["ttm_evidence"].append(dict(fact_payload))
         market_price_payload = (
             self._market_price_data
             if isinstance(self._market_price_data, Mapping)
@@ -1256,6 +1308,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             valuation=self.state.valuation,
             historical_valuation=self.state.historical_valuation,
             reverse_dcf=self.state.reverse_dcf,
+            ttm=self.state.ttm,
             source_metadata=source_metadata,
         )
         report_inputs = {"report_context": report_context}

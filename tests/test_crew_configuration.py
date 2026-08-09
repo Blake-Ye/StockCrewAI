@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -973,6 +974,37 @@ class EdgarIntegrationTests(unittest.TestCase):
             "five_year_median": "10",
             "input_evidence_ids": ["ev_market_price_history_AAPL_2026-08"],
         }
+        ttm_builder_tool = Mock()
+        ttm_builder_tool.run.return_value = {
+            "status": "ok",
+            "company_name": "Apple Inc.",
+            "ticker": "AAPL",
+            "metrics": [
+                {
+                    "metric_id": "diluted_eps",
+                    "calculation_id": "calc_diluted_eps_ttm",
+                    "formula_id": "ttm_diluted_eps",
+                    "raw_result": "2",
+                    "unit": "USD/share",
+                    "period_basis": "TTM",
+                    "input_evidence_ids": ["ev_earnings_per_share_diluted"],
+                    "status": "available",
+                    "validation_status": "valid",
+                },
+                {
+                    "metric_id": "free_cash_flow",
+                    "calculation_id": "calc_free_cash_flow_ttm",
+                    "formula_id": "ttm_free_cash_flow",
+                    "raw_result": "20",
+                    "unit": "USD",
+                    "period_basis": "TTM",
+                    "input_evidence_ids": ["ev_operating_cash_flow", "ev_capex"],
+                    "status": "available",
+                    "validation_status": "valid",
+                },
+            ],
+            "warnings": [],
+        }
 
         with patch(
             "stockcrewai.pipeline_support.run_request_parser",
@@ -987,6 +1019,7 @@ class EdgarIntegrationTests(unittest.TestCase):
                 analysis_crew=RecordingCrew("[]"),
                 report_crew=RecordingCrew("report"),
                 historical_valuation_tool=historical_valuation_tool,
+                ttm_builder_tool=ttm_builder_tool,
             )
 
         self.assertEqual(result["input_requirements"]["status"], "ready")
@@ -1001,6 +1034,7 @@ class EdgarIntegrationTests(unittest.TestCase):
             ticker="AAPL",
             historical_prices=market_price_tool.run.return_value["historical_prices"],
             financial_snapshots=[],
+            as_of="2026-08-06",
         )
 
     def test_validated_state_runs_analysis_and_report_with_unavailable_risk_and_price(self):
@@ -1747,6 +1781,196 @@ class ReportContractTests(unittest.TestCase):
             },
         }
 
+    def _reader_focused_context_inputs(self):
+        inputs = self._canonical_context_inputs()
+        inputs["deterministic_verdict"] = {
+            "status": "ready",
+            "overall_rating": "expensive",
+            "risk_level": "medium",
+            "triggered_rules": ["high_valuation"],
+        }
+        financial_values = {
+            "revenue_growth": "20.00%",
+            "net_margin": "20.00%",
+            "free_cash_flow_margin": "15.00%",
+            "cash_conversion": "1.50",
+            "share_dilution": "-2.00%",
+        }
+        inputs["calculations"].extend(
+            {
+                "calculation_id": f"calc_{metric_id}",
+                "formula_id": metric_id,
+                "display_result": display_value,
+                "unit": "ratio",
+                "status": "available",
+                "validation_status": "valid",
+                "input_evidence_ids": ["ev_revenue"],
+            }
+            for metric_id, display_value in financial_values.items()
+        )
+        start = date(2021, 8, 31)
+        series = [
+            {
+                "date": (start + timedelta(days=30 * index)).isoformat(),
+                "pe_ratio": f"{15 + (index % 12) / 10:.2f}",
+            }
+            for index in range(60)
+        ]
+        inputs["historical_valuation"]["series"] = series
+        inputs["historical_valuation"]["current_date"] = series[-1]["date"]
+        inputs["ttm"] = {
+            "status": "ok",
+            "metrics": [
+                {
+                    "metric_id": metric_id,
+                    "calculation_id": f"calc_{metric_id}_ttm",
+                    "raw_result": raw_result,
+                    "unit": "USD",
+                    "status": "available",
+                    "validation_status": "valid",
+                    "input_evidence_ids": ["ev_revenue"],
+                }
+                for metric_id, raw_result in {
+                    "revenue": "100000000000",
+                    "operating_income": "25000000000",
+                    "net_income": "20000000000",
+                    "operating_cash_flow": "30000000000",
+                    "free_cash_flow": "22000000000",
+                }.items()
+            ],
+        }
+        return inputs
+
+    def test_historical_metric_prefers_current_date_over_selected_dates(self):
+        from stockcrewai.crews.report.crew import build_report_context
+
+        inputs = self._canonical_context_inputs()
+        inputs["historical_valuation"]["selected_dates"] = [
+            "2021-01-31",
+            "2026-07-31",
+        ]
+        inputs["historical_valuation"]["current_date"] = "2026-08-31"
+
+        context = build_report_context(**inputs)
+        historical_metrics = [
+            metric
+            for metric in context["metrics"]
+            if metric["section"] == "historical_valuation"
+        ]
+
+        self.assertTrue(historical_metrics)
+        self.assertEqual(
+            {metric["as_of"] for metric in historical_metrics},
+            {"2026-08-31"},
+        )
+
+    def test_historical_metric_falls_back_to_last_selected_date(self):
+        from stockcrewai.crews.report.crew import build_report_context
+
+        inputs = self._canonical_context_inputs()
+        inputs["historical_valuation"]["selected_dates"] = [
+            "2021-01-31",
+            "2026-07-31",
+        ]
+
+        context = build_report_context(**inputs)
+        historical_metrics = [
+            metric
+            for metric in context["metrics"]
+            if metric["section"] == "historical_valuation"
+        ]
+
+        self.assertTrue(historical_metrics)
+        self.assertEqual(
+            {metric["as_of"] for metric in historical_metrics},
+            {"2026-07-31"},
+        )
+
+    def test_reader_focused_renderer_injects_verdict_terms_actions_and_visuals(self):
+        from stockcrewai.crews.report.crew import (
+            build_report_context,
+            parse_report_draft,
+            render_validated_report,
+        )
+
+        inputs = self._reader_focused_context_inputs()
+        context = build_report_context(**inputs)
+        self.assertEqual(len(context["ttm"]["metrics"]), 5)
+        report = render_validated_report(
+            context,
+            parse_report_draft(VALID_REPORT_DRAFT),
+        )
+
+        self.assertIn("总体判断：估值偏贵", report)
+        self.assertIn("风险等级：中等风险", report)
+        self.assertIn("触发规则：估值偏高规则触发", report)
+        self.assertIn("行动参考：等待更高安全边际", report)
+        self.assertIn("P/E（市盈率）", report)
+        self.assertIn("FCF Yield（自由现金流收益率）", report)
+        self.assertIn("TTM（过去十二个月）", report)
+        self.assertIn("DCF（现金流折现）", report)
+        self.assertIn("反向 DCF（由市场价格倒推隐含增长）", report)
+        self.assertIn("读图：柱子高于 0 表示增长/利润率为正；股份变化为负表示股份减少。", report)
+        self.assertIn("读图：所有柱子都使用最近十二个月口径，单位为十亿美元，便于比较规模而不是比较利润率。", report)
+        self.assertIn("读图：曲线高于中位数表示当前 TTM P/E 高于自身历史常态；最新点用于定位当前估值。", report)
+        self.assertEqual(report.count("data:image/png;base64,"), 3)
+        self.assertNotIn("无已验证 Claim。", report)
+        self.assertNotRegex(report, r"Decimal\(['\"]")
+        report_body = report.split("## 非投资建议声明", 1)[0]
+        for forbidden in ("买入", "卖出", "持有"):
+            self.assertNotIn(forbidden, report_body)
+
+        quality_start = report.index("## 公司质量")
+        trend_start = report.index("## 财务趋势")
+        quality = report[quality_start:trend_start]
+        trend_start = report.index("## 财务趋势")
+        valuation_start = report.index("## 当前估值")
+        trend = report[trend_start:valuation_start]
+        self.assertIn("营业利润率：25.00%", quality)
+        self.assertNotIn("营业收入同比增长：20.00%", quality)
+        self.assertIn("营业收入同比增长：20.00%", trend)
+        self.assertNotIn("营业利润率：25.00%", trend)
+
+    def test_historical_pe_percentiles_render_as_multiples(self):
+        from stockcrewai.crews.report.crew import (
+            build_report_context,
+            parse_report_draft,
+            render_validated_report,
+        )
+
+        inputs = self._canonical_context_inputs()
+        inputs["historical_valuation"].update(
+            {"percentile_25": "68.90", "percentile_75": "132.12"}
+        )
+        report = render_validated_report(
+            build_report_context(**inputs),
+            parse_report_draft(VALID_REPORT_DRAFT),
+        )
+
+        self.assertIn("历史 P/E 二十五分位：68.90x", report)
+        self.assertNotIn("历史 P/E 二十五分位：68.90%", report)
+        self.assertIn("历史 P/E 七十五分位：132.12x", report)
+        self.assertNotIn("历史 P/E 七十五分位：132.12%", report)
+        self.assertIn("当前历史百分位：72.50%", report)
+
+    def test_renderer_formats_long_multiple_suffix_to_two_decimals(self):
+        from stockcrewai.crews.report.crew import (
+            build_report_context,
+            parse_report_draft,
+            render_validated_report,
+        )
+
+        inputs = self._canonical_context_inputs()
+        inputs["historical_valuation"]["current_value"] = "1.234567890123456789x"
+
+        report = render_validated_report(
+            build_report_context(**inputs),
+            parse_report_draft(VALID_REPORT_DRAFT),
+        )
+
+        self.assertIn("历史当前 P/E：1.23x", report)
+        self.assertNotIn("1.234567890123456789x", report)
+
     def test_report_context_normalizes_all_metric_sections_and_is_json_safe(self):
         from stockcrewai.crews.report.crew import build_report_context
 
@@ -1926,6 +2150,27 @@ class ReportContractTests(unittest.TestCase):
 
         for reason, raw in cases.items():
             with self.subTest(reason=reason):
+                passed, _ = validate_report_draft(SimpleNamespace(raw=raw))
+                self.assertFalse(passed)
+
+    def test_report_draft_rejects_llm_investment_conclusions(self):
+        from stockcrewai.crews.report.crew import validate_report_draft
+
+        for conclusion in (
+            "公司具备较强投资价值。",
+            "该公司值得投资。",
+            "当前估值偏贵。",
+            "当前估值便宜。",
+            "市场可能高估该公司。",
+            "市场可能低估该公司。",
+            "该公司具有安全边际。",
+            "公司前景乐观。",
+            "公司前景悲观。",
+        ):
+            with self.subTest(conclusion=conclusion):
+                raw = VALID_REPORT_DRAFT.replace(
+                    "公司质量叙述来自已验证 Claim。", conclusion
+                )
                 passed, _ = validate_report_draft(SimpleNamespace(raw=raw))
                 self.assertFalse(passed)
 

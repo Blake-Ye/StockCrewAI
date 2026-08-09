@@ -477,7 +477,7 @@ class EdgarToolTests(unittest.TestCase):
         self.assertEqual(result.historical_financial_snapshots, [])
         self.assertEqual(fake_edgar.identity, "Test User test@example.com")
 
-    def test_entity_facts_collects_point_in_time_positive_diluted_eps(self):
+    def test_entity_facts_does_not_emit_legacy_single_period_eps(self):
         from stockcrewai.tools.edgar_tool import EdgarTool
 
         with patch.dict(os.environ, {"EDGAR_IDENTITY": "Test User test@example.com"}):
@@ -487,22 +487,9 @@ class EdgarToolTests(unittest.TestCase):
             ).run(ticker="AAPL")
 
         self.assertEqual(result.status, "ok")
-        self.assertEqual(len(result.historical_financial_snapshots), 2)
-        by_period_end = {
-            snapshot["period_end"]: snapshot
-            for snapshot in result.historical_financial_snapshots
-        }
-        snapshot = by_period_end["2024-12-31"]
-        self.assertEqual(snapshot["as_of"], "2025-02-01")
-        self.assertEqual(snapshot["eps"], "4.5")
-        self.assertEqual(snapshot["filed_at"], "2025-02-01")
-        self.assertEqual(snapshot["form"], "10-K")
-        self.assertEqual(snapshot["accession_number"], "0000320193-25-000001")
-        self.assertEqual(
-            snapshot["source_reference"],
-            "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json",
-        )
-        self.assertTrue(snapshot["evidence_id"].startswith("ev_"))
+        # 只有 FY/YTD/上年同期 YTD 三项完整期间才能形成 TTM 快照；
+        # 该旧 fixture 只有单期 EPS，因此必须 fail-closed。
+        self.assertEqual(result.historical_financial_snapshots, [])
 
     def test_historical_fact_parse_failure_does_not_change_primary_result(self):
         from stockcrewai.tools.edgar_tool import EdgarTool

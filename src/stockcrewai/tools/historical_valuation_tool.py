@@ -53,6 +53,8 @@ class PointInTimeFinancialSnapshot(BaseModel):
     as_of: Any | None = None
     filed_at: Any | None = None
     period_end: Any | None = None
+    period_basis: Any | None = None
+    ttm_eps: Any | None = None
     eps: Any | None = None
     diluted_eps: Any | None = None
     earnings_per_share: Any | None = None
@@ -61,6 +63,7 @@ class PointInTimeFinancialSnapshot(BaseModel):
     value: Any | None = None
     evidence_id: Any | None = None
     evidence_ids: Any | None = None
+    financial_evidence_ids: Any | None = None
     facts: dict[str, Any] = Field(default_factory=dict)
     financials: dict[str, Any] = Field(default_factory=dict)
 
@@ -71,11 +74,6 @@ class PointInTimeFinancialSnapshot(BaseModel):
             return value
         payload = dict(value)
         _copy_alias(payload, "as_of", ("snapshot_date", "available_at", "date"))
-        _copy_alias(
-            payload,
-            "eps",
-            ("diluted_eps", "earnings_per_share", "earnings_per_share_diluted"),
-        )
         _copy_alias(payload, "evidence_id", ("financial_evidence_id",))
         return payload
 
@@ -125,7 +123,10 @@ class HistoricalValuationResult(BaseModel):
     company_name: str | None = None
     ticker: str | None = None
     metric: str = "pe_ratio"
+    period_basis: Literal["TTM"] | None = None
     current_value: str | None = None
+    current_date: str | None = None
+    series: list[dict[str, Any]] = Field(default_factory=list)
     five_year_median: str | None = None
     percentile_25: str | None = None
     percentile_75: str | None = None
@@ -210,11 +211,17 @@ def _raw_value_and_ids(raw: Any) -> tuple[Any, list[str]]:
         return raw, []
     ids = _evidence_ids(
         raw.get("evidence_id"),
-        raw.get("evidence_ids", raw.get("input_evidence_ids")),
+        raw.get(
+            "evidence_ids",
+            raw.get("financial_evidence_ids", raw.get("input_evidence_ids")),
+        ),
     )
     value = raw.get(
         "value",
-        raw.get("numeric_value", raw.get("raw_result", raw.get("amount"))),
+        raw.get(
+            "ttm_eps",
+            raw.get("numeric_value", raw.get("raw_result", raw.get("amount"))),
+        ),
     )
     return value, ids
 
@@ -282,6 +289,9 @@ class HistoricalValuationTool(BaseTool):
                 "historical valuation unavailable: "
                 + ", ".join(normalized_reasons or ["unknown_reason"])
             )
+        if status != "ok":
+            values["series"] = []
+            values["current_date"] = None
         return HistoricalValuationResult(
             status=status,
             company_name=company_name.strip() if company_name else None,
@@ -341,16 +351,13 @@ class HistoricalValuationTool(BaseTool):
             if not isinstance(snapshot, PointInTimeFinancialSnapshot):
                 snapshot = PointInTimeFinancialSnapshot.model_validate(snapshot)
             filed_at = _as_date(snapshot.filed_at)
-            snapshot_date = filed_at or _as_date(snapshot.as_of)
-            if snapshot_date is None:
-                reasons.append("invalid_financial_date")
+            if filed_at is None:
+                reasons.append("historical_ttm_eps_required")
+                continue
             snapshot_values: dict[str, Any] = {
-                "eps": snapshot.eps,
-                "diluted_eps": snapshot.diluted_eps,
-                "earnings_per_share": snapshot.earnings_per_share,
-                "net_income": snapshot.net_income,
-                "shares_outstanding": snapshot.shares_outstanding,
-                "value": snapshot.value,
+                "period_basis": snapshot.period_basis,
+                "ttm_eps": snapshot.ttm_eps,
+                "financial_evidence_ids": snapshot.financial_evidence_ids,
             }
             snapshot_values.update(snapshot.facts)
             snapshot_values.update(snapshot.financials)
@@ -359,50 +366,25 @@ class HistoricalValuationTool(BaseTool):
                     extra_values = snapshot.model_extra.get(key)
                     if isinstance(extra_values, Mapping):
                         snapshot_values.update(extra_values)
-            eps: Decimal | None = None
-            nested_financial_ids: list[str] = []
-            for key in (
-                "eps",
-                "diluted_eps",
-                "earnings_per_share",
-                "earnings_per_share_diluted",
-                "metric_value",
-                "value",
-            ):
-                if snapshot_values.get(key) is not None:
-                    raw_eps, eps_ids = _raw_value_and_ids(snapshot_values[key])
-                    eps = _as_decimal(raw_eps)
-                    _append_unique(nested_financial_ids, eps_ids)
-                    break
-            if eps is None and not any(
-                snapshot_values.get(key) is not None
-                for key in ("eps", "diluted_eps", "earnings_per_share", "value")
-            ):
-                raw_net_income, net_income_ids = _raw_value_and_ids(
-                    snapshot_values.get("net_income")
-                )
-                raw_shares, shares_ids = _raw_value_and_ids(
-                    snapshot_values.get("shares_outstanding")
-                )
-                net_income = _as_decimal(raw_net_income)
-                shares = _as_decimal(raw_shares)
-                _append_unique(nested_financial_ids, net_income_ids)
-                _append_unique(nested_financial_ids, shares_ids)
-                if net_income is not None and shares is not None and shares > 0:
-                    with localcontext() as context:
-                        context.prec = 28
-                        context.rounding = ROUND_HALF_EVEN
-                        eps = net_income / shares
-            if eps is None:
-                reasons.append("invalid_financial_value")
-            elif eps <= 0:
-                reasons.append("non_positive_eps")
+            period_basis = str(snapshot_values.get("period_basis") or "").strip().upper()
+            raw_eps = snapshot_values.get("ttm_eps")
+            eps_ids: list[str] = []
+            if isinstance(raw_eps, Mapping) or isinstance(raw_eps, BaseModel):
+                raw_eps, nested_ids = _raw_value_and_ids(raw_eps)
+                _append_unique(eps_ids, nested_ids)
+            eps = _as_decimal(raw_eps)
+            if period_basis != "TTM" or eps is None or eps <= 0:
+                reasons.append("historical_ttm_eps_required")
+                continue
             ids = _evidence_ids(snapshot.evidence_id, snapshot.evidence_ids)
-            _append_unique(ids, nested_financial_ids)
+            _append_unique(ids, _evidence_ids(snapshot.financial_evidence_ids))
+            _append_unique(ids, eps_ids)
+            for key in ("financial_evidence_ids", "evidence_ids"):
+                _append_unique(ids, _evidence_ids(snapshot_values.get(key)))
             if not ids or not all(_valid_evidence_id(item) for item in ids):
                 reasons.append("invalid_financial_evidence_id")
-            if snapshot_date is not None and eps is not None and eps > 0:
-                parsed_snapshots.append((snapshot_date, eps, ids))
+            if ids and all(_valid_evidence_id(item) for item in ids):
+                parsed_snapshots.append((filed_at, eps, ids))
 
         requested_as_of = _as_date(as_of)
         if as_of is not None and requested_as_of is None:
@@ -477,6 +459,7 @@ class HistoricalValuationTool(BaseTool):
 
         parsed_snapshots.sort(key=lambda item: item[0])
         values: list[Decimal] = []
+        series: list[dict[str, str]] = []
         selected_dates: list[str] = []
         input_ids: list[str] = []
         for price_date, price, price_ids in selected_prices:
@@ -494,8 +477,18 @@ class HistoricalValuationTool(BaseTool):
             with localcontext() as context:
                 context.prec = 28
                 context.rounding = ROUND_HALF_EVEN
-                values.append(price / eps)
-            selected_dates.append(price_date.isoformat())
+                pe_ratio = price / eps
+            values.append(pe_ratio)
+            selected_date = price_date.isoformat()
+            selected_dates.append(selected_date)
+            series.append(
+                {
+                    "date": selected_date,
+                    "ttm_eps": _plain(eps),
+                    "pe_ratio": _plain(pe_ratio),
+                    "financial_evidence_ids": list(snapshot_ids),
+                }
+            )
             for evidence_id in price_ids + snapshot_ids:
                 if _valid_evidence_id(evidence_id) and evidence_id not in input_ids:
                     input_ids.append(evidence_id)
@@ -511,6 +504,8 @@ class HistoricalValuationTool(BaseTool):
                 history_count=len(values),
                 selected_dates=selected_dates,
                 input_evidence_ids=input_ids,
+                series=[],
+                current_date=None,
                 reasons=reasons,
                 warnings=warnings,
             )
@@ -528,7 +523,10 @@ class HistoricalValuationTool(BaseTool):
             company_name=company_name,
             ticker=ticker,
             metric=metric_name,
-            current_value=_plain(current_value),
+            period_basis="TTM",
+            current_value=series[-1]["pe_ratio"],
+            current_date=series[-1]["date"],
+            series=series,
             five_year_median=_plain(_quantile(ordered, Decimal("0.5"))),
             percentile_25=_plain(_quantile(ordered, Decimal("0.25"))),
             percentile_75=_plain(_quantile(ordered, Decimal("0.75"))),

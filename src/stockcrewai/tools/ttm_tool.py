@@ -17,6 +17,7 @@ SUPPORTED_TTM_METRICS = (
     "net_income",
     "operating_cash_flow",
     "capex",
+    "diluted_eps",
 )
 
 
@@ -35,6 +36,7 @@ class TTMMetricResult(BaseModel):
     raw_inputs: dict[str, str] = Field(default_factory=dict)
     raw_result: str | None = None
     unit: str | None = None
+    period_basis: Literal["TTM"] | None = None
     period_start: str | None = None
     period_end: str | None = None
     status: Literal["available", "unavailable"]
@@ -205,6 +207,12 @@ class TTMBuilderTool(BaseTool):
             units = {_unit(facts[role].unit) for role in TTM_ROLES}
             if len(units) != 1 or None in units:
                 reasons.append("unit_mismatch")
+            if metric_id == "diluted_eps" and units - {
+                "USD/SHARE",
+                "USD/SHARES",
+                "USD_PER_SHARE",
+            }:
+                reasons.append("unit_mismatch")
             if not _periods_match(facts):
                 reasons.append("period_mismatch")
         if metric_id == "capex" and any(
@@ -213,6 +221,8 @@ class TTMBuilderTool(BaseTool):
             reasons.append("capex_sign")
         reasons = list(dict.fromkeys(reasons))
         unit = facts.get("latest_fy").unit if facts.get("latest_fy") else None
+        if metric_id == "diluted_eps" and unit is not None:
+            unit = "USD/share"
         period_start = None
         period_end = None
         if not reasons:
@@ -227,6 +237,10 @@ class TTMBuilderTool(BaseTool):
                 raw_inputs=raw_inputs,
                 raw_result=format(value, "f"),
                 unit=unit,
+                # 所有由三段财务期间拼出的流量指标都统一标记为 TTM。
+                # 这不是展示字段：下游估值工具用它拒绝把九个月累计或
+                # 单期数字误当成过去十二个月口径。
+                period_basis="TTM",
                 period_start=period_start,
                 period_end=period_end,
                 status="available",
@@ -287,6 +301,7 @@ class TTMBuilderTool(BaseTool):
                         },
                         raw_result=format(result, "f"),
                         unit=ocf.unit,
+                        period_basis="TTM",
                         period_start=ocf.period_start,
                         period_end=ocf.period_end,
                         status="available",

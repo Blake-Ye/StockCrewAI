@@ -500,6 +500,154 @@ class MainFlowExecutionTests(unittest.TestCase):
         valuation_facts = dependencies["valuation_tool"].run.call_args.kwargs["facts"]
         self.assertNotIn("ttm", valuation_facts)
 
+    def test_historical_valuation_excludes_prices_after_market_timestamp(self):
+        from calendar import monthrange
+        from datetime import date
+
+        from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
+
+        analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
+        parser_result, dependencies = _flow_dependencies()
+        historical_prices = []
+        financial_snapshots = []
+        year, month = 2021, 8
+        for index in range(61):
+            point_date = date(year, month, monthrange(year, month)[1]).isoformat()
+            historical_prices.append(
+                {
+                    "date": point_date,
+                    "price": "100",
+                    "evidence_id": f"ev_history_{index}",
+                }
+            )
+            financial_snapshots.append(
+                {
+                    "filed_at": point_date,
+                    "period_end": point_date,
+                    "period_basis": "TTM",
+                    "ttm_eps": "1",
+                    "financial_evidence_ids": [
+                        f"ev_eps_fy_{index}",
+                        f"ev_eps_current_{index}",
+                        f"ev_eps_prior_{index}",
+                    ],
+                }
+            )
+            month += 1
+            if month == 13:
+                year += 1
+                month = 1
+
+        market_price_data = dependencies["market_price_tool"].run.return_value
+        market_price_data["price_timestamp"] = "2026-08-07T15:30:00Z"
+        market_price_data["historical_prices"] = historical_prices
+        dependencies["edgar_tool"].run.return_value.historical_financial_snapshots = (
+            financial_snapshots
+        )
+        historical_valuation_tool = Mock(wraps=HistoricalValuationTool())
+        dependencies["historical_valuation_tool"] = historical_valuation_tool
+        _, flow_class = _flow_class()
+        flow = flow_class(
+            **dependencies,
+            analysis_crew=analysis_crew,
+            report_crew=report_crew,
+        )
+
+        with _offline_flow_patches(parser_result, verdict={"status": "ready"}):
+            result = _run_flow(flow)
+
+        self.assertEqual(
+            historical_valuation_tool.run.call_args.kwargs.get("as_of"),
+            "2026-08-07",
+        )
+        self.assertEqual(result["historical_valuation"]["current_date"], "2026-07-31")
+        self.assertNotIn(
+            "2026-08-31",
+            result["historical_valuation"]["selected_dates"],
+        )
+
+    def test_generate_report_passes_verified_ttm_state_to_report_context(self):
+        from stockcrewai.tools.validation_tool import ValidationResult
+
+        module = _main_module()
+        analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
+        parser_result, flow, dependencies = self._make_flow(
+            analysis_crew, report_crew
+        )
+        ttm_evidence_ids = {
+            "ev_revenue_latest_fy",
+            "ev_revenue_current_ytd",
+            "ev_revenue_prior_ytd",
+        }
+        dependencies["ttm_builder_tool"].run.return_value = {
+            "status": "available",
+            "company_name": "Apple Inc.",
+            "ticker": "AAPL",
+            "metrics": [
+                {
+                    "metric_id": "revenue",
+                    "calculation_id": "calc_revenue_ttm",
+                    "formula_id": "ttm_revenue",
+                    "input_evidence_ids": sorted(ttm_evidence_ids),
+                    "raw_result": "105",
+                    "unit": "USD",
+                    "status": "available",
+                    "validation_status": "valid",
+                }
+            ],
+            "warnings": [],
+        }
+        base_validation_result = dependencies["validation_tool"].run.return_value
+
+        def validation_side_effect(**kwargs):
+            if kwargs.get("calculations") == []:
+                return ValidationResult(
+                    status="valid",
+                    validated=True,
+                    company_name=kwargs["company_name"],
+                    ticker=kwargs["ticker"],
+                    validated_evidence_ids=sorted(ttm_evidence_ids),
+                )
+            return base_validation_result
+
+        dependencies["validation_tool"].run.side_effect = validation_side_effect
+        captured_context_kwargs: dict[str, Any] = {}
+        original_build_report_context = module.build_report_context
+
+        def capture_report_context(**kwargs):
+            captured_context_kwargs.update(kwargs)
+            return original_build_report_context(**kwargs)
+
+        with (
+            _offline_flow_patches(parser_result, verdict={"status": "ready"}),
+            patch.object(
+                module,
+                "build_report_context",
+                side_effect=capture_report_context,
+            ),
+        ):
+            result = _run_flow(flow)
+
+        self.assertEqual(result["status"], "ok")
+        forwarded_ttm = captured_context_kwargs.get("ttm")
+        self.assertEqual(forwarded_ttm, flow.state.ttm)
+        self.assertEqual(forwarded_ttm["status"], "available")
+        self.assertEqual(
+            forwarded_ttm["metrics"][0]["raw_result"],
+            "105",
+        )
+        self.assertEqual(
+            forwarded_ttm["metrics"][0]["validation_status"],
+            "valid",
+        )
+        self.assertEqual(
+            set(forwarded_ttm["evidence_validation"]["validated_evidence_ids"]),
+            ttm_evidence_ids,
+        )
+        json.dumps(forwarded_ttm, ensure_ascii=False, allow_nan=False)
+
     def test_invalid_parser_output_keeps_request_stage_and_skips_downstream_calls(self):
         _, flow_class = _flow_class()
         parser_result = Mock(json_dict=None, raw="not JSON")

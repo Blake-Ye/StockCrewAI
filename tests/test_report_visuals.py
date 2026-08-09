@@ -1,0 +1,206 @@
+import base64
+from datetime import date, timedelta
+import importlib
+import os
+from pathlib import Path
+import tempfile
+import unittest
+
+
+def _financial_metrics():
+    values = {
+        "revenue_growth": "0.20",
+        "operating_margin": "0.25",
+        "net_margin": "0.20",
+        "free_cash_flow_margin": "0.15",
+        "cash_conversion": "1.50",
+        "share_dilution": "-0.02",
+    }
+    return [
+        {
+            "metric_id": metric_id,
+            "display_value": value,
+            "unit": "ratio",
+            "status": "available",
+            "validation_status": "valid",
+            "calculation_id": f"calc_{metric_id}",
+            "evidence_ids": [f"ev_{metric_id}"],
+        }
+        for metric_id, value in values.items()
+    ]
+
+
+def _ttm_metrics():
+    values = {
+        "revenue": "100000000000",
+        "operating_income": "25000000000",
+        "net_income": "20000000000",
+        "operating_cash_flow": "30000000000",
+        "free_cash_flow": "22000000000",
+    }
+    return [
+        {
+            "metric_id": metric_id,
+            "raw_result": value,
+            "unit": "USD",
+            "status": "available",
+            "validation_status": "valid",
+            "calculation_id": f"calc_{metric_id}_ttm",
+            "input_evidence_ids": [f"ev_{metric_id}_ttm"],
+        }
+        for metric_id, value in values.items()
+    ]
+
+
+def _historical_payload():
+    start = date(2021, 8, 31)
+    series = [
+        {
+            "date": (start + timedelta(days=30 * index)).isoformat(),
+            "pe_ratio": f"{15 + (index % 12) / 10:.2f}",
+        }
+        for index in range(60)
+    ]
+    return {
+        "status": "ok",
+        "validation_status": "valid",
+        "series": series,
+        "current_date": series[-1]["date"],
+    }
+
+
+class ReportVisualsTests(unittest.TestCase):
+    def _builder(self):
+        try:
+            module = importlib.import_module("stockcrewai.report_visuals")
+        except ImportError:
+            module = None
+        self.assertIsNotNone(module, "report_visuals 模块必须存在")
+        builder = getattr(module, "build_report_visuals", None)
+        self.assertIsNotNone(builder, "必须提供 build_report_visuals")
+        return builder
+
+    def test_builds_three_deterministic_png_data_uris_from_verified_inputs(self):
+        builder = self._builder()
+
+        visuals = builder(
+            financial_metrics=_financial_metrics(),
+            ttm_metrics=_ttm_metrics(),
+            historical_payload=_historical_payload(),
+        )
+
+        self.assertEqual(
+            set(visuals), {"financial_kpis", "ttm_scale", "historical_pe"}
+        )
+        for uri in visuals.values():
+            self.assertTrue(uri.startswith("data:image/png;base64,"))
+            self.assertTrue(
+                base64.b64decode(uri.split(",", 1)[1]).startswith(b"\x89PNG\r\n\x1a\n")
+            )
+
+        self.assertEqual(
+            visuals,
+            builder(
+                financial_metrics=_financial_metrics(),
+                ttm_metrics=_ttm_metrics(),
+                historical_payload=_historical_payload(),
+            ),
+        )
+
+    def test_missing_input_omits_only_the_corresponding_chart(self):
+        builder = self._builder()
+
+        visuals = builder(
+            financial_metrics=_financial_metrics(),
+            ttm_metrics=_ttm_metrics(),
+        )
+
+        self.assertEqual(set(visuals), {"financial_kpis", "ttm_scale"})
+
+    def test_missing_verification_fields_omit_all_charts(self):
+        builder = self._builder()
+        financial_metrics = _financial_metrics()
+        ttm_metrics = _ttm_metrics()
+        historical_payload = _historical_payload()
+
+        for records in (financial_metrics, ttm_metrics):
+            for record in records:
+                record.pop("status")
+                record.pop("validation_status")
+        historical_payload.pop("status")
+        historical_payload.pop("validation_status")
+
+        self.assertEqual(
+            builder(
+                financial_metrics=financial_metrics,
+                ttm_metrics=ttm_metrics,
+                historical_payload=historical_payload,
+            ),
+            {},
+        )
+
+    def test_historical_pe_requires_top_level_verification_fields(self):
+        builder = self._builder()
+
+        for field in ("status", "validation_status"):
+            with self.subTest(field=field):
+                historical_payload = _historical_payload()
+                historical_payload.pop(field)
+
+                visuals = builder(
+                    financial_metrics=_financial_metrics(),
+                    ttm_metrics=_ttm_metrics(),
+                    historical_payload=historical_payload,
+                )
+
+                self.assertEqual(set(visuals), {"financial_kpis", "ttm_scale"})
+
+    def test_matplotlib_uses_agg_and_writable_project_temp_config(self):
+        self._builder()
+        import matplotlib
+
+        self.assertEqual(matplotlib.get_backend().lower(), "agg")
+        config_dir = Path(os.environ["MPLCONFIGDIR"])
+        self.assertEqual(config_dir.parent, Path(tempfile.gettempdir()))
+        self.assertTrue(config_dir.name.startswith("stockcrewai"))
+        self.assertTrue(os.access(config_dir, os.W_OK))
+
+    def test_amount_conversion_uses_actual_usd_billions(self):
+        module = importlib.import_module("stockcrewai.report_visuals")
+        converter = getattr(module, "_amount_in_billion_usd")
+
+        self.assertAlmostEqual(
+            converter({"raw_result": "466823000000", "unit": "USD"}),
+            466.823,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            converter({"raw_result": "466823", "unit": "million USD"}),
+            466.823,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            converter({"raw_result": "4668.23", "unit": "亿美元"}),
+            466.823,
+            places=3,
+        )
+
+    def test_chart_labels_and_historical_ticks_are_reader_friendly(self):
+        module = importlib.import_module("stockcrewai.report_visuals")
+
+        self.assertEqual(module._FINANCIAL_KPI_TITLE, "财务质量指标（已验证数据）")
+        self.assertEqual(module._TTM_AXIS_LABEL, "金额（十亿美元）")
+
+        points = [
+            (
+                date(2021 + index // 12, index % 12 + 1, 1).isoformat(),
+                float(index),
+            )
+            for index in range(60)
+        ]
+        indices, labels = module._historical_tick_data(points)
+        self.assertEqual(indices, [0, 12, 24, 36, 48, 59])
+        self.assertEqual(
+            labels,
+            ["2021-01", "2022-01", "2023-01", "2024-01", "2025-01", "2025-12"],
+        )

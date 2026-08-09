@@ -333,6 +333,34 @@ class _MonthStartHistoryYFinance:
         return _MonthStartHistoryTicker()
 
 
+class _CurrentMonthObservationTicker:
+    def __init__(self):
+        dates = []
+        year, month = 2021, 9
+        for _ in range(59):
+            dates.append(
+                datetime(
+                    year,
+                    month,
+                    monthrange(year, month)[1],
+                    tzinfo=timezone.utc,
+                )
+            )
+            month += 1
+            if month == 13:
+                year += 1
+                month = 1
+        dates.append(datetime(2026, 8, 7, tzinfo=timezone.utc))
+        self.monthly_history = pd.DataFrame(
+            {"Close": range(1, 61)}, index=pd.DatetimeIndex(dates)
+        )
+
+    def history(self, **kwargs):
+        if kwargs["interval"] != "1mo":
+            raise AssertionError("only monthly history is expected")
+        return self.monthly_history
+
+
 class _HistoricalFailureTicker:
     def __init__(self):
         self.history_calls = []
@@ -370,7 +398,7 @@ class _HistoricalFailureYFinance:
 
 
 class MarketPriceToolTests(unittest.TestCase):
-    def test_month_start_yahoo_index_is_normalized_to_month_end(self):
+    def test_month_start_yahoo_index_preserves_real_observation_date(self):
         from stockcrewai.tools.market_price_tool import MarketPriceTool
 
         result = MarketPriceTool(
@@ -379,7 +407,25 @@ class MarketPriceToolTests(unittest.TestCase):
             max_retries=0,
         ).run(ticker="AAPL")
 
-        self.assertEqual(result.historical_prices[-1]["date"], "2026-08-31")
+        self.assertEqual(result.historical_prices[-1]["date"], "2026-08-01")
+
+    def test_historical_prices_preserve_current_month_observation_date(self):
+        from stockcrewai.tools.market_price_tool import MarketPriceTool
+
+        historical_prices = MarketPriceTool(max_retries=0)._historical_prices(
+            _CurrentMonthObservationTicker(), "AAPL"
+        )
+
+        self.assertEqual(len(historical_prices), 60)
+        self.assertEqual(
+            historical_prices[-1],
+            {
+                "date": "2026-08-07",
+                "price": "60",
+                "evidence_id": "ev_market_price_history_AAPL_2026-08",
+            },
+        )
+        self.assertNotEqual(historical_prices[-1]["date"], "2026-08-31")
 
     def test_opt_in_history_returns_latest_monthly_close_for_recent_60_points(self):
         from stockcrewai.tools.market_price_tool import MarketPriceTool

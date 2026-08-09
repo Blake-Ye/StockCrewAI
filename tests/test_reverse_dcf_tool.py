@@ -9,8 +9,12 @@ class ReverseDCFToolTests(unittest.TestCase):
         result = ReverseDCFTool().run(
             ticker="AAPL",
             market_price={"value": "100", "evidence_id": "ev_price"},
-            operating_cash_flow={"value": "30", "evidence_id": "ev_ocf"},
-            capital_expenditure={"value": "10", "evidence_id": "ev_capex"},
+            fcf={
+                "value": "20",
+                "evidence_id": "ev_fcf",
+                "period_basis": "TTM",
+                "validation_status": "valid",
+            },
             shares_outstanding={"value": "10", "evidence_id": "ev_shares"},
         )
 
@@ -23,7 +27,7 @@ class ReverseDCFToolTests(unittest.TestCase):
         self.assertEqual(result.terminal_growth, "0.025")
         self.assertEqual(
             result.input_evidence_ids,
-            ["ev_price", "ev_ocf", "ev_capex", "ev_shares"],
+            ["ev_price", "ev_fcf", "ev_shares"],
         )
         self.assertEqual(len(result.scenario_matrix), 3)
         self.assertTrue(
@@ -38,7 +42,12 @@ class ReverseDCFToolTests(unittest.TestCase):
         result = ReverseDCFTool().run(
             ticker="AAPL",
             market_price={"value": "100"},
-            fcf={"value": "20", "evidence_id": "ev_fcf"},
+            fcf={
+                "value": "20",
+                "evidence_id": "ev_fcf",
+                "period_basis": "TTM",
+                "validation_status": "valid",
+            },
             shares_outstanding={"value": "10", "evidence_id": "ev_shares"},
         )
 

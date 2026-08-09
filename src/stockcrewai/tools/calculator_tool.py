@@ -229,7 +229,7 @@ class FinancialCalculatorTool(BaseTool):
                 warnings: list[str] = []
                 if len(evidence_ids) != len(required):
                     warnings.append("至少一个输入缺少 Evidence ID")
-                if formula_id == "current_ratio":
+                if formula_id in {"current_ratio", "debt_to_equity"}:
                     display = f"{result:.2f}x"
                 elif unit == "ratio":
                     display = f"{result * 100:.2f}%"

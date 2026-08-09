@@ -46,6 +46,7 @@ class ReverseDCFInput(BaseModel):
     base_fcf: Any | None = None
     fcf_proxy: Any | None = None
     current_fcf: Any | None = None
+    fcf_period_basis: Any | None = None
     free_cash_flow: Any | None = None
     operating_cash_flow: Any | None = None
     operating_cash_flow_evidence_id: Any | None = None
@@ -100,6 +101,7 @@ class ReverseDCFResult(BaseModel):
     company_name: str | None = None
     ticker: str | None = None
     base_fcf: str | None = None
+    period_basis: Literal["TTM"] | None = None
     equity_value: str | None = None
     market_price: str | None = None
     shares_outstanding: str | None = None
@@ -163,6 +165,22 @@ def _raw_value_and_ids(raw: Any) -> tuple[Any, list[str]]:
         raw.get("numeric_value", raw.get("raw_result", raw.get("amount"))),
     )
     return value, result_ids
+
+
+def _period_contract(raw: Any) -> tuple[str | None, str | None]:
+    """读取 FCF 输入的期间和验证状态，不为缺失值补默认口径。"""
+    if isinstance(raw, BaseModel):
+        raw = raw.model_dump()
+    if not isinstance(raw, Mapping):
+        return None, None
+    period_basis = raw.get("period_basis")
+    validation_status = raw.get("validation_status")
+    return (
+        str(period_basis).strip().upper() if period_basis is not None else None,
+        str(validation_status).strip().lower()
+        if validation_status is not None
+        else None,
+    )
 
 
 def _first_value(values: tuple[Any, ...], facts: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
@@ -272,6 +290,7 @@ class ReverseDCFTool(BaseTool):
         market_price: Decimal | None = None,
         shares_outstanding: Decimal | None = None,
         base_fcf: Decimal | None = None,
+        period_basis: Literal["TTM"] | None = None,
     ) -> ReverseDCFResult:
         if not warnings:
             warnings = ["reverse DCF unavailable: " + ", ".join(dict.fromkeys(reasons))]
@@ -284,6 +303,7 @@ class ReverseDCFTool(BaseTool):
                 _plain(shares_outstanding) if shares_outstanding is not None else None
             ),
             base_fcf=_plain(base_fcf) if base_fcf is not None else None,
+            period_basis=period_basis,
             reasons=list(dict.fromkeys(reasons)),
             warnings=list(dict.fromkeys(warnings)),
             input_evidence_ids=input_evidence_ids,
@@ -300,6 +320,7 @@ class ReverseDCFTool(BaseTool):
         base_fcf: Any | None = None,
         fcf_proxy: Any | None = None,
         current_fcf: Any | None = None,
+        fcf_period_basis: Any | None = None,
         free_cash_flow: Any | None = None,
         operating_cash_flow: Any | None = None,
         operating_cash_flow_evidence_id: Any | None = None,
@@ -382,6 +403,9 @@ class ReverseDCFTool(BaseTool):
             fact_map,
             ("fcf", "base_fcf", "fcf_proxy", "current_fcf", "free_cash_flow"),
         )
+        if fcf_period_basis is not None and isinstance(direct_fcf, Mapping):
+            direct_fcf = dict(direct_fcf)
+            direct_fcf.setdefault("period_basis", fcf_period_basis)
         raw_direct_fcf, direct_fcf_ids = _raw_value_and_ids(direct_fcf)
         if fcf_evidence_id is not None:
             direct_fcf_ids.extend(
@@ -396,7 +420,10 @@ class ReverseDCFTool(BaseTool):
 
         fcf_value: Decimal | None = None
         valid_fcf_ids: list[str] = []
+        fcf_basis, fcf_validation_status = _period_contract(direct_fcf)
         if direct_fcf is not None:
+            if fcf_basis != "TTM" or fcf_validation_status != "valid":
+                reasons.append("ttm_fcf_required")
             fcf_value = _as_decimal(raw_direct_fcf)
             valid_fcf_ids = [item for item in direct_fcf_ids if _valid_evidence_id(item)]
             if fcf_value is None or fcf_value <= 0:
@@ -406,48 +433,7 @@ class ReverseDCFTool(BaseTool):
             elif len(valid_fcf_ids) != len(direct_fcf_ids):
                 reasons.append("invalid_fcf_evidence_id")
         else:
-            raw_ocf = _first_value(
-                (operating_cash_flow,),
-                fact_map,
-                ("operating_cash_flow", "ocf"),
-            )
-            raw_capex = _first_value(
-                (capital_expenditure, capex),
-                fact_map,
-                ("capital_expenditure", "capex"),
-            )
-            ocf_value, ocf_ids = _raw_value_and_ids(raw_ocf)
-            capex_value, capex_ids = _raw_value_and_ids(raw_capex)
-            if operating_cash_flow_evidence_id is not None:
-                ocf_ids.append(str(operating_cash_flow_evidence_id))
-            if capital_expenditure_evidence_id is not None:
-                capex_ids.append(str(capital_expenditure_evidence_id))
-            ocf = _as_decimal(ocf_value)
-            capex_decimal = _as_decimal(capex_value)
-            valid_ocf_ids = [item for item in ocf_ids if _valid_evidence_id(item)]
-            valid_capex_ids = [item for item in capex_ids if _valid_evidence_id(item)]
-            if ocf is None:
-                reasons.append("invalid_operating_cash_flow")
-            if capex_decimal is None or capex_decimal < 0:
-                reasons.append("invalid_capital_expenditure")
-            if not ocf_ids:
-                reasons.append("missing_operating_cash_flow_evidence_id")
-            elif len(valid_ocf_ids) != len(ocf_ids):
-                reasons.append("invalid_operating_cash_flow_evidence_id")
-            if not capex_ids:
-                reasons.append("missing_capital_expenditure_evidence_id")
-            elif len(valid_capex_ids) != len(capex_ids):
-                reasons.append("invalid_capital_expenditure_evidence_id")
-            if ocf is not None and capex_decimal is not None and capex_decimal >= 0:
-                with localcontext() as context:
-                    context.prec = 28
-                    context.rounding = ROUND_HALF_EVEN
-                    fcf_value = ocf - capex_decimal
-            valid_fcf_ids = []
-            _append_unique(valid_fcf_ids, valid_ocf_ids)
-            _append_unique(valid_fcf_ids, valid_capex_ids)
-            if fcf_value is not None and fcf_value <= 0:
-                reasons.append("invalid_fcf")
+            reasons.append("ttm_fcf_required")
 
         _append_unique(input_ids, valid_fcf_ids)
         _append_unique(input_ids, valid_shares_ids)
@@ -468,6 +454,7 @@ class ReverseDCFTool(BaseTool):
                 market_price=price,
                 shares_outstanding=shares,
                 base_fcf=fcf_value,
+                period_basis=fcf_basis if fcf_basis == "TTM" else None,
             )
 
         assert price is not None
@@ -509,6 +496,7 @@ class ReverseDCFTool(BaseTool):
                 company_name=company_name.strip() if company_name else None,
                 ticker=ticker.strip().upper() if ticker else None,
                 base_fcf=_plain(fcf_value),
+                period_basis="TTM",
                 equity_value=_plain(equity_value),
                 market_price=_plain(price),
                 shares_outstanding=_plain(shares),
@@ -529,6 +517,7 @@ class ReverseDCFTool(BaseTool):
             company_name=company_name.strip() if company_name else None,
             ticker=ticker.strip().upper() if ticker else None,
             base_fcf=_plain(fcf_value),
+            period_basis="TTM",
             equity_value=_plain(equity_value),
             market_price=_plain(price),
             shares_outstanding=_plain(shares),

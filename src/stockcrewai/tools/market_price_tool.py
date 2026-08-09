@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import ssl
 import time
-from calendar import monthrange
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -279,12 +278,11 @@ class MarketPriceTool(BaseTool):
             month = date_text[:7]
             previous = selected.get(month)
             if previous is None or ordering_date >= previous[0]:
-                month_end = date(
-                    ordering_date.year,
-                    ordering_date.month,
-                    monthrange(ordering_date.year, ordering_date.month)[1],
-                ).isoformat()
-                selected[month] = (ordering_date, month_end, price)
+                selected[month] = (
+                    ordering_date,
+                    ordering_date.date().isoformat(),
+                    price,
+                )
 
         if not selected:
             raise ValueError("历史收盘价缺失")

@@ -63,6 +63,7 @@ class ValuationCalculation(BaseModel):
     normalized_result: str | None = None
     display_result: str | None = None
     unit: str | None = None
+    period_basis: Literal["TTM"] | None = None
     status: Literal["available", "unavailable"]
     validation_status: Literal["unvalidated", "valid", "invalid"] = "unvalidated"
     market_price: str | None = None
@@ -291,28 +292,84 @@ def _raw_value_and_evidence(raw: Any) -> tuple[Any, list[str]]:
             ids = [ids]
         if isinstance(ids, list):
             evidence_ids.extend(str(item) for item in ids if item)
-    value = raw.get("value", raw.get("numeric_value", raw.get("raw_result")))
+    value = next(
+        (
+            raw.get(key)
+            for key in ("value", "numeric_value", "raw_result")
+            if raw.get(key) is not None
+        ),
+        None,
+    )
     return value, _unique_ids(evidence_ids)
 
 
 def _fact(
-    facts: dict[str, Any], canonical_name: str
-) -> tuple[Decimal | None, list[str], str | None, str | None, str | None]:
+    facts: dict[str, Any], canonical_name: str, *, require_ttm: bool = False
+) -> tuple[
+    Decimal | None,
+    list[str],
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+]:
+    """读取 fact，并在期间敏感指标上执行严格的 TTM 合同检查。"""
     for fact_name in _FACT_ALIASES[canonical_name]:
         if fact_name not in facts:
             continue
         raw_fact = facts[fact_name]
         if isinstance(raw_fact, BaseModel):
             raw_fact = raw_fact.model_dump()
-        unit = raw_fact.get("unit") if isinstance(raw_fact, dict) else None
+        if not isinstance(raw_fact, dict):
+            raw_fact = {"value": raw_fact}
+        unit = raw_fact.get("unit")
+        period_basis = _as_text(raw_fact.get("period_basis"))
+        validation_status = _as_text(raw_fact.get("validation_status"))
         raw_value, evidence_ids = _raw_value_and_evidence(raw_fact)
+        if require_ttm and (
+            period_basis != "TTM" or validation_status != "valid"
+        ):
+            return (
+                None,
+                evidence_ids,
+                fact_name,
+                _as_text(unit),
+                "必须提供 period_basis=TTM 且 validation_status=valid 的输入",
+                period_basis,
+                validation_status,
+            )
         if raw_value is None:
-            return None, evidence_ids, fact_name, _as_text(unit), "缺少数值"
+            return (
+                None,
+                evidence_ids,
+                fact_name,
+                _as_text(unit),
+                "缺少数值",
+                period_basis,
+                validation_status,
+            )
         try:
-            return _as_decimal(raw_value), evidence_ids, fact_name, _as_text(unit), None
+            return (
+                _as_decimal(raw_value),
+                evidence_ids,
+                fact_name,
+                _as_text(unit),
+                None,
+                period_basis,
+                validation_status,
+            )
         except ValueError as exc:
-            return None, evidence_ids, fact_name, _as_text(unit), str(exc)
-    return None, [], None, None, "缺少输入"
+            return (
+                None,
+                evidence_ids,
+                fact_name,
+                _as_text(unit),
+                str(exc),
+                period_basis,
+                validation_status,
+            )
+    return None, [], None, None, "缺少输入", None, None
 
 
 class ValuationTool(BaseTool):
@@ -335,6 +392,7 @@ class ValuationTool(BaseTool):
         price_timestamp: str | None,
         currency: str | None,
         source_reference: str | None,
+        period_basis: Literal["TTM"] | None = None,
     ) -> ValuationCalculation:
         return ValuationCalculation(
             calculation_id=f"calc_{formula_id}",
@@ -347,6 +405,7 @@ class ValuationTool(BaseTool):
             price_timestamp=price_timestamp,
             currency=currency,
             source_reference=source_reference,
+            period_basis=period_basis,
             warnings=[warning],
         )
 
@@ -363,6 +422,7 @@ class ValuationTool(BaseTool):
         currency: str,
         source_reference: str,
         financial_evidence_complete: bool,
+        period_basis: Literal["TTM"] | None = None,
     ) -> ValuationCalculation:
         if unit == "ratio":
             display_result = f"{result * 100:.2f}%"
@@ -390,6 +450,7 @@ class ValuationTool(BaseTool):
             normalized_result=_scientific(result),
             display_result=display_result,
             unit=unit,
+            period_basis=period_basis,
             status="available",
             validation_status=validation_status,
             market_price=market_price,
@@ -453,11 +514,33 @@ class ValuationTool(BaseTool):
             [market_price_evidence_id] if market_price_evidence_id else []
         )
 
-        shares, share_ids, _, share_unit, share_problem = _fact(
-            facts, "common_shares_outstanding"
-        )
-        eps, eps_ids, _, eps_unit, eps_problem = _fact(facts, "diluted_eps")
-        fcf, fcf_ids, _, fcf_unit, fcf_problem = _fact(facts, "current_fcf")
+        (
+            shares,
+            share_ids,
+            _,
+            share_unit,
+            share_problem,
+            _,
+            _,
+        ) = _fact(facts, "common_shares_outstanding")
+        (
+            eps,
+            eps_ids,
+            _,
+            eps_unit,
+            eps_problem,
+            eps_period_basis,
+            eps_validation_status,
+        ) = _fact(facts, "diluted_eps", require_ttm=True)
+        (
+            fcf,
+            fcf_ids,
+            _,
+            fcf_unit,
+            fcf_problem,
+            fcf_period_basis,
+            fcf_validation_status,
+        ) = _fact(facts, "current_fcf", require_ttm=True)
         shares_unit_ok, shares_unit_reason, shares_unit_warning = _unit_check(
             "common_shares_outstanding", share_unit, "shares", price_currency
         )
@@ -484,20 +567,31 @@ class ValuationTool(BaseTool):
         if shares_unit_reason:
             readiness_reasons.append(shares_unit_reason)
         if eps is None:
-            readiness_reasons.append("diluted_eps")
+            readiness_reasons.append("ttm_eps_required")
         elif eps <= 0:
             readiness_reasons.append("diluted_eps_positive")
         if eps_unit_reason:
             readiness_reasons.append(eps_unit_reason)
         if fcf is None:
-            readiness_reasons.append("current_fcf")
+            readiness_reasons.append("ttm_fcf_required")
         if fcf_unit_reason:
             readiness_reasons.append(fcf_unit_reason)
         warnings: list[str] = []
 
         shares_ready = shares is not None and shares > 0 and shares_unit_ok
-        eps_ready = eps is not None and eps > 0 and eps_unit_ok
-        fcf_ready = fcf is not None and fcf_unit_ok
+        eps_ready = (
+            eps is not None
+            and eps > 0
+            and eps_unit_ok
+            and eps_period_basis == "TTM"
+            and eps_validation_status == "valid"
+        )
+        fcf_ready = (
+            fcf is not None
+            and fcf_unit_ok
+            and fcf_period_basis == "TTM"
+            and fcf_validation_status == "valid"
+        )
         share_warning = (
             f"缺少 common_shares_outstanding：{share_problem}"
             if shares is None
@@ -624,12 +718,13 @@ class ValuationTool(BaseTool):
                             timestamp or "",
                             price_currency or "",
                             price_source or "",
-                            _has_financial_evidence(
+                        _has_financial_evidence(
                                 fcf_ids, market_price_evidence_id
                             )
                             and _has_financial_evidence(
                                 share_ids, market_price_evidence_id
                             ),
+                            period_basis="TTM",
                         )
                     )
 
@@ -661,6 +756,7 @@ class ValuationTool(BaseTool):
                         price_currency or "",
                         price_source or "",
                         _has_financial_evidence(eps_ids, market_price_evidence_id),
+                        period_basis="TTM",
                     )
                 )
 

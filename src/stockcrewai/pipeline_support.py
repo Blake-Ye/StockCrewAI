@@ -1456,14 +1456,52 @@ def _valuation_facts(validated_state: dict[str, Any]) -> dict[str, Any]:
         可传给当前估值、历史估值和反向 DCF 工具的事实字典。
     """
     facts = dict(validated_state.get("facts", {}))
+    # SEC 的原始 diluted EPS 可能是单季度或 YTD，不能直接交给当前
+    # 估值。先移除这些 legacy 别名，再只从已验证 TTM Builder 输出投影
+    # diluted_eps/current_fcf，避免下游把旧字段误当作 TTM。
+    for legacy_key in ("diluted_eps", "earnings_per_share_diluted", "current_fcf"):
+        facts.pop(legacy_key, None)
+
+    ttm_payload = validated_state.get("ttm", {})
+    ttm_metrics = (
+        ttm_payload.get("metrics", [])
+        if isinstance(ttm_payload, Mapping)
+        else []
+    )
+    if isinstance(ttm_metrics, Mapping):
+        ttm_metrics = list(ttm_metrics.values())
+    if isinstance(ttm_metrics, list):
+        for metric in ttm_metrics:
+            if not isinstance(metric, Mapping):
+                continue
+            metric_id = metric.get("metric_id")
+            if metric_id not in {"diluted_eps", "free_cash_flow"}:
+                continue
+            if metric.get("status") != "available":
+                continue
+            payload = {
+                "raw_result": metric.get("raw_result"),
+                "unit": metric.get("unit"),
+                "period_basis": metric.get("period_basis") or "TTM",
+                "validation_status": metric.get("validation_status"),
+                "input_evidence_ids": metric.get("input_evidence_ids", []),
+            }
+            if metric_id == "diluted_eps":
+                facts["diluted_eps"] = payload
+            else:
+                facts["current_fcf"] = payload
+
     for calculation in validated_state.get("calculations", []):
         if (
             calculation.get("formula_id") == "free_cash_flow"
             and calculation.get("raw_result") is not None
+            and "current_fcf" not in facts
         ):
             fcf_fact = {
                 "raw_result": calculation["raw_result"],
                 "evidence_ids": calculation.get("input_evidence_ids", []),
+                "period_basis": calculation.get("period_basis"),
+                "validation_status": calculation.get("validation_status"),
             }
             input_evidence_ids = set(calculation.get("input_evidence_ids", []))
             source_units = {
@@ -1475,7 +1513,13 @@ def _valuation_facts(validated_state: dict[str, Any]) -> dict[str, Any]:
             }
             if len(source_units) == 1:
                 fcf_fact["unit"] = next(iter(source_units))
-            facts.setdefault("current_fcf", fcf_fact)
+            # 只有明确标记 TTM 且已验证的计算才可进入估值；旧的
+            # financial calculator 结果不再作为隐式回退。
+            if (
+                fcf_fact.get("period_basis") == "TTM"
+                and fcf_fact.get("validation_status") == "valid"
+            ):
+                facts["current_fcf"] = fcf_fact
     return facts
 
 

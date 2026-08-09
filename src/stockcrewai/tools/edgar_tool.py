@@ -39,6 +39,7 @@ TTM_FACT_CONCEPTS = (
     "net_income",
     "operating_cash_flow",
     "capex",
+    "diluted_eps",
 )
 TTM_ROLES = ("latest_fy", "current_ytd", "prior_ytd")
 
@@ -436,6 +437,14 @@ class EdgarTool(BaseTool):
         company_cik: str,
         ticker: str | None,
     ) -> list[dict[str, Any]]:
+        """按 filing date 组合可重算的历史 TTM EPS 快照。
+
+        Company Facts 中的 diluted EPS 同时包含 FY、YTD 和单季度观察值。
+        历史估值不能直接拿这些观察值除以价格；这里仅组合
+        ``FY + current YTD - prior YTD``，并把三项原始 SEC Evidence 保留
+        在快照中。快照的可用日期取三项 filing date 的最晚值，保证下游
+        的价格日期匹配不会使用尚未公开的财务数据。
+        """
         get_all_facts = getattr(container, "get_all_facts", None)
         if not callable(get_all_facts):
             return []
@@ -443,25 +452,26 @@ class EdgarTool(BaseTool):
         source = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json"
         try:
             all_facts = get_all_facts()
-            snapshots: list[dict[str, Any]] = []
+            records: list[dict[str, Any]] = []
+
+            def fact_value(fact: Any, *names: str) -> Any:
+                if isinstance(fact, dict):
+                    for name in names:
+                        value = fact.get(name)
+                        if value is not None:
+                            return value
+                    return None
+                for name in names:
+                    value = _read_attr(fact, name)
+                    if value is not None:
+                        return value
+                return None
+
             for fact in all_facts:
                 try:
-                    def fact_value(*names: str) -> Any:
-                        if isinstance(fact, dict):
-                            for name in names:
-                                value = fact.get(name)
-                                if value is not None:
-                                    return value
-                            return None
-                        for name in names:
-                            value = _read_attr(fact, name)
-                            if value is not None:
-                                return value
-                        return None
-
                     concept = " ".join(
-                        str(fact_value(name) or "").lower()
-                        for name in ("concept", "label")
+                        str(fact_value(fact, name) or "").lower()
+                        for name in ("concept", "concept_name", "label", "tag_used")
                     )
                     normalized_concept = re.sub(r"[^a-z0-9]", "", concept)
                     if not (
@@ -471,15 +481,15 @@ class EdgarTool(BaseTool):
                     ):
                         continue
 
-                    raw_eps = fact_value("numeric_value")
+                    raw_eps = fact_value(fact, "numeric_value")
                     if raw_eps is None:
-                        raw_eps = fact_value("value")
+                        raw_eps = fact_value(fact, "value")
                     eps = Decimal(_decimal_string(raw_eps))
                     if eps <= 0:
                         continue
 
-                    filing_date = _as_date(fact_value("filing_date"))
-                    period_end = _as_date(fact_value("period_end"))
+                    filing_date = _as_date(fact_value(fact, "filing_date", "filed_at"))
+                    period_end = _as_date(fact_value(fact, "period_end"))
                     if (
                         filing_date is None
                         or period_end is None
@@ -487,8 +497,8 @@ class EdgarTool(BaseTool):
                     ):
                         continue
 
-                    form = fact_value("form_type", "form")
-                    accession = fact_value("accession", "accession_number")
+                    form = fact_value(fact, "form_type", "form")
+                    accession = fact_value(fact, "accession", "accession_number")
                     if form in (None, "") or accession in (None, ""):
                         continue
                     form = str(form).strip()
@@ -497,8 +507,25 @@ class EdgarTool(BaseTool):
                         continue
                     filed_at = filing_date.isoformat()
                     period_end_value = period_end.isoformat()
+                    period = str(fact_value(fact, "period") or "").strip()
+                    fiscal_year = fact_value(fact, "fiscal_year")
+                    fiscal_period = fact_value(fact, "fiscal_period")
+                    if period and (fiscal_year is None or fiscal_period is None):
+                        match = re.fullmatch(r"(\d{4})-(FY|Q[1-3])", period.upper())
+                        if match:
+                            fiscal_year = fiscal_year or int(match.group(1))
+                            fiscal_period = fiscal_period or match.group(2)
+                    if fiscal_year is None or fiscal_period is None:
+                        continue
+                    try:
+                        fiscal_year = int(fiscal_year)
+                    except (TypeError, ValueError):
+                        continue
+                    fiscal_period = str(fiscal_period).upper()
+                    if fiscal_period not in {"FY", "Q1", "Q2", "Q3"}:
+                        continue
                     source_reference = str(
-                        fact_value("source_reference", "source") or source
+                        fact_value(fact, "source_reference", "source") or source
                     )
                     evidence_id = "ev_{}_historical_eps_{}_{}_{}".format(
                         _safe_id(ticker or company_cik),
@@ -506,25 +533,69 @@ class EdgarTool(BaseTool):
                         _safe_id(period_end_value),
                         _safe_id(accession),
                     )
-                    snapshots.append(
+                    records.append(
                         {
-                            "as_of": filed_at,
-                            "eps": _decimal_string(raw_eps),
+                            "value": _decimal_string(raw_eps),
                             "evidence_id": evidence_id,
                             "filed_at": filed_at,
                             "period_end": period_end_value,
                             "source_reference": source_reference,
                             "form": form,
                             "accession_number": accession,
+                            "fiscal_year": fiscal_year,
+                            "fiscal_period": fiscal_period,
                         }
                     )
                 except (AttributeError, InvalidOperation, TypeError, ValueError):
                     continue
+
+            # 同一财务期间可能有修订或 amendment；对每个期间只使用截至
+            # as_of 可见的最新 filing，避免重复观察值污染月度历史序列。
+            by_period: dict[tuple[int, str], dict[str, Any]] = {}
+            for record in records:
+                key = (record["fiscal_year"], record["fiscal_period"])
+                previous = by_period.get(key)
+                if previous is None or (
+                    record["filed_at"], record["period_end"]
+                ) > (previous["filed_at"], previous["period_end"]):
+                    by_period[key] = record
+
+            snapshots: list[dict[str, Any]] = []
+            for (fiscal_year, fiscal_period), current in sorted(by_period.items()):
+                if fiscal_period not in {"Q1", "Q2", "Q3"}:
+                    continue
+                latest_fy = by_period.get((fiscal_year - 1, "FY"))
+                prior_ytd = by_period.get((fiscal_year - 1, fiscal_period))
+                if latest_fy is None or prior_ytd is None:
+                    continue
+                role_records = (latest_fy, current, prior_ytd)
+                filed_at = max(item["filed_at"] for item in role_records)
+                ttm_eps = (
+                    Decimal(latest_fy["value"])
+                    + Decimal(current["value"])
+                    - Decimal(prior_ytd["value"])
+                )
+                if ttm_eps <= 0:
+                    continue
+                financial_evidence_ids = [item["evidence_id"] for item in role_records]
+                snapshots.append(
+                    {
+                        "as_of": filed_at,
+                        "filed_at": filed_at,
+                        "period_end": current["period_end"],
+                        "period_basis": "TTM",
+                        "ttm_eps": format(ttm_eps.normalize(), "f"),
+                        "financial_evidence_ids": financial_evidence_ids,
+                        "source_reference": current["source_reference"],
+                        "form": current["form"],
+                        "accession_number": current["accession_number"],
+                    }
+                )
             snapshots.sort(
                 key=lambda snapshot: (
-                    snapshot["as_of"],
+                    snapshot["filed_at"],
                     snapshot["period_end"],
-                    snapshot["evidence_id"],
+                    tuple(snapshot.get("financial_evidence_ids", [])),
                 )
             )
             return snapshots
@@ -578,11 +649,25 @@ class EdgarTool(BaseTool):
             return enriched
 
         for metric_id in TTM_FACT_CONCEPTS:
+            # 内部统一使用 diluted_eps，但 edgartools/SEC Company Facts
+            # 实际可能只接受 earnings_per_share_diluted。先按内部名查询，
+            # 没有结果时再查询 SEC 原始概念名；下游仍只暴露统一 metric_id。
+            concept_names = (
+                ("diluted_eps", "earnings_per_share_diluted")
+                if metric_id == "diluted_eps"
+                else (metric_id,)
+            )
             candidates: list[dict[str, Any]] = []
-            try:
-                latest = get_concept(metric_id, return_metadata=True)
-            except Exception:
-                latest = None
+            concept_name = concept_names[0]
+            latest = None
+            for candidate_name in concept_names:
+                try:
+                    latest = get_concept(candidate_name, return_metadata=True)
+                except Exception:
+                    latest = None
+                if latest:
+                    concept_name = candidate_name
+                    break
             if latest:
                 latest = enrich_metadata(dict(latest))
                 candidates.append(latest)
@@ -605,7 +690,7 @@ class EdgarTool(BaseTool):
                         continue
                     try:
                         metadata = get_concept(
-                            metric_id,
+                            concept_name,
                             period=period,
                             return_metadata=True,
                         )

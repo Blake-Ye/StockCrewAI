@@ -3,6 +3,20 @@ import unittest
 
 
 class ValuationToolTests(unittest.TestCase):
+    @staticmethod
+    def _ttm(value, *, unit, evidence_id=None, evidence_ids=None, valid=True):
+        payload = {
+            "value": value,
+            "unit": unit,
+            "period_basis": "TTM",
+            "validation_status": "valid" if valid else "unvalidated",
+        }
+        if evidence_id is not None:
+            payload["evidence_id"] = evidence_id
+        if evidence_ids is not None:
+            payload["evidence_ids"] = evidence_ids
+        return payload
+
     def test_market_price_provenance_is_stable_and_validates_calculations(self):
         from stockcrewai.tools.valuation_tool import ValuationTool
 
@@ -18,16 +32,8 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "shares",
                 },
-                "diluted_eps": {
-                    "value": "2",
-                    "evidence_id": "ev_eps",
-                    "unit": "USD/share",
-                },
-                "current_fcf": {
-                    "value": "20",
-                    "evidence_id": "ev_fcf",
-                    "unit": "USD",
-                },
+                "diluted_eps": self._ttm("2", unit="USD/share", evidence_id="ev_eps"),
+                "current_fcf": self._ttm("20", unit="USD", evidence_id="ev_fcf"),
             },
         }
 
@@ -62,11 +68,11 @@ class ValuationToolTests(unittest.TestCase):
                     "value": "10",
                     "unit": "shares",
                 },
-                "current_fcf": {
-                    "value": "20",
-                    "evidence_ids": ["ev_fcf_ocf", "ev_fcf_capex"],
-                    "unit": "USD",
-                },
+                "current_fcf": self._ttm(
+                    "20",
+                    unit="USD",
+                    evidence_ids=["ev_fcf_ocf", "ev_fcf_capex"],
+                ),
             },
         )
 
@@ -97,16 +103,10 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "shares",
                 },
-                "earnings_per_share_diluted": {
-                    "value": "2",
-                    "evidence_id": "ev_eps",
-                    "unit": "USD/share",
-                },
-                "free_cash_flow": {
-                    "value": "20",
-                    "evidence_id": "ev_fcf",
-                    "unit": "USD",
-                },
+                "earnings_per_share_diluted": self._ttm(
+                    "2", unit="USD/share", evidence_id="ev_eps"
+                ),
+                "free_cash_flow": self._ttm("20", unit="USD", evidence_id="ev_fcf"),
             },
         )
 
@@ -156,15 +156,13 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "shares",
                 },
-                "earnings_per_share_diluted": {
-                    "value": "2",
-                    "evidence_id": "ev_eps",
-                    "unit": "USD_per_share",
-                },
+                "earnings_per_share_diluted": self._ttm(
+                    "2", unit="USD_per_share", evidence_id="ev_eps"
+                ),
                 "current_fcf": {
+                    **self._ttm("20", unit="USD", evidence_ids=["ev_fcf"]),
                     "raw_result": "20",
-                    "evidence_ids": ["ev_fcf"],
-                    "unit": "USD",
+                    "value": None,
                 },
             },
         )
@@ -183,16 +181,10 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "shares",
                 },
-                "earnings_per_share_diluted": {
-                    "value": "2",
-                    "evidence_id": "ev_eps",
-                    "unit": "USD/share",
-                },
-                "free_cash_flow": {
-                    "value": "20",
-                    "evidence_id": "ev_fcf",
-                    "unit": "USD",
-                },
+                "earnings_per_share_diluted": self._ttm(
+                    "2", unit="USD/share", evidence_id="ev_eps"
+                ),
+                "free_cash_flow": self._ttm("20", unit="USD", evidence_id="ev_fcf"),
             },
         )
 
@@ -229,11 +221,9 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "shares",
                 },
-                "earnings_per_share_diluted": {
-                    "value": "0",
-                    "evidence_id": "ev_eps",
-                    "unit": "USD/share",
-                },
+                "earnings_per_share_diluted": self._ttm(
+                    "0", unit="USD/share", evidence_id="ev_eps"
+                ),
             },
         )
 
@@ -256,16 +246,10 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "shares",
                 },
-                "earnings_per_share_diluted": {
-                    "value": "2",
-                    "evidence_id": "ev_eps",
-                    "unit": "USD/share",
-                },
-                "free_cash_flow": {
-                    "value": "20",
-                    "evidence_id": "ev_fcf",
-                    "unit": "USD",
-                },
+                "earnings_per_share_diluted": self._ttm(
+                    "2", unit="USD/share", evidence_id="ev_eps"
+                ),
+                "free_cash_flow": self._ttm("20", unit="USD", evidence_id="ev_fcf"),
             },
         )
 
@@ -287,16 +271,10 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "shares",
                 },
-                "earnings_per_share_diluted": {
-                    "value": "2",
-                    "evidence_id": "ev_eps",
-                    "unit": "EUR/share",
-                },
-                "free_cash_flow": {
-                    "value": "20",
-                    "evidence_id": "ev_fcf",
-                    "unit": "EUR",
-                },
+                "earnings_per_share_diluted": self._ttm(
+                    "2", unit="EUR/share", evidence_id="ev_eps"
+                ),
+                "free_cash_flow": self._ttm("20", unit="EUR", evidence_id="ev_fcf"),
             },
         )
 
@@ -323,16 +301,10 @@ class ValuationToolTests(unittest.TestCase):
                     "evidence_id": "ev_shares",
                     "unit": "unknown",
                 },
-                "earnings_per_share_diluted": {
-                    "value": "2",
-                    "evidence_id": "ev_eps",
-                    "unit": "USD/share",
-                },
-                "free_cash_flow": {
-                    "value": "20",
-                    "evidence_id": "ev_fcf",
-                    "unit": "USD",
-                },
+                "earnings_per_share_diluted": self._ttm(
+                    "2", unit="USD/share", evidence_id="ev_eps"
+                ),
+                "free_cash_flow": self._ttm("20", unit="USD", evidence_id="ev_fcf"),
             },
         )
 
