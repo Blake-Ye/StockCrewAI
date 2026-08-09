@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from crewai import Agent, Crew, Process, Task, TaskOutput
+from crewai import Agent, Crew, LLM, Process, Task, TaskOutput
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.project import CrewBase, agent, crew, task
 from pydantic import (
@@ -1460,21 +1460,21 @@ class ReportCrew:
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
 
-    def __init__(self) -> None:
-        # CrewAI 1.15.11's CrewBase mapper expects string LLM references;
-        # Agent resolves the structured LLM config itself.
-        self.map_all_agent_variables = lambda: None
-
     @agent
     def report_writer_agent(self) -> Agent:
-        """装配只生成无数字 ReportDraft 的 Agent。"""
+        """装配 DeepSeek JSON Object 与本地 ReportDraft guardrail。"""
+        config = self.agents_config["report_writer_agent"]  # type: ignore[index]
         return Agent(
-            config=self.agents_config["report_writer_agent"],  # type: ignore[index]
+            config=config,
+            llm=LLM(
+                model=config["llm"],  # type: ignore[index]
+                response_format={"type": "json_object"},
+            ),
         )
 
     @task
     def generate_validated_report_task(self) -> Task:
-        """装配本地 ReportDraft Guardrail，避免依赖模型原生响应格式。"""
+        """装配 DeepSeek JSON Object 与本地 ReportDraft guardrail。"""
         return Task(
             config=self.tasks_config["generate_validated_report_task"],  # type: ignore[index]
             guardrail=validate_report_draft,

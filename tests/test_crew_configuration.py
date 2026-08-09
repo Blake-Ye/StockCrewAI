@@ -2514,6 +2514,18 @@ class CrewConfigurationTests(unittest.TestCase):
         for agent in configured_crew.agents:
             self.assertEqual(agent.tools, [])
 
+    def test_report_crew_keeps_crewai_agent_variable_mapping(self):
+        from stockcrewai.crews.report.crew import ReportCrew
+
+        report_crew = ReportCrew()
+
+        self.assertNotIn("map_all_agent_variables", report_crew.__dict__)
+        self.assertIs(
+            getattr(report_crew.map_all_agent_variables, "__func__", None),
+            ReportCrew.map_all_agent_variables,
+        )
+        report_crew.map_all_agent_variables()
+
     def test_report_crew_has_one_deepseek_agent_and_bound_task(self):
         from stockcrewai.crews.report.crew import ReportCrew
 
