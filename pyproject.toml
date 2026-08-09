@@ -42,6 +42,7 @@ select = ["E4", "E7", "E9", "F"]
 [tool.mypy]
 python_version = "3.10"
 warn_unused_ignores = true
+files = ["src/stockcrewai/models"]
 
 # Rich/终端流模拟与 pytest 的 fd 捕获冲突，默认使用 sys capture。
 [tool.pytest.ini_options]
