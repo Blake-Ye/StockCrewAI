@@ -186,6 +186,7 @@ git commit -m "fix: qualify complete SEC risk evidence"
 - Create: `tests/test_analysis_gate.py`
 - Modify: `tests/test_main_flow.py`
 - Modify: `tests/test_crew_configuration.py` (共享离线 fixture 与旧风险 Gate 错误码断言必须同步 Task 1 契约)
+- Modify: `tests/test_valuation_claim_stability.py` (eligible 风险证据下两次空风险 Claim 的预期必须同步为 Builder 恢复；保留财务空 Claim 的阻断断言)
 
 **Interfaces:**
 - Consumes: Task 1 的 `EdgarFilingEvidence.risk_eligibility` 与完整 `risk_sections`。
