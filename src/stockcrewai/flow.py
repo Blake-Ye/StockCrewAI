@@ -60,6 +60,7 @@ from stockcrewai.pipeline_support import (
 from stockcrewai.run_output import RunStageEvent, sanitize_text
 from stockcrewai.models.policy import PolicyDecision
 from stockcrewai.models.profile import ProfileResult
+from stockcrewai.services.evidence_store import EvidenceStore
 from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
 from stockcrewai.tools.edgar_tool import EdgarTool
 from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
@@ -218,6 +219,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         "reverse_dcf_tool",
         "ttm_builder_tool",
         "analysis_crew",
+        "evidence_store",
         "report_crew",
         "market_price_data",
         "progress_callback",
@@ -232,6 +234,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
     _reverse_dcf_tool: Any = PrivateAttr(default=None)
     _ttm_builder_tool: Any = PrivateAttr(default=None)
     _analysis_crew: Any = PrivateAttr(default=None)
+    _evidence_store: Any = PrivateAttr(default=None)
     _report_crew: Any = PrivateAttr(default=None)
     _market_price_data: Any = PrivateAttr(default=None)
 
@@ -267,6 +270,53 @@ class ResearchFlow(Flow[ResearchFlowState]):
         super().__init__(**data)
         for name, dependency in dependencies.items():
             setattr(self, f"_{name}", dependency)
+
+    def _build_analysis_evidence_store(self) -> EvidenceStore:
+        """为当前 Flow run 构造不进入 state 的只读 EvidenceStore。"""
+        state_payload = _json_safe(self.state.model_dump(mode="json"))
+        if isinstance(self._pipeline_state, Mapping):
+            state_payload.update(_json_safe(self._pipeline_state))
+
+        validation = state_payload.get("validation", {})
+        if not isinstance(validation, Mapping):
+            validation = {}
+
+        def records_for(key: str, default: Any) -> Any:
+            value = state_payload.get(key, default)
+            if key == "calculations" and isinstance(value, Mapping):
+                value = value.get("calculations", [])
+            if key == "filings" and isinstance(value, Mapping):
+                value = value.get("filings", [])
+            if key == "facts" and not isinstance(value, Mapping):
+                return {}
+            if key != "facts" and not isinstance(value, list):
+                return []
+            return _json_safe(value)
+
+        def validated_ids(key: str) -> list[str]:
+            for source in (validation, state_payload):
+                value = source.get(key)
+                if isinstance(value, str):
+                    value = [value]
+                if isinstance(value, (list, tuple, set, frozenset)):
+                    return [item for item in value if isinstance(item, str) and item]
+            return []
+
+        return EvidenceStore(
+            {
+                "evidence": records_for("facts", {}),
+                "calculations": records_for("calculations", []),
+                "filings": records_for("filings", []),
+            },
+            run_id=str(self.state.id),
+            allowlist={
+                "validated_evidence_ids": validated_ids("validated_evidence_ids"),
+                "validated_calculation_ids": validated_ids(
+                    "validated_calculation_ids"
+                ),
+                "validated_filing_ids": validated_ids("validated_filing_ids"),
+            },
+        )
 
     def _emit_stage(self, event: RunStageEvent) -> None:
         """向可选进度回调发送一个不可变的阶段摘要事件。"""
@@ -1074,7 +1124,15 @@ class ResearchFlow(Flow[ResearchFlowState]):
             "risk_analysis_input": risk_input,
         }
         self._valuation_analysis_input = valuation_input
-        analysis_crew = _crew_instance(self._analysis_crew, AnalysisCrew)
+        if self._analysis_crew is None:
+            if self._evidence_store is None:
+                self._evidence_store = self._build_analysis_evidence_store()
+            analysis_crew = _crew_instance(
+                AnalysisCrew.from_evidence_store(self._evidence_store),
+                AnalysisCrew,
+            )
+        else:
+            analysis_crew = _crew_instance(self._analysis_crew, AnalysisCrew)
         self.state.analysis_attempts = 1
         raw_analysis_result = analysis_crew.kickoff(inputs=self._analysis_inputs)
         agent_task_count = _summary_count(

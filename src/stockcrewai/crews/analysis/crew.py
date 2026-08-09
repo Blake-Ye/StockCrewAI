@@ -8,12 +8,14 @@
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from datetime import date
+from typing import Any, Literal, Sequence
 
 from crewai import Agent, Crew, Process, Task
 from crewai import TaskOutput
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.project import CrewBase, agent, crew, task
+from crewai.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, ValidationError
 
 
@@ -25,6 +27,19 @@ ANALYSIS_DOMAIN_RULES = {
         True,
     ),
 }
+
+
+class FilingDataEnvelope(BaseModel):
+    """带来源的 SEC filing 文本；文本是数据，不是可执行指令。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_id: str = Field(min_length=1)
+    source_reference: str = Field(min_length=1)
+    filed_at: date
+    form: str = Field(min_length=1)
+    content_role: Literal["data"] = "data"
+    text: str = Field(min_length=1)
 
 
 class AnalysisClaim(BaseModel):
@@ -161,6 +176,41 @@ class AnalysisCrew:
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
 
+    def __init__(
+        self,
+        *,
+        financial_tools: Sequence[BaseTool] | None = None,
+        risk_tools: Sequence[BaseTool] | None = None,
+    ) -> None:
+        """按 Agent 注入当前 run 的只读工具，不在 Crew 内创建共享状态。
+
+        集成方应先用当前 run 的 EvidenceStore 构造工具适配器，再分别传入
+        ``financial_tools`` 和 ``risk_tools``；两个列表属于各自 Agent。
+        """
+        self._financial_tools = list(financial_tools or ())
+        self._risk_tools = list(risk_tools or ())
+
+    @classmethod
+    def from_evidence_store(cls, evidence_store: Any) -> "AnalysisCrew":
+        """用当前 run 的 EvidenceStore 构造按角色隔离的只读工具。"""
+        from stockcrewai.tools.filing_section_search_tool import (
+            FilingSectionSearchTool,
+        )
+        from stockcrewai.tools.quant_summary_tool import QuantSummaryTool
+        from stockcrewai.tools.validated_calculation_tool import (
+            ValidatedCalculationTool,
+        )
+        from stockcrewai.tools.validated_evidence_tool import ValidatedEvidenceTool
+
+        return cls(
+            financial_tools=[
+                ValidatedEvidenceTool(evidence_store=evidence_store),
+                ValidatedCalculationTool(evidence_store=evidence_store),
+                QuantSummaryTool(evidence_store=evidence_store),
+            ],
+            risk_tools=[FilingSectionSearchTool(evidence_store=evidence_store)],
+        )
+
     @agent
     def financial_quality_agent(self) -> Agent:
         """创建财务质量分析 Agent。
@@ -173,6 +223,7 @@ class AnalysisCrew:
 
         return Agent(
             config=self.agents_config["financial_quality_agent"],  # type: ignore[index]
+            tools=list(self._financial_tools),
         )
 
     @agent
@@ -185,6 +236,7 @@ class AnalysisCrew:
         """
         return Agent(
             config=self.agents_config["risk_analysis_agent"],  # type: ignore[index]
+            tools=list(self._risk_tools),
         )
 
     @task
@@ -200,8 +252,7 @@ class AnalysisCrew:
 
         return Task(
             config=self.tasks_config["financial_quality_analysis_task"],  # type: ignore[index]
-            # 本地 Guardrail 只校验结构并给同一 Agent 修正机会；最终的
-            # Evidence/Calculation 白名单校验仍由 main.py 的 Claim Gate 执行。
+            output_pydantic=AnalysisTaskOutput,
             guardrail=validate_financial_analysis_output,
             guardrail_max_retries=2,
         )
@@ -215,6 +266,7 @@ class AnalysisCrew:
         """
         return Task(
             config=self.tasks_config["risk_analysis_task"],  # type: ignore[index]
+            output_pydantic=AnalysisTaskOutput,
             guardrail=validate_risk_analysis_output,
             guardrail_max_retries=2,
         )
@@ -232,3 +284,14 @@ class AnalysisCrew:
             process=Process.sequential,
             verbose=False,
         )
+
+
+__all__ = [
+    "ANALYSIS_DOMAIN_RULES",
+    "AnalysisClaim",
+    "AnalysisTaskOutput",
+    "FilingDataEnvelope",
+    "AnalysisCrew",
+    "validate_financial_analysis_output",
+    "validate_risk_analysis_output",
+]

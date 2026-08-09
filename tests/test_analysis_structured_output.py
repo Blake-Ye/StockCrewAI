@@ -83,7 +83,7 @@ class AnalysisStructuredOutputTests(unittest.TestCase):
                     )
 
     def test_financial_task_uses_local_guardrail_without_provider_structured_output(self):
-        from stockcrewai.crews.analysis.crew import AnalysisCrew
+        from stockcrewai.crews.analysis.crew import AnalysisCrew, AnalysisTaskOutput
 
         analysis_crew = AnalysisCrew()
         task = analysis_crew.financial_quality_analysis_task()
@@ -91,7 +91,7 @@ class AnalysisStructuredOutputTests(unittest.TestCase):
         self.assertIsNotNone(task.guardrail)
         self.assertEqual(task.guardrail_max_retries, 2)
         self.assertIsNone(task.output_json)
-        self.assertIsNone(task.output_pydantic)
+        self.assertIs(task.output_pydantic, AnalysisTaskOutput)
 
     def test_all_analysis_tasks_require_exact_claims_only_json(self):
         from stockcrewai.crews.analysis.crew import AnalysisCrew
