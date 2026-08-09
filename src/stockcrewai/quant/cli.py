@@ -9,7 +9,7 @@ from decimal import Decimal
 import json
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Never
 
 from pydantic import ValidationError
 
@@ -62,7 +62,7 @@ class BuildError(QuantCLIError):
 
 
 class _ArgumentParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> Never:
         raise CLIArgumentError(message)
 
 
@@ -223,8 +223,8 @@ def _classify_sec_records(items: Sequence[object]) -> tuple[list[object], list[o
 
 def _sec_collections(payload: object) -> tuple[dict[str, object], list[object], list[object]]:
     if isinstance(payload, list):
-        evidence, calculations = _classify_sec_records(payload)
-        return {}, evidence, calculations
+        list_evidence, list_calculations = _classify_sec_records(payload)
+        return {}, list_evidence, list_calculations
     if not isinstance(payload, Mapping):
         raise SECDataCollectionError("SEC 输入必须是 JSON 对象或数组", reason_code="sec_record_invalid")
 

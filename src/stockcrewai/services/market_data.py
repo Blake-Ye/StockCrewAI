@@ -35,9 +35,10 @@ def normalize_market_price_record(value: object) -> MarketPriceRecord:
 
     if isinstance(value, MarketPriceRecord):
         return value
-    if hasattr(value, "model_dump"):
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
         try:
-            value = value.model_dump(mode="python")  # type: ignore[attr-defined]
+            value = model_dump(mode="python")
         except (TypeError, ValueError) as exc:
             raise MarketDataValidationError("行情记录无法转换为 JSON 对象") from exc
     if not isinstance(value, Mapping):
