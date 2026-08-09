@@ -108,7 +108,7 @@ def test_flow_profile_reaches_gate_and_analysis_downstream() -> None:
             "applicability": {},
         }
 
-    with patch("stockcrewai.main._analysis_gate", side_effect=capture_gate):
+    with patch("stockcrewai.flow._analysis_gate", side_effect=capture_gate):
         assert flow.route_analysis() == "analysis_ready"
 
     analysis_crew = _RecordingCrew()

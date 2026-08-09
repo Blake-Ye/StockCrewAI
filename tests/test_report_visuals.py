@@ -76,16 +76,18 @@ def _historical_payload():
 class ReportVisualsTests(unittest.TestCase):
     def _builder(self):
         try:
-            module = importlib.import_module("stockcrewai.report_visuals")
+            legacy = importlib.import_module("stockcrewai.report_visuals")
+            module = importlib.import_module("stockcrewai.reporting.visuals")
         except ImportError:
             module = None
         self.assertIsNotNone(module, "report_visuals 模块必须存在")
         builder = getattr(module, "build_report_visuals", None)
         self.assertIsNotNone(builder, "必须提供 build_report_visuals")
+        self.assertIs(legacy.build_report_visuals, builder)
         return builder
 
     def test_financial_kpi_percentage_labels_render_outside_bars(self):
-        module = importlib.import_module("stockcrewai.report_visuals")
+        module = importlib.import_module("stockcrewai.reporting.visuals")
         values = {
             "revenue_growth": 16.15,
             "operating_margin": 33.60,
@@ -169,7 +171,7 @@ class ReportVisualsTests(unittest.TestCase):
             self.assertGreater(extent.x0, bar.x1)
 
     def test_financial_kpi_axis_padding_follows_real_data_range(self):
-        module = importlib.import_module("stockcrewai.report_visuals")
+        module = importlib.import_module("stockcrewai.reporting.visuals")
 
         def render(values):
             records = {
@@ -364,7 +366,7 @@ class ReportVisualsTests(unittest.TestCase):
         self.assertTrue(os.access(config_dir, os.W_OK))
 
     def test_amount_conversion_uses_actual_usd_billions(self):
-        module = importlib.import_module("stockcrewai.report_visuals")
+        module = importlib.import_module("stockcrewai.reporting.visuals")
         converter = getattr(module, "_amount_in_billion_usd")
 
         self.assertAlmostEqual(
@@ -384,7 +386,7 @@ class ReportVisualsTests(unittest.TestCase):
         )
 
     def test_chart_labels_and_historical_ticks_are_reader_friendly(self):
-        module = importlib.import_module("stockcrewai.report_visuals")
+        module = importlib.import_module("stockcrewai.reporting.visuals")
 
         self.assertEqual(module._FINANCIAL_KPI_TITLE, "财务质量指标（已验证数据）")
         self.assertEqual(module._TTM_AXIS_LABEL, "金额（十亿美元）")

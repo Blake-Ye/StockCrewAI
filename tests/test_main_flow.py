@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
 from tests.test_crew_configuration import (
-    VALID_REPORT,
     VALID_REPORT_DRAFT,
     RecordingCrew,
     _valid_analysis_outputs,
@@ -203,11 +202,11 @@ class MainFlowDefinitionTests(unittest.TestCase):
             },
         )
 
-    def test_state_and_flow_are_defined_directly_in_main(self):
+    def test_state_and_flow_are_reexported_from_flow(self):
         _, flow, state = _flow_symbols()
 
-        self.assertEqual(state.__module__, "stockcrewai.main")
-        self.assertEqual(flow.__module__, "stockcrewai.main")
+        self.assertEqual(state.__module__, "stockcrewai.flow")
+        self.assertEqual(flow.__module__, "stockcrewai.flow")
         expected_fields = {
             "request",
             "parsed_request",
@@ -259,6 +258,17 @@ class MainFlowDefinitionTests(unittest.TestCase):
             second_value = getattr(second, field_name)
             self.assertIsInstance(first_value, (dict, list), field_name)
             self.assertIsNot(first_value, second_value, field_name)
+
+    def test_analysis_crew_is_reexported_from_canonical_module(self):
+        main_module = _main_module()
+        canonical_module = importlib.import_module(
+            "stockcrewai.crews.analysis.crew"
+        )
+
+        self.assertIs(
+            getattr(main_module, "AnalysisCrew", None),
+            canonical_module.AnalysisCrew,
+        )
 
     def test_flow_uses_one_start_real_listeners_routers_and_stable_labels(self):
         _, flow, _ = _flow_symbols()
@@ -601,7 +611,6 @@ class MainFlowExecutionTests(unittest.TestCase):
     def test_generate_report_passes_verified_ttm_state_to_report_context(self):
         from stockcrewai.tools.validation_tool import ValidationResult
 
-        module = _main_module()
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
         report_crew = RecordingCrew(VALID_REPORT_DRAFT)
         parser_result, flow, dependencies = self._make_flow(
@@ -645,7 +654,8 @@ class MainFlowExecutionTests(unittest.TestCase):
 
         dependencies["validation_tool"].run.side_effect = validation_side_effect
         captured_context_kwargs: dict[str, Any] = {}
-        original_build_report_context = module.build_report_context
+        flow_module = importlib.import_module("stockcrewai.flow")
+        original_build_report_context = flow_module.build_report_context
 
         def capture_report_context(**kwargs):
             captured_context_kwargs.update(kwargs)
@@ -654,7 +664,7 @@ class MainFlowExecutionTests(unittest.TestCase):
         with (
             _offline_flow_patches(parser_result, verdict={"status": "ready"}),
             patch.object(
-                module,
+                flow_module,
                 "build_report_context",
                 side_effect=capture_report_context,
             ),
@@ -1150,7 +1160,6 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertNotIn(secret, json.dumps(result))
 
     def test_report_renderer_failure_blocks_with_renderer_error(self):
-        module = _main_module()
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
         report_crew = RecordingCrew(VALID_REPORT_DRAFT)
         parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
@@ -1160,7 +1169,7 @@ class MainFlowExecutionTests(unittest.TestCase):
         with (
             _offline_flow_patches(parser_result, verdict={"status": "ready"}),
             patch.object(
-                module,
+                importlib.import_module("stockcrewai.flow"),
                 "render_validated_report",
                 side_effect=RuntimeError("renderer implementation detail"),
             ),
@@ -1242,7 +1251,6 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertEqual(report_crew.kickoff_calls, 1)
 
     def test_report_draft_parse_failure_blocks_before_renderer(self):
-        module = _main_module()
         invalid_payload = json.loads(VALID_REPORT_DRAFT)
         secret = "raw model output claim_forged=secret"
         invalid_payload["execution_summary"] = f"非法数字 42；{secret}。"
@@ -1255,7 +1263,7 @@ class MainFlowExecutionTests(unittest.TestCase):
         with (
             _offline_flow_patches(parser_result, verdict={"status": "ready"}),
             patch.object(
-                module,
+                importlib.import_module("stockcrewai.flow"),
                 "render_validated_report",
                 side_effect=AssertionError("ReportDraft parse failure reached Renderer"),
             ) as renderer,
@@ -1282,12 +1290,12 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertEqual(report_crew.kickoff_calls, 1)
 
     def test_report_crew_and_renderer_share_one_json_safe_report_context(self):
-        module = _main_module()
+        flow_module = importlib.import_module("stockcrewai.flow")
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
         report_crew = RecordingCrew(VALID_REPORT_DRAFT)
         parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
         rendered_context = {}
-        original_renderer = module.render_validated_report
+        original_renderer = flow_module.render_validated_report
 
         def capture_renderer(*args, **kwargs):
             rendered_context["value"] = (
@@ -1297,7 +1305,7 @@ class MainFlowExecutionTests(unittest.TestCase):
 
         with (
             _offline_flow_patches(parser_result, verdict={"status": "ready"}),
-            patch.object(module, "render_validated_report", side_effect=capture_renderer),
+            patch.object(flow_module, "render_validated_report", side_effect=capture_renderer),
         ):
             result = _run_flow(flow)
 
