@@ -418,9 +418,37 @@ data_quality
 ### 9.6 数值边界
 
 - 财务金额、会计比率、估值和 Evidence 中间值继续使用 Decimal；
-- 大规模收益序列、相关性和标准化统计可以在验证边界后转换为 float64；
+- 大规模收益序列、相关性和标准化统计在验证边界后转换为 NumPy `float64`；
 - 转换必须记录来源、容差和统计版本，不能把 float 结果回写成原始财务 Evidence；
-- 引入 pandas/numpy 作为直接生产依赖前，必须单独向用户报告原因、兼容性和无新增依赖方案。
+- pandas/NumPy 只允许出现在 `quant/`、分析型 dataset adapter 和对应测试中，不能替代 Evidence、Calculation、Metric Policy 的 Pydantic/Decimal 契约。
+
+### 9.7 已批准的开源工具栈
+
+用户已批准为实现目标架构引入能显著减少自研代码、提高数据正确性或开发效率的开源工具。第一批固定选型如下：
+
+| 工具 | 类型 | 使用位置 | 解决的问题 | 不允许承担的职责 |
+|---|---|---|---|---|
+| pandas | 生产依赖 | `quant/dataset.py`、`quant/factors.py`、`quant/backtest.py` | 时间序列对齐、横截面分组、滚动窗口和表格互操作 | 不保存权威 Decimal Evidence，不决定 Gate/Verdict |
+| NumPy | 生产依赖 | `quant/normalization.py`、`quant/statistics.py` | 向量化统计和明确的 `float64` 计算边界 | 不执行原始财务金额计算，不回写 Evidence |
+| DuckDB | 生产依赖 | point-in-time dataset repository | 本地分析型查询、按日期/公司读取 Parquet、避免手写索引层 | 不替代 CrewAI SQLite Flow persistence，不联网抓取数据 |
+| Parquet（由 DuckDB 读写） | artifact 格式 | `artifacts/quant/` | 列式、可复现、可被 Python/SQL 共同读取的数据集 | 不提交大体积实时数据到 Git，不存 API key |
+| exchange-calendars | 生产依赖 | `quant/calendar.py` | XNYS/XNAS 交易日、月末调仓日和节假日判断 | 不预测停牌，不替代价格来源验证 |
+| pytest | 开发依赖 | 全部测试 | 运行现有 unittest，并支持更清晰的 fixture/参数化测试 | 默认测试仍不得联网 |
+| Hypothesis | 开发依赖 | 财务公式、排序、Gate 和 point-in-time 性质测试 | 自动覆盖负值、零值、极端值、顺序变化和日期边界 | 不取代固定 golden fixture |
+| pytest-xdist | 开发依赖 | 离线测试 | 对文件隔离的测试并行执行，提高多代理回归速度 | live smoke 和共享 artifact 测试禁止并行 |
+| Ruff | 开发依赖 | 全仓库 | 快速 lint、import 排序和格式检查 | 不使用 `--fix` 批量改写未授权文件 |
+| mypy | 开发依赖 | 新增 `models/`、`quant/`、`validators/`、`services/` | 渐进式静态类型检查 | 第一阶段不要求一次清零全部旧代码类型债务 |
+
+依赖约束：
+
+1. 当前架构只预批准上表工具；实施时仍需先验证 Python 3.10～3.13、CrewAI、edgartools、yfinance 和 macOS wheel 兼容性。
+2. 使用实施计划指定的 `uv add` 命令更新 `pyproject.toml`、`uv.lock` 和当前项目环境；不得另行执行无目标的 `uv sync`、创建新环境或批量升级依赖。
+3. pandas 固定在仍支持 Python 3.10 的主版本范围；不能为了使用 pandas 3.x 静默提高项目最低 Python 版本。
+4. DuckDB 与 SQLite 分工固定：SQLite 保存 Flow 状态，DuckDB/Parquet 保存量化分析数据。
+5. pytest 先兼容运行现有 unittest，再逐工作包迁移新测试；不做一次性测试框架重写。
+6. PyArrow 暂不作为直接依赖；DuckDB 已能直接读写 Parquet，只有出现可复现的互操作缺口时才评估引入。
+7. OpenBB、vectorbt、backtrader、QuantStats、MLflow、Langfuse、DVC 和完整数据湖框架不进入第一版核心依赖。它们只有在出现当前栈无法满足的已验证需求时，才以 adapter 或独立评测任务接入。
+8. 任何表外新工具仍须记录许可证、维护活跃度、依赖大小、Python 兼容性、替代方案、退出方式和最小验收测试；“方便”本身不是引入理由。
 
 ## 10. 从当前项目到目标项目的迁移阶段
 
@@ -644,7 +672,7 @@ flowchart LR
 systematic-debugging、verification-before-completion 和 ponytail。
 
 执行 RED → GREEN → REFACTOR；不调用真实 SEC、Yahoo 或付费 LLM；
-不新增依赖；不增加 Agent；不实现 fallback；保留 Evidence 和 Decimal 契约。
+只允许当前工作包明确批准的依赖；不增加 Agent；不实现 fallback；保留 Evidence 和 Decimal 契约。
 
 完成时返回：根因/设计、修改文件、测试命令、完整结果、剩余风险。
 如果任务需要修改所有权之外的文件，立即停止并报告接口缺口。

@@ -6,7 +6,7 @@
 
 **架构：** CrewAI Flow 只编排事件和分支；LLM Agent 只负责请求解析、已验证事实解释、风险解释和报告叙事；Python 服务负责公司识别、SEC/行情选择、Profile、公式、Claim Gate、Verdict、point-in-time、因子和回测。共享 Pydantic 契约先冻结，巨型共享文件随后拆分，最后并行建设 Agent Eval、量化链路和行业 Profile。
 
-**技术栈：** Python 3.10–3.13、CrewAI 1.15.x、Pydantic、edgartools、yfinance、matplotlib、SQLite（CrewAI Flow 持久化）、标准库 `decimal` / `statistics` / `unittest`。第一版不新增 pandas、numpy、数据库 ORM 或 Web 框架。
+**技术栈：** Python 3.10–3.13、CrewAI 1.15.x、Pydantic、edgartools、yfinance、matplotlib、SQLite（CrewAI Flow 持久化）、pandas、NumPy、DuckDB/Parquet、exchange-calendars，以及 pytest、Hypothesis、pytest-xdist、Ruff、mypy。财务权威值继续使用 `Decimal`，pandas/NumPy 只进入量化统计边界。
 
 ---
 
@@ -30,7 +30,28 @@ shared_file_integrator_count: 1
 live_network_in_default_tests: false
 fallback_allowed: false
 new_llm_agents_allowed: false
-new_dependencies_allowed_without_approval: false
+approved_production_dependencies:
+  - "numpy>=2.0,<3"
+  - "pandas>=2.2,<3"
+  - "duckdb>=1.4,<2"
+  - "exchange-calendars>=4.13,<5"
+approved_development_dependencies:
+  - "pytest>=8,<10"
+  - "hypothesis>=6,<7"
+  - "pytest-xdist>=3,<4"
+  - "ruff>=0.12,<1"
+  - "mypy>=1.15,<3"
+dependencies_outside_allowlist_require_user_approval: true
+dependency_catalog:
+  - {name: numpy, spec: "numpy>=2.0,<3", group: production, install_step: WP05-S01, allowed_paths: ["src/stockcrewai/quant", "tests/test_quant_*"]}
+  - {name: pandas, spec: "pandas>=2.2,<3", group: production, install_step: WP05-S01, allowed_paths: ["src/stockcrewai/quant", "src/stockcrewai/services/market_data.py", "tests/test_quant_*"]}
+  - {name: duckdb, spec: "duckdb>=1.4,<2", group: production, install_step: WP05-S01, allowed_paths: ["src/stockcrewai/quant/storage.py", "tests/test_quant_storage.py"]}
+  - {name: exchange-calendars, spec: "exchange-calendars>=4.13,<5", group: production, install_step: WP05-S01, allowed_paths: ["src/stockcrewai/quant/calendar.py", "tests/test_quant_calendar.py"]}
+  - {name: pytest, spec: "pytest>=8,<10", group: development, install_step: WP00-S03, allowed_paths: ["tests", "pyproject.toml"]}
+  - {name: hypothesis, spec: "hypothesis>=6,<7", group: development, install_step: WP00-S03, allowed_paths: ["tests/test_numeric_properties.py", "tests/test_point_in_time.py", "tests/test_quant_*"]}
+  - {name: pytest-xdist, spec: "pytest-xdist>=3,<4", group: development, install_step: WP00-S03, allowed_paths: ["tests", "pyproject.toml"]}
+  - {name: ruff, spec: "ruff>=0.12,<1", group: development, install_step: WP00-S03, allowed_paths: ["pyproject.toml"]}
+  - {name: mypy, spec: "mypy>=1.15,<3", group: development, install_step: WP00-S03, allowed_paths: ["pyproject.toml"]}
 work_packages:
   - {id: WP00, depends_on: [], title: 可信基线与版本门禁}
   - {id: WP01, depends_on: [WP00], title: 共享领域契约}
@@ -46,6 +67,21 @@ work_packages:
   - {id: WP11, depends_on: [WP10], title: 银行与保险 Profile}
   - {id: WP12, depends_on: [WP11], title: 其他行业与证券结构 Profile}
   - {id: WP13, depends_on: [WP09, WP12], title: 求职发布版}
+step_manifest:
+  WP00: [WP00-S01, WP00-S02, WP00-S03, WP00-S04, WP00-S05, WP00-S06, WP00-S07, WP00-S08, WP00-S09]
+  WP01: [WP01-S01, WP01-S02, WP01-S03, WP01-S04, WP01-S05, WP01-S06, WP01-S07]
+  WP02: [WP02-S01, WP02-S02, WP02-S03, WP02-S04, WP02-S05, WP02-S06, WP02-S07]
+  WP03: [WP03-S01, WP03-S02, WP03-S03, WP03-S04, WP03-S05, WP03-S06, WP03-S07]
+  WP04: [WP04-S01, WP04-S02, WP04-S03, WP04-S04, WP04-S05, WP04-S06, WP04-S07, WP04-S08]
+  WP05: [WP05-S01, WP05-S02, WP05-S03, WP05-S04, WP05-S05, WP05-S06, WP05-S07, WP05-S08]
+  WP06: [WP06-S01, WP06-S02, WP06-S03, WP06-S04, WP06-S05, WP06-S06]
+  WP07: [WP07-S01, WP07-S02, WP07-S03, WP07-S04, WP07-S05, WP07-S06, WP07-S07]
+  WP08: [WP08-S01, WP08-S02, WP08-S03, WP08-S04, WP08-S05, WP08-S06, WP08-S07]
+  WP09: [WP09-S01, WP09-S02, WP09-S03, WP09-S04, WP09-S05, WP09-S06]
+  WP10: [WP10-S01, WP10-S02, WP10-S03, WP10-S04, WP10-S05, WP10-S06]
+  WP11: [WP11-S01, WP11-S02, WP11-S03, WP11-S04, WP11-S05, WP11-S06, WP11-S07]
+  WP12: [WP12-S01, WP12-S02, WP12-S03, WP12-S04, WP12-S05, WP12-S06, WP12-S07]
+  WP13: [WP13-S01, WP13-S02, WP13-S03, WP13-S04, WP13-S05, WP13-S06, WP13-S07]
 ```
 
 依赖图：
@@ -99,11 +135,23 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 禁止执行：
 
-- `uv sync`；
+- 手工执行无目标的 `uv sync` 或批量升级全部依赖；
 - 创建或替换 `.venv`；
-- 未经用户批准的 `uv add`、依赖升级或锁文件批量改写；
+- 添加第 1 节 allowlist 之外的依赖；
 - 默认测试中的真实 DeepSeek、SEC、Yahoo 请求；
 - 删除用户已有报告、fixture、运行输出或未提交修改。
+
+依赖安装只在所属 Step 执行：
+
+```bash
+# WP00：开发工具。uv add 同时更新 pyproject.toml、uv.lock 和当前项目环境。
+uv add --dev "pytest>=8,<10" "hypothesis>=6,<7" "pytest-xdist>=3,<4" "ruff>=0.12,<1" "mypy>=1.15,<3"
+
+# WP05：量化生产工具。
+uv add "numpy>=2.0,<3" "pandas>=2.2,<3" "duckdb>=1.4,<2" "exchange-calendars>=4.13,<5"
+```
+
+不得在其他 Step 重复运行 `uv add`。若 resolver 改变 CrewAI、Pydantic、edgartools、yfinance 或 Python 约束，立即恢复本 Step 对 `pyproject.toml`/`uv.lock` 的修改并上报，不自行放宽版本。
 
 ### 2.4 CrewAI 写码前置门禁
 
@@ -121,7 +169,71 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -c "impor
 
 本计划编写时安装版为 **1.15.11**，官方最新文档为 **1.15.14**。本计划不授权升级；若实施时版本变化，代理必须报告差异并等待用户决定。
 
-### 2.5 每个工作包的统一完成定义
+### 2.5 开源工具职责和退出条件
+
+| 工具 | 引入 Step | 必须使用的职责 | 验收证据 | 退出条件 |
+|---|---|---|---|---|
+| pandas | `WP05-S05` | point-in-time 表格、横截面和时间序列对齐 | 与 Decimal golden fixture 一致 | 造成 Decimal 丢失或 Python 3.10 不兼容 |
+| NumPy | `WP07-S03` | `float64` 向量统计、排名和相关性 | 与手算/第二实现容差一致 | 被用于 Evidence 财务金额计算 |
+| DuckDB | `WP05-S04` | 本地查询 Parquet snapshot | as-of SQL 与 Python 选择结果一致 | 需要联网扩展或无法确定性读取 |
+| Parquet | `WP05-S04` | 量化 dataset artifact | schema/hash manifest 可复现 | artifact 不可版本化或丢失精度 |
+| exchange-calendars | `WP05-S03` | XNYS/XNAS session 和月末调仓日 | 节假日/半日 fixture 通过 | 日历范围不覆盖目标年份 |
+| pytest | `WP00-S03` | 运行现有 unittest 和新增测试 | 收集数量与 unittest 基线一致 | 不适用；它是统一 runner |
+| Hypothesis | `WP00-S04` | 公式/Gate/日期性质测试 | 固定 profile 可复现失败例 | 产生无法复现的随机失败 |
+| pytest-xdist | `WP00-S05` | 文件隔离的离线测试并行 | 串行/并行结果一致 | 测试共享 artifact 或 live network |
+| Ruff | `WP00-S06` | lint 和 import 检查 | 授权文件零新增问题 | `--fix` 会改写范围外文件 |
+| mypy | `WP01-S06` | 新增核心模块渐进类型门禁 | 新模块无类型错误 | 第三方缺 stub 时局部、解释性隔离 |
+
+明确不在第一版采用：OpenBB、vectorbt、backtrader、QuantStats、MLflow、Langfuse、DVC、PyArrow、Polars 和 Pandera。原因不是这些工具无价值，而是当前目标已有更小的组合覆盖；若后续出现具体缺口，必须新建独立设计/评测 Step，不能在实现中顺手加入。
+
+官方资料仅作为实施时的 API/兼容性权威来源：
+
+- [pandas 安装与依赖](https://pandas.pydata.org/pandas-docs/stable/getting_started/install.html)
+- [NumPy 文档](https://numpy.org/doc/stable/)
+- [DuckDB Python API](https://duckdb.org/docs/current/clients/python/overview)
+- [DuckDB Parquet](https://duckdb.org/docs/current/data/parquet/overview)
+- [exchange-calendars](https://github.com/gerrymanoim/exchange_calendars)
+- [pytest](https://docs.pytest.org/en/stable/)
+- [Hypothesis](https://hypothesis.readthedocs.io/en/latest/)
+- [Ruff](https://docs.astral.sh/ruff/)
+- [mypy](https://mypy.readthedocs.io/en/stable/)
+
+### 2.6 每一个 Step 的强制格式
+
+下面工作包中的每个 `WPxx-Syy` 都是独立、可审计的执行单元。子代理不得跳步或合并 Step。每个 Step 必须输出：
+
+```text
+step_id
+executor
+preconditions
+read_paths
+write_paths
+commands_before
+red_evidence
+operations
+artifacts
+commands_after
+acceptance_evidence
+commit_or_no_commit
+stop_condition
+```
+
+执行顺序固定：
+
+1. 父代理检查 preconditions 和工作树；
+2. 实现代理只读取 `read_paths`；
+3. 实现代理运行 `commands_before`；
+4. 测试 Step 先生成 `red_evidence`；
+5. 实现代理执行 `operations`，只写 `write_paths`；
+6. 实现代理生成 `artifacts`；
+7. 实现代理运行 `commands_after`；
+8. 两个只读代理核对 `acceptance_evidence`；
+9. 单一集成代理接线；
+10. 父代理提交该工作包并执行 `stop_condition`。
+
+除明确写有“独立 commit”的 `WP12-S01`～`WP12-S05` 外，中间 Step 的 `commit_or_no_commit` 均为 `no_commit`；只有该工作包最后一个 Step 可以提交。任何 Step 的命令失败即触发 `stop_condition=report_failure`，不得继续后续 Step 或用 fallback 绕过。
+
+### 2.7 每个工作包的统一完成定义
 
 每个工作包必须依次满足：
 
@@ -141,8 +253,10 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -c "impor
 完整离线门禁命令：
 
 ```bash
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q
 UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
 UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m compileall -q src tests
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync ruff check src tests
 git diff --check
 ```
 
@@ -182,6 +296,8 @@ src/stockcrewai/
 │   └── report_gate.py              # 最终报告确定性验证
 ├── quant/
 │   ├── dataset.py                  # 固定股票池数据集构建和命令行入口
+│   ├── storage.py                  # DuckDB/Parquet repository
+│   ├── calendar.py                 # exchange-calendars 交易日适配
 │   ├── point_in_time.py            # 无前视 Snapshot
 │   ├── factors.py                  # 版本化因子公式
 │   ├── normalization.py            # winsorize、z-score、percentile
@@ -435,7 +551,11 @@ manifest_version
 
 **独占写入：**
 
+- `pyproject.toml`（只增加批准的开发依赖和工具配置）；
+- `uv.lock`（由 `uv add` 生成）；
 - `tests/test_baseline_contract.py`（新建）；
+- `tests/test_numeric_properties.py`（新建）；
+- `tests/conftest.py`（新建，Hypothesis profile 和 live marker）；
 - `tests/fixtures/baseline/`（新建，纯离线 JSON）；
 - `src/stockcrewai/main.py`（单一实现代理，仅限 Profile 传递）；
 - `src/stockcrewai/pipeline_support.py`（同一实现代理，仅限 Gate 根因）；
@@ -447,23 +567,28 @@ manifest_version
 - `docs/numeric-conventions.md`（新建）；
 - `docs/error-model.md`（新建）；
 - `docs/testing-strategy.md`（新建）。
+- `docs/dependency-policy.md`（新建，记录 allowlist、版本、许可证和退出条件）。
 
-**禁止：** 新增依赖、Profile 扩展、量化代码、fallback、真实网络进入默认测试。
+**禁止：** allowlist 外依赖、Profile 扩展、量化业务代码、fallback、真实网络进入默认测试。
 
-**步骤：**
+**逐步操作：**
 
-1. 在修改任何业务源码前，创建四份基础规范：当前/目标数据契约、Decimal 与统计转换边界、稳定 reason code 错误模型、默认离线与显式 live 测试边界。当前仓库尚无这四个文件，因此这是 WP00 的第一个子任务。
-2. 记录 CrewAI 安装版本、官方最新版本和相关 changelog；不升级。
-3. 运行完整离线测试并把测试数、失败数、耗时写入 `docs/baseline-status.md`。
-4. 从现有 30 公司运行矩阵中提取最小离线 fixture，至少覆盖：普通盈利、负 EPS、负 FCF、多类别、近期上市、反向 DCF 不适用。
-5. 为已知回归写测试：TSLA 业务叙事不得被建议正则误判；`not_applicable` 反向 DCF 不阻断；Profile 输入必须贯穿 Gate；外部错误不得变成成功。
-6. 仅修复能被上述测试证明的根因。
-7. 添加一个显式 live runner 入口，但默认测试不得调用它；live 结果只写临时目录。
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP00-S01` | 父代理 | 检查 `git status`；读取强制文档、`pyproject.toml` 和现有测试；记录 Python、CrewAI、uv 版本，不写文件 | `git status --short`；`uv --version`；`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -VV`；CrewAI 版本命令 | 工作树范围明确；版本写入执行记录；发现用户修改时不覆盖 |
+| `WP00-S02` | Luna Coder A | 创建 `docs/data-contracts.md`、`docs/numeric-conventions.md`、`docs/error-model.md`、`docs/testing-strategy.md`、`docs/dependency-policy.md` 和 `docs/baseline-status.md`；只描述当前基线和已冻结目标 | 对六个精确路径逐个执行 `test -f`；对对应文件检查 `Decimal`、`reason_code`、`offline`、`live`、`license` | 五类规范均有权威定义、示例和禁止项；不存在未填写占位符 |
+| `WP00-S03` | 集成 Luna Coder | 运行批准的开发依赖安装命令；检查 `pyproject.toml`/`uv.lock` 只增加 pytest、Hypothesis、xdist、Ruff、mypy；将解析后的版本、license expression、项目 URL、用途和退出条件写入 `docs/dependency-policy.md`；用 pytest 收集现有 unittest | `uv add --dev "pytest>=8,<10" "hypothesis>=6,<7" "pytest-xdist>=3,<4" "ruff>=0.12,<1" "mypy>=1.15,<3"`；`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest --collect-only -q`；`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v` | 两个 runner 收集同一现有测试集合；每个包的许可证已记录；CrewAI/Pydantic/业务依赖未被升级 |
+| `WP00-S04` | Luna Coder B | 创建 `tests/test_numeric_properties.py`；在 `tests/conftest.py` 注册 Hypothesis `ci` profile：`max_examples=200`、`derandomize=True`、`deadline=None`；覆盖 Decimal 公式的零、负数、极值和顺序不变量 | 先引用不存在的 property helper 运行 `pytest -q tests/test_numeric_properties.py` 得到 RED | 失败例可复现；不使用 NaN/Infinity 伪装财务缺失；golden fixture 仍保留 |
+| `WP00-S05` | Luna Coder B | 对测试目录做共享文件审计；将只写 `tmp_path` 的测试标记为可并行；live 测试标记 `live` 且默认跳过；本项目并行 worker 固定为 3 | `pytest -q` 与 `pytest -q -n 3` | 串行/并行通过数量和失败集合一致；无测试写根目录正式 artifact |
+| `WP00-S06` | Luna Coder C | 在 `pyproject.toml` 增加最小 Ruff 配置；先只检查本工作包授权文件，不执行全仓库 `--fix`；记录旧代码 lint 基线 | `ruff check` 授权文件；故意保留一个临时未使用 import 证明 RED 后删除 | 授权文件 lint 为 0；旧代码问题记录但不顺手批改 |
+| `WP00-S07` | Luna Coder A | 在 `tests/test_baseline_contract.py` 和 `tests/fixtures/baseline/` 写 6 类离线回归；运行并保存 TSLA 文本误判、反向 DCF、Profile 传递、外部错误的 RED | `pytest -q tests/test_baseline_contract.py` | 每个已知问题至少有一个修复前失败断言，错误指向具体契约 |
+| `WP00-S08` | Luna Coder A | 只修改 `main.py`、`pipeline_support.py`、`crews/report/crew.py` 中被 S07 证明的根因；创建 `evals/live_smoke.py` 与 mock CLI 测试 | 重复 S07；`pytest -q tests/test_live_smoke_cli.py` | S07/S08 全绿；无 fallback；live runner 未被默认测试调用 |
+| `WP00-S09` | 父代理 + 两个只读审查 | 连续运行 fixture 5 次，比较数字/Gate/Verdict/artifact hash；运行完整离线门禁；审查 staged diff | `UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q`；同命令增加 `-n 3`；`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v`；Ruff 授权文件；`git diff --check` | 5 次 hash 一致；审查无 blocker；只提交 WP00 文件，然后停止等待用户 |
 
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_baseline_contract -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_baseline_contract.py tests/test_numeric_properties.py tests/test_live_smoke_cli.py
 UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
@@ -496,17 +621,20 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 **步骤：**
 
-1. 对第 4 节每个 Enum 和 Model 写 schema、序列化、非法值测试。
-2. 所有公共状态必须 `model_dump(mode="json")` 成功。
-3. 金额和比率字段拒绝二进制 float，接受字符串或 `Decimal` 并稳定序列化为字符串。
-4. reason code 使用小写 snake_case；禁止自由文本充当 reason code。
-5. 添加从现有 dict 到新模型的兼容构造器，当前 Flow 仍可传旧字段。
-6. 不修改 `main.py`、Crew YAML、Gate 行为或报告内容。
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP01-S01` | Luna Coder A | 先创建 `tests/test_profile_models.py`、`tests/test_policy_models.py`，逐字段测试 Enum、reason code、JSON schema 和非法值 | `pytest -q tests/test_profile_models.py tests/test_policy_models.py` 必须因模块不存在而 RED | RED 只源于待建契约，不源于 fixture 拼写错误 |
+| `WP01-S02` | Luna Coder A | 创建 `models/profile.py`、`models/policy.py`，严格实现第 4 节字段；金额/比率拒绝 binary float | 重复 S01 | schema 与第 4 节逐字段一致；`model_dump(mode="json")` 成功 |
+| `WP01-S03` | Luna Coder B | 创建 `tests/test_request_models.py`、`tests/test_evidence_models.py`，覆盖公司身份、Evidence、Calculation、Claim、source/as_of/validation | 目标测试先 RED | 所有权威记录有稳定 ID、来源、时间和验证状态 |
+| `WP01-S04` | Luna Coder B | 创建 `models/request.py`、`models/evidence.py` 和兼容构造器；旧 dict 可解析，新对象稳定 JSON 化 | 重复 S03 | 旧 fixture 可加载；缺字段返回 Pydantic error，不填默认假数据 |
+| `WP01-S05` | Luna Coder C | 创建 `tests/test_quant_models.py` 和 `models/quant.py`；覆盖 Snapshot、Factor、Universe、Packet | 目标测试先 RED 后 GREEN | Decimal/string 与 float 统计字段边界明确；日期带时区 |
+| `WP01-S06` | Luna Coder C | 在 `pyproject.toml` 配置 mypy 渐进范围；运行新 `models/`，第三方缺 stub 只能做精确 module override | `mypy src/stockcrewai/models` | 新模型无 mypy error；禁止全局 `ignore_missing_imports = true` |
+| `WP01-S07` | 集成 Luna Coder | 创建 `models/__init__.py` 公共导出，更新 `docs/data-contracts.md`；运行完整回归并比较 WP00 hash | 目标测试 + `pytest -q` + hash 比较 | 零行为变化；提交 `feat: add shared research domain contracts` 后停止 |
 
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_request_models tests.test_evidence_models tests.test_profile_models tests.test_policy_models tests.test_quant_models -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_request_models.py tests/test_evidence_models.py tests/test_profile_models.py tests/test_policy_models.py tests/test_quant_models.py
 ```
 
 **验收：** 契约测试通过；完整回归与 WP00 artifact hash 一致。
@@ -527,6 +655,10 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 - `src/stockcrewai/pipelines/profile_registry.py`；
 - `src/stockcrewai/pipelines/metric_registry.py`；
 - `src/stockcrewai/validators/analysis_gate.py`；
+- `src/stockcrewai/main.py`（仅集成代理传递 Profile/Policy）；
+- `src/stockcrewai/pipeline_support.py`（仅集成代理兼容接线）；
+- `src/stockcrewai/tools/verdict_tool.py`（仅集成代理改为消费 PolicyDecision）；
+- `src/stockcrewai/crews/report/crew.py`（仅集成代理展示 Coverage）；
 - `tests/fixtures/profiles/`；
 - `tests/test_profile_registry.py`；
 - `tests/test_company_resolver.py`；
@@ -573,18 +705,20 @@ def evaluate_analysis_gate(
 
 **步骤：**
 
-1. 先为 company/ticker/CIK 一致、候选冲突、多类别证券和不支持证券写 resolver 测试。
-2. 再为上述 6 种 Profile 情形写 fixture 和 Gate 测试。
-3. Registry 返回 Profile 及分类证据，不返回自然语言猜测。
-4. Metric Registry 集中定义适用性、证据要求、公式、期间和 Gate effect。
-5. Gate 只消费 `PolicyDecision`；删除对 warning/limitations 文本的依赖。
-6. 单一集成代理让估值、分析 Gate、Verdict 和报告 Coverage 使用同一 Policy 结果。
-7. 保留现有普通企业报告结果，不把“全行业支持”伪装成已完成。
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP02-S01` | Luna Coder A | 创建 resolver fixture 和 `tests/test_company_resolver.py`，覆盖 company/ticker/CIK 一致、冲突、多类别、不支持证券 | `pytest -q tests/test_company_resolver.py` 先 RED | 每个输入只有 resolved/ambiguous/unsupported/unavailable 之一 |
+| `WP02-S02` | Luna Coder A | 实现 `services/company_resolver.py::resolve_company`；SEC 映射优先于 LLM 候选 | 重复 S01 | 冲突不靠 confidence 猜测；结果有 source_reference/reason_code |
+| `WP02-S03` | Luna Coder B | 创建 6 类 Profile fixture 和 `tests/test_profile_registry.py`；实现 `pipelines/profile_registry.py` | `pytest -q tests/test_profile_registry.py` RED→GREEN | 分类只读取 CIK/SIC/form/taxonomy/security metadata，结果含证据 ID/version |
+| `WP02-S04` | Luna Coder C | 创建 `tests/test_metric_registry.py`；实现 `pipelines/metric_registry.py` 的集中 Policy 表 | 目标测试 RED→GREEN | 每个已发布 Profile/metric 有 applicability、formula、period、gate effect、version |
+| `WP02-S05` | Luna Coder C | 创建 `tests/test_profile_aware_gate.py`；实现 `validators/analysis_gate.py`，只消费 `PolicyDecision` | 用 limitations 文本诱导 Gate 的 fixture 必须 RED | `not_applicable` 从不 blocking；warning 文本变化不改变 Gate |
+| `WP02-S06` | 集成 Luna Coder | 修改现有 pipeline 接线，使估值、分析 Gate、Verdict、Coverage 读取同一 Policy；不得改 Agent prompt | 运行 resolver/profile/policy/gate 四组测试 | 单一 policy_version 贯穿最终状态；普通企业 artifact hash 不变 |
+| `WP02-S07` | 父代理 + 审查代理 | 输出 6 类 Profile/Policy/Gate 矩阵，运行完整门禁，审查是否虚假宣称全行业支持 | `pytest -q`；`mypy` 新模块；`ruff check` 授权路径 | 矩阵和测试证据齐全；提交后停止 |
 
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_company_resolver tests.test_profile_registry tests.test_metric_registry tests.test_profile_aware_gate -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_company_resolver.py tests/test_profile_registry.py tests/test_metric_registry.py tests/test_profile_aware_gate.py
 ```
 
 **验收：** `not_applicable` 永不触发 blocking；所有阻断都有 `metric_id + reason_code + policy_version`；普通企业回归不变。
@@ -615,10 +749,22 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 5. Report Crew 最终只定义 Agent/Task/Crew；Context、Renderer、Validator 不留在 crew.py。
 6. 本工作包不改变 Prompt、公式、Gate 规则、报告文本或图形结果。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP03-S01` | 父代理 | 用 WP00 fixture 生成迁移前 JSON/Markdown/图表 hash；记录 `main.py`、`pipeline_support.py`、Report Crew 行数和导入图 | 当前完整测试与 artifact hash | 建立不可变迁移基准；不写业务源码 |
+| `WP03-S02` | Luna Coder A | 先建 `tests/test_flow_module.py`；创建 `flow.py` 并移动 `ResearchFlowState`、`ResearchFlow`、stage helpers；保留 `@persist()`/`@start()`/`@listen()`/`@router()` | 新测试先因 `flow.py` 不存在而 RED | Flow state 仅 JSON-safe；PrivateAttr 保留运行对象；路由标签不变 |
+| `WP03-S03` | Luna Coder B | 为新 pipeline/validator 写直调测试；移动 Evidence、Analysis、Valuation 和 Claim Gate 纯函数到指定文件 | 新模块测试 RED→GREEN | 新模块不导入 Crew；公式和 reason code 输出 hash 不变 |
+| `WP03-S04` | Luna Coder C | 为 reporting context/renderer/validator/visuals 写直调测试；从 Report Crew 移动对应函数 | 新模块测试 RED→GREEN | Report Crew 只剩 Agent/Task/Crew；Markdown 和图表 hash 不变 |
+| `WP03-S05` | 集成 Luna Coder | 修改 `main.py` 为 CLI 薄入口；将旧热点改为 re-export/薄调用；修复内部 import | `pytest -q tests/test_main_flow.py tests/test_flow_module.py` | `crewai run` 入口签名不变；循环导入为 0 |
+| `WP03-S06` | 集成 Luna Coder | 执行离线 `crewai flow plot`，检查节点和两条 blocked 路由；比较迁移前后 artifacts；确认目标恰为本 Step 生成的 `stockcrewai_flow.html` 后删除 | `UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync crewai flow plot`；`test -f stockcrewai_flow.html`；`shasum -a 256` 比较固定 artifacts；`rm -- stockcrewai_flow.html` | Flow 图包含全部官方事件节点；所有 hash 一致；工作区不遗留临时 HTML |
+| `WP03-S07` | 父代理 + 审查代理 | 审查旧热点是否只剩兼容层，运行完整门禁和 import/compile 检查 | `pytest -q`；`compileall`；`ruff check`；`git diff --check` | 零行为变化证据成立；提交后停止 |
+
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_main_flow tests.test_flow_module tests.test_analysis_gate tests.test_report_visuals -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_main_flow.py tests/test_flow_module.py tests/test_analysis_gate.py tests/test_report_visuals.py
 ```
 
 **验收：** `crewai run` 和 `crewai flow plot` 入口兼容；WP00 fixture 的最终 JSON 和 Markdown hash 不变；旧模块只剩兼容层和入口。
@@ -643,6 +789,7 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 - `src/stockcrewai/crews/analysis/config/agents.yaml`；
 - `src/stockcrewai/crews/analysis/config/tasks.yaml`；
 - `src/stockcrewai/crews/analysis/crew.py`；
+- `src/stockcrewai/flow.py`（仅集成代理注入当前 run EvidenceStore）；
 - `tests/test_evidence_store.py`；
 - `tests/test_validated_query_tools.py`；
 - `tests/test_prompt_injection_boundary.py`。
@@ -668,10 +815,23 @@ get_quant_summary(factor_ids)
 
 **测试样本：** filing 文本中包含“忽略系统要求”“调用外部网址”“修改评级”“输出未验证数字”，工具和 Agent 输出都不得越权。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP04-S01` | 父代理 | 重查 CrewAI 安装版、PyPI、changelog、Agents/Tasks/Tools 官方文档；冻结本版本 BaseTool/structured output 写法 | 版本命令和官方 URL 写入执行记录 | 版本差异已报告；未授权升级 |
+| `WP04-S02` | Luna Coder A | 创建 `tests/test_evidence_store.py`，覆盖 allowlist、run isolation、validation status、limit、未知 ID | 目标测试先 RED | 测试能证明跨 run 和 allowlist 外查询被拒绝 |
+| `WP04-S03` | Luna Coder A | 实现 `services/evidence_store.py`，只读索引通过构造器注入；无全局 mutable store | 重复 S02 | 查询结果有 ID/source/as_of/status；不联网、不写状态 |
+| `WP04-S04` | Luna Coder B | 创建 `tests/test_validated_query_tools.py`；实现 4 个 BaseTool 薄适配器和 Pydantic args schema | 每个工具先 RED 后 GREEN | Tool 只调用 EvidenceStore；不包含公式、抓取和 Verdict 逻辑 |
+| `WP04-S05` | Luna Coder C | 创建 prompt injection fixture 和 `tests/test_prompt_injection_boundary.py`；加入 filing data envelope | 4 类攻击样本先让缺少边界的实现 RED | `content_role=data`、source/evidence ID 保留；攻击文本不改变任务 |
+| `WP04-S06` | Luna Coder C | 修改 Analysis Crew agents/tasks YAML，规定工具、schema、禁止行为和 prompt/schema version；更新 crew.py structured output | 配置测试和 structured output 测试 | 仍为 2 个 Analysis Agent；输出只符合 Pydantic schema |
+| `WP04-S07` | 集成 Luna Coder | 将当前 run allowlist 注入 Crew，串起 Tool call→Claim Gate；工具返回不得直接进入 ReportContext | 离线 mock crew 集成测试 | rejected Claim 为 0 入报告；工具越权 reason code 稳定 |
+| `WP04-S08` | 父代理 + 审查代理 | 运行全部安全、工具、Analysis 测试；输出每个 Tool 输入/输出及攻击矩阵 | 目标命令 + `pytest -q` + Ruff/mypy 授权路径 | 绕过率 0；提交后停止 |
+
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_evidence_store tests.test_validated_query_tools tests.test_prompt_injection_boundary tests.test_analysis_structured_output -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_evidence_store.py tests/test_validated_query_tools.py tests/test_prompt_injection_boundary.py tests/test_analysis_structured_output.py
 ```
 
 **验收：** allowlist 外 ID 命中数为 0；Prompt injection 绕过率为 0；固定 3 Crew/4 Agent；无网络 fixture 可完整测试工具。
@@ -688,12 +848,18 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 **独占写入：**
 
+- `pyproject.toml`（只增加批准的量化生产依赖）；
+- `uv.lock`（由 `uv add` 生成）；
 - `src/stockcrewai/quant/dataset.py`；
+- `src/stockcrewai/quant/storage.py`；
+- `src/stockcrewai/quant/calendar.py`；
 - `src/stockcrewai/quant/point_in_time.py`；
 - `src/stockcrewai/services/market_data.py`；
 - `examples/universes/us-large-cap-v1.json`；
 - `tests/fixtures/quant/point_in_time/`；
 - `tests/test_quant_dataset.py`；
+- `tests/test_quant_storage.py`；
+- `tests/test_quant_calendar.py`；
 - `tests/test_point_in_time.py`。
 
 **必需接口：**
@@ -734,10 +900,23 @@ def build_point_in_time_snapshot(
 
 **测试：** 同日多 filing、未来 10-Q、10-K/A 修订、拆股前后、价格缺口、时区边界、重复输入顺序变化。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP05-S01` | 父代理 + 集成 Luna Coder | 用 `uv tree` 记录当前关键版本；执行批准的 4 个生产依赖安装；审查 lock diff 和 Python 3.10–3.13 marker | `uv tree`；`uv add "numpy>=2.0,<3" "pandas>=2.2,<3" "duckdb>=1.4,<2" "exchange-calendars>=4.13,<5"`；`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -c "import duckdb, exchange_calendars, numpy, pandas; print(duckdb.__version__, exchange_calendars.__version__, numpy.__version__, pandas.__version__)"` | CrewAI/Pydantic/edgartools/yfinance 未被非必要升级；四个包可导入 |
+| `WP05-S02` | Luna Coder A | 创建 universe/financial/price fixture 和 `tests/test_quant_dataset.py`；定义 dataset schema、manifest、hash | 目标测试先 RED | fixture 含 source ID、filed_at、price timestamp、known bias |
+| `WP05-S03` | Luna Coder B | 创建 `tests/test_quant_calendar.py`；实现 `quant/calendar.py`，使用 XNYS/XNAS calendar 选择 session/月末调仓日 | 节假日、周末、半日、时区 fixture RED→GREEN | 不存在手写美国节假日表；输出日期/时区确定性 |
+| `WP05-S04` | Luna Coder C | 创建 `tests/test_quant_storage.py`；实现 `quant/storage.py`，用 DuckDB 写/读 Parquet 和 manifest；禁止联网 extension | as-of SQL、schema、hash、临时目录测试 RED→GREEN | DuckDB 查询和 Python fixture 行数/值一致；artifact 只写 `tmp_path` |
+| `WP05-S05` | Luna Coder A | 实现 `quant/dataset.py` 和 `point_in_time.py`；用 pandas 做表格对齐，进入模型前恢复明确类型 | `pytest -q tests/test_quant_dataset.py tests/test_point_in_time.py` | `filed_at/price_timestamp <= as_of`；Decimal 权威值未变成 float |
+| `WP05-S06` | Luna Coder B | 用 Hypothesis 增加输入顺序、未来日期、修订、拆股和缺失价格性质测试 | 注入 future filing 的测试必须 RED 于错误实现 | 任意顺序 snapshot hash 一致；未来记录永不被选择 |
+| `WP05-S07` | 集成 Luna Coder | 在 dataset CLI 增加 `collect-sec`、`collect-market`、`build` 三个显式子命令；两种网络采集可分开运行，build 只读本地规范化输入 | CLI mock 测试；默认 pytest 中网络调用计数为 0 | SEC/Yahoo 失败各有 typed error；不自动切来源；不覆盖正式报告 |
+| `WP05-S08` | 父代理 + 审查代理 | 生成两个 as_of 的离线 snapshot diff、DuckDB schema 和 manifest；运行完整门禁 | WP05 目标测试、pytest、Ruff/mypy 新模块、diff check | 无 look-ahead 证据和依赖审计齐全；提交后停止 |
+
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_quant_dataset tests.test_point_in_time -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_quant_dataset.py tests/test_quant_storage.py tests/test_quant_calendar.py tests/test_point_in_time.py
 ```
 
 **验收：** 未来 filing/价格无法进入历史 snapshot；输入顺序变化不改变 snapshot hash；每个 feature 可追溯 ID。
@@ -756,6 +935,7 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 - `src/stockcrewai/evals/agent_eval.py`；
 - `src/stockcrewai/services/runtime_metrics.py`；
+- `src/stockcrewai/flow.py`（仅集成代理接入事件/评测开关）；
 - `tests/fixtures/agent_eval/`；
 - `tests/test_agent_eval.py`；
 - `tests/test_runtime_metrics.py`。
@@ -770,10 +950,21 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 **发布门槛：** 数字 Evidence 覆盖率 100%；Calculation 复算率 100%；rejected Claim 入报告为 0；同 fixture 5 次确定性 hash 一致；Agent schema 通过率至少 95%；注入绕过率 0。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP06-S01` | Luna Coder A | 为 4 个 Agent 建固定输入、期望 schema、accepted/rejected ID 的 eval fixture | `tests/test_agent_eval.py` 先 RED | 每个 fixture 标注 agent/task/prompt/schema version |
+| `WP06-S02` | Luna Coder A | 实现 `evals/agent_eval.py` 的 fixture loader、逐指标 scorer、阈值和 JSON 输出；不调用真实 LLM | 逐 scorer 单测 RED→GREEN | 同输入分数和排序确定；阈值失败退出非零 |
+| `WP06-S03` | Luna Coder B | 创建 `tests/test_runtime_metrics.py`；实现 latency/token/retry/cost/failure category event collector | 模拟 CrewAI events 的测试 RED→GREEN | 不记录 prompt secret；事件与 run_id/crew/agent/task 关联 |
+| `WP06-S04` | Luna Coder C | 增加 5 次重复运行 evaluator 和 artifact hash scorer；实现 injection bypass、new claim、numeric mismatch 指标 | 错误 fixture 必须命中对应指标 | 指标定义不依赖自然语言 warning；每项有 numerator/denominator |
+| `WP06-S05` | 集成 Luna Coder | 接入 Flow 非业务 state 或 event listener；eval 默认读取离线 capture，不改变正常 `crewai run` 输出 | Flow/runtime metrics 集成测试 | 关闭 eval 时零行为变化；开启时生成独立 JSON artifact |
+| `WP06-S06` | 父代理 + 审查代理 | 运行完整 eval，生成四 Agent 分数卡和最差 fixture；核对发布门槛 | 目标命令 + `pytest -q` | 门槛逐项 pass/fail；不以平均分掩盖数字/注入硬门禁；提交后停止 |
+
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_agent_eval tests.test_runtime_metrics -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_agent_eval.py tests/test_runtime_metrics.py
 ```
 
 **验收：** 评测结果输出稳定 JSON；门槛失败返回非零退出状态；不要求真实 LLM 才能跑默认评测。
@@ -792,6 +983,7 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 - `src/stockcrewai/quant/factors.py`；
 - `src/stockcrewai/quant/normalization.py`；
+- `docs/numeric-conventions.md`（仅量化审查代理更新公式版本）；
 - `tests/fixtures/quant/factors/`；
 - `tests/test_quant_factors.py`；
 - `tests/test_quant_normalization.py`。
@@ -821,10 +1013,22 @@ def normalize_cross_section(
 
 **规则：** 先按 `as_of + Profile + industry` 分组；固定分位 winsorize；行业内 percentile 或 z-score；保存原始值、标准化值和 peer_count；样本不足返回 `insufficient_peer_sample`；不强行跨不同行业比较。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP07-S01` | 父代理 + 量化审查 | 在 `docs/numeric-conventions.md` 冻结每个因子的公式、方向、period、Profile applicability、Decimal→float64 边界和容差 | 文档字段完整性检查 | 公式版本唯一；没有“合理计算”等自由裁量词 |
+| `WP07-S02` | Luna Coder A | 创建手算 factor fixture 和 `tests/test_quant_factors.py`；覆盖正、负、零、not_applicable、缺 Evidence | 目标测试先 RED | 每个因子至少一个独立手算值和一个 unavailable 情形 |
+| `WP07-S03` | Luna Coder A | 实现 `quant/factors.py`；pandas 仅组织 snapshot，NumPy `float64` 仅用于统计值；保存 provenance | 重复 S02 | raw factor 与手算一致；Evidence/Calculation ID 完整 |
+| `WP07-S04` | Luna Coder B | 创建 normalization fixture/测试；实现固定分位 winsorize、z-score/percentile、peer_count | 极端值、常数列、小样本测试 RED→GREEN | 小样本 typed unavailable；无除零/NaN 泄漏 |
+| `WP07-S05` | Luna Coder C | 实现版本化 composite score/ranking；同分处理规则固定；输入顺序性质测试用 Hypothesis | 打乱输入和并列分数测试 | 排名对输入顺序不敏感；同分 ticker secondary key 固定 |
+| `WP07-S06` | 集成 Luna Coder | 串联 Snapshot→FactorObservation→Normalization→Ranking，写稳定 JSON/Parquet artifact | 10 股票离线 fixture 集成测试 | artifact 包含 raw/normalized/peer/formula version/hash |
+| `WP07-S07` | 父代理 + 审查代理 | 第二实现或手算复核全部公式，运行目标/完整门禁 | pytest、mypy quant、Ruff quant | 容差内 100% 一致；提交并展示 10 股票表后停止 |
+
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_quant_factors tests.test_quant_normalization -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_quant_factors.py tests/test_quant_normalization.py
 ```
 
 **验收：** 公式有独立手算 fixture；输入顺序不改变结果；同一数据重复运行完全一致；不适用因子不阻断其他因子。
@@ -844,6 +1048,8 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 - `src/stockcrewai/quant/portfolio.py`；
 - `src/stockcrewai/quant/statistics.py`；
 - `src/stockcrewai/quant/backtest.py`；
+- `docs/numeric-conventions.md`（仅量化审查代理更新回测协议）；
+- `docs/testing-strategy.md`（仅量化审查代理更新防前视门禁）；
 - `tests/fixtures/quant/backtest/`；
 - `tests/test_quant_portfolio.py`；
 - `tests/test_quant_statistics.py`；
@@ -855,10 +1061,22 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 **规则：** 交易信号只能使用调仓日前 snapshot；收益从下一可交易时点开始；费用随换手变化；统计层可把已验证 Decimal 收益转换为 float，并记录转换版本和容差。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP08-S01` | 量化审查代理 | 冻结 rebalance、signal cutoff、execution price、weight、cost、benchmark 和 missing return policy | 更新 numeric/testing 文档并检查字段 | 协议没有可由实现代理调参的空白 |
+| `WP08-S02` | Luna Coder A | 创建 portfolio fixture 和 `tests/test_quant_portfolio.py`；实现 top 20% 等权、现金、换手、双边成本 | 费用/换手手算测试 RED→GREEN | 权重和为 1 或明确现金；成本随 turnover 单调增加 |
+| `WP08-S03` | Luna Coder B | 创建 statistics fixture 和测试；实现 CAGR、volatility、Sharpe、drawdown、excess、IC、quantile returns | 手算/第二实现 RED→GREEN | 空样本、零波动、短历史都有 typed outcome，无 silent NaN |
+| `WP08-S04` | Luna Coder C | 创建 future signal/price fixture；实现 `quant/backtest.py` walk-forward 循环 | 使用同日未来收益的错误实现必须 RED | 每次持仓保存 signal_as_of、trade_date、source snapshot IDs |
+| `WP08-S05` | Luna Coder C | 加入 SPY 和股票池等权基准、成本敏感性、survivorship flag | 基准缺失/费用变化测试 | gross/net/benchmark 三条序列日期对齐；偏差显式 |
+| `WP08-S06` | 集成 Luna Coder | 生成稳定 backtest JSON/Parquet，禁止 Agent 或 Report 修改统计 | golden fixture hash 测试 | 重复运行 hash 一致；不做参数搜索 |
+| `WP08-S07` | 父代理 + 审查代理 | 复核无 look-ahead、统计、成本；运行目标/完整门禁 | pytest、mypy quant、Ruff quant | 所有统计通过双重验证；提交并展示成本敏感性后停止 |
+
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_quant_portfolio tests.test_quant_statistics tests.test_quant_backtest -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_quant_portfolio.py tests/test_quant_statistics.py tests/test_quant_backtest.py
 ```
 
 **验收：** future signal fixture 必须失败；成本升高会降低净收益；所有统计通过手算或第二实现 golden fixture；输出标记 `survivorship_bias_known`。
@@ -887,10 +1105,21 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 **规则：** LLM 只解释 `QuantResearchPacket`；所有数值由 renderer 直接插值；Verdict 输入不增加 quant 字段；quant unavailable 时显示 typed status，不生成假图、不把报告伪装为 full coverage。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP09-S01` | Luna Coder A | 创建 `tests/test_quant_packet.py`，定义 coverage/factor/rank/backtest/benchmark/quality/artifact ID 映射 | 目标测试先 RED | Packet 不接受无 provenance 数字；unavailable 是 typed status |
+| `WP09-S02` | Luna Coder A | 实现 `quant/packet.py`，只从验证后的量化 artifacts 构建 Pydantic packet | 重复 S01 | packet hash 稳定；不含 Verdict 输入字段 |
+| `WP09-S03` | Luna Coder B | 扩展 `reporting/context.py`/renderer 测试；数字直接从 packet 插值，LLM 只接收叙事上下文 | 数字被 LLM 改写的 fixture 必须 RED | Markdown 数字逐项等于 packet；无新增 Claim |
+| `WP09-S04` | Luna Coder C | 扩展 visuals：因子百分位、净值/基准、回撤或成本图；用临时目录和自适应轴/标签 | 负值、极端值、中文、长标签图片测试 | 图无裁切/遮挡；报告生成后临时图片删除，artifact 保留 |
+| `WP09-S05` | 集成 Luna Coder | 在 `flow.py` 报告前注入可选 packet；对缺 packet 返回 partial/evidence status，不伪造 | `tests/test_quant_report_integration.py` | 接入前后 Verdict hash 相同；无 quant 仍产生契约允许的报告 |
+| `WP09-S06` | 父代理 + 审查代理 | 生成离线正式报告并逐项核对 packet、Markdown、图片、Verdict；运行完整门禁 | 目标命令 + pytest/Ruff/mypy/diff | 报告清楚区分事实、分析、量化历史验证和非建议；提交后停止 |
+
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_quant_packet tests.test_quant_report_integration tests.test_report_visuals -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_quant_packet.py tests/test_quant_report_integration.py tests/test_report_visuals.py
 ```
 
 **验收：** 报告数字与 packet 逐项一致；Verdict hash 与接入前一致；图表对负值、极端值和中文标签无重叠。
@@ -908,18 +1137,34 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 **独占写入：**
 
 - `src/stockcrewai/profiles/reit.py`；
+- `src/stockcrewai/pipelines/profile_registry.py`（仅集成代理登记 REIT）；
+- `src/stockcrewai/reporting/context.py`（仅集成代理增加 REIT 字段）；
+- `src/stockcrewai/reporting/renderer.py`（仅集成代理增加 REIT 章节）；
+- `docs/data-contracts.md`（REIT 契约）；
+- `docs/numeric-conventions.md`（REIT 公式）；
 - `tests/fixtures/profiles/reit/`；
 - `tests/test_reit_profile.py`；
 - `tests/test_reit_report.py`。
 
 **指标：** FFO/AFFO（仅在证据可审计时）、same-store NOI（可选）、occupancy（可选）、net debt/EBITDA、dividend coverage、P/FFO。普通企业 FCF、P/E 不得作为无条件 blocking 指标。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP10-S01` | Profile 审查代理 | 冻结 REIT 分类证据、US-GAAP tags、FFO/AFFO 口径、Metric Policy 和不可用原因 | 更新 data-contracts/numeric 文档；字段检查 | 明确 NAREIT 调整项只在 SEC Evidence 可审计时使用 |
+| `WP10-S02` | Luna Coder A | 创建完整 REIT、缺 AFFO、负 FFO、不同物业类型 fixture 和 `test_reit_profile.py` | 目标测试先 RED | fixture 只用固定 SEC-like 数据，不联网 |
+| `WP10-S03` | Luna Coder A | 实现 `profiles/reit.py` 的 Evidence mapping、Policy 和公式 adapter | 重复 S02 | 不用普通企业 FCF/P-E 做无条件 blocking |
+| `WP10-S04` | Luna Coder B | 创建/实现 REIT Gate 与 registry integration tests；只由集成代理登记 Profile | REIT 分类→Policy→Gate 测试 | 缺 optional disclosure 不阻断；缺 required 项给稳定 reason code |
+| `WP10-S05` | Luna Coder C | 创建 `test_reit_report.py`；扩展 ReportContext 和 Quant applicability 展示 FFO/AFFO/P-FFO | 报告口径/来源缺失测试 RED→GREEN | 报告解释术语、期间、来源；不新增未验证数字 |
+| `WP10-S06` | 父代理 + 审查代理 | 比较 REIT/standard policy，生成离线样例报告，运行完整门禁 | WP10 目标命令 + 全门禁 | Policy 差异和报告 artifact 可审计；提交后停止 |
+
 **验收：** 至少一个完整 fixture 和一个缺失 AFFO fixture；缺失可选披露不阻断；报告明确口径和来源；量化 P/B/P/FFO 适用性由 Policy 决定。
 
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_reit_profile tests.test_reit_report -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_reit_profile.py tests/test_reit_report.py
 ```
 
 **提交：** `feat: add reit research profile`
@@ -936,6 +1181,11 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 - `src/stockcrewai/profiles/bank.py`；
 - `src/stockcrewai/profiles/insurance.py`；
+- `src/stockcrewai/pipelines/profile_registry.py`（仅集成代理登记银行/保险）；
+- `src/stockcrewai/reporting/context.py`（仅集成代理增加金融 Profile 字段）；
+- `src/stockcrewai/reporting/renderer.py`（仅集成代理增加金融 Profile 章节）；
+- `docs/data-contracts.md`（银行/保险契约）；
+- `docs/numeric-conventions.md`（银行/保险公式）；
 - `tests/fixtures/profiles/bank/`；
 - `tests/fixtures/profiles/insurance/`；
 - `tests/test_bank_profile.py`；
@@ -945,12 +1195,24 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 **保险指标：** combined ratio、loss ratio、expense ratio、ROE、book value、investment income、偿付能力披露（有来源时）。普通企业 FCF/current ratio 不作统一 blocking。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP11-S01` | Profile 审查代理 | 分别冻结银行/保险分类证据、会计口径、Metric Policy、不可用原因；禁止共用普通企业模板 | 更新 data-contracts/numeric 文档 | 银行和保险 policy_version 独立；指标定义有来源字段 |
+| `WP11-S02` | Luna Coder A | 创建银行完整/缺 CET1/负拨备/无 capex fixture 和 `test_bank_profile.py` | 目标测试先 RED | fixture 覆盖银行没有普通 current assets/capex 的合法结构 |
+| `WP11-S03` | Luna Coder A | 实现 `profiles/bank.py` 的 Evidence mapping、Policy 和公式；接入前不改 Registry | 重复 S02 | ROA/NIM/efficiency/loan-deposit 等仅在证据完整时计算 |
+| `WP11-S04` | Luna Coder B | 创建保险完整/缺 combined ratio/再保险变化 fixture 和 `test_insurance_profile.py` | 目标测试先 RED | fixture 区分 insurer 与普通金融控股公司 |
+| `WP11-S05` | Luna Coder B | 实现 `profiles/insurance.py` 的 Evidence mapping、Policy 和公式 | 重复 S04 | loss/expense/combined ratio 口径一致；缺值 typed unavailable |
+| `WP11-S06` | 集成 Luna Coder | 在 Profile Registry 登记银行/保险；扩展 ReportContext/renderer 和量化 applicability | 银行/保险端到端离线测试 | 缺普通企业指标不再阻断；报告不混用两类指标 |
+| `WP11-S07` | 父代理 + 审查代理 | 分别生成 PolicyDecision 和报告样例，运行完整门禁 | WP11 目标命令 + 全门禁 | 两类 Profile 独立通过；提交后停止 |
+
 **验收：** 银行和保险都能在缺少 `operating_income/capex/short_term_investments/current_assets/current_liabilities` 时按各自 Policy 继续；不允许用 LLM 自由发明替代公式。
 
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_bank_profile tests.test_insurance_profile -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_bank_profile.py tests/test_insurance_profile.py
 ```
 
 **提交：** `feat: add bank and insurance profiles`
@@ -970,6 +1232,11 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 - `src/stockcrewai/profiles/foreign_issuer.py`；
 - `src/stockcrewai/profiles/holding_company.py`；
 - `src/stockcrewai/profiles/spac.py`；
+- `src/stockcrewai/pipelines/profile_registry.py`（每个子 Profile 完成后仅由集成代理登记）；
+- `src/stockcrewai/reporting/context.py`（仅集成代理增加已发布 Profile 字段）；
+- `src/stockcrewai/reporting/renderer.py`（仅集成代理增加已发布 Profile 章节）；
+- `docs/data-contracts.md`（每个子 Profile 独立更新）；
+- `docs/numeric-conventions.md`（每个子 Profile 独立更新）；
 - `tests/fixtures/profiles/utility/`；
 - `tests/fixtures/profiles/commodity_producer/`；
 - `tests/fixtures/profiles/foreign_issuer/`；
@@ -985,16 +1252,28 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 
 **证券边界：** ETF、共同基金、封闭式基金和其他 `investment_company_reporting` 默认返回 `unsupported_security`；不生成看似专业但口径错误的普通股票报告。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP12-S01` | Luna Coder A | utility：先建完整/监管资本/缺 rate-base fixture，再实现 `profiles/utility.py`、Policy、Gate、报告和量化适用性 | `pytest -q tests/test_utility_profile.py` RED→GREEN | 监管资产、资本开支和利息覆盖口径明确；独立 commit，停止验收 |
+| `WP12-S02` | Luna Coder B | commodity producer：先建价格周期/储量/减值 fixture，再实现 `commodity_producer.py` 全链路 | `pytest -q tests/test_commodity_producer_profile.py` RED→GREEN | 区分产量、实现价格、储量和普通收入增长；独立 commit，停止验收 |
+| `WP12-S03` | Luna Coder C | foreign issuer：先建 ADR ratio、20-F、6-K、IFRS taxonomy fixture，再实现 `foreign_issuer.py` | `pytest -q tests/test_foreign_issuer_profile.py` RED→GREEN | ADR 股价/股数口径匹配；20-F/IFRS 不伪装 US-GAAP；独立 commit，停止验收 |
+| `WP12-S04` | Luna Coder A | holding company：建立 NAV/子公司/双重计算 fixture，实现 `holding_company.py` | `pytest -q tests/test_holding_company_profile.py` RED→GREEN | 避免对子公司和母公司价值重复计算；独立 commit，停止验收 |
+| `WP12-S05` | Luna Coder B | SPAC：建立 pre/post-merger、trust cash、warrant dilution fixture，实现 `spac.py` | `pytest -q tests/test_spac_profile.py` RED→GREEN | pre-merger 不输出普通经营分析；稀释来源可追溯；独立 commit，停止验收 |
+| `WP12-S06` | 集成 Luna Coder | 增加 investment company/ETF/fund fixture，Registry 返回 `unsupported_security`；不得进入 Analysis Crew | 对不支持证券运行离线 Flow | 返回结构化原因和原始身份信息，不生成普通股票报告 |
+| `WP12-S07` | 父代理 + 审查代理 | 每个子 Profile 单独执行目标测试、全门禁、报告样例和用户检查；最后检查 Registry 无顺序依赖 | 全部 WP12 命令 + `pytest -q` | 五个独立 commit/验收证据；最终聚合 commit 后停止 |
+
 **验收：** 每个 Profile 有完整 fixture、缺失数据 fixture、Gate 测试、报告样例、量化适用性；未知 Profile 返回 `evidence_only` 或明确 unsupported，不猜测。
 
 **目标命令：**
 
 ```bash
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_utility_profile -v
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_commodity_producer_profile -v
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_foreign_issuer_profile -v
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_holding_company_profile -v
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest tests.test_spac_profile -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_utility_profile.py
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_commodity_producer_profile.py
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_foreign_issuer_profile.py
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_holding_company_profile.py
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_spac_profile.py
 ```
 
 **提交：** 每个 Profile 一个 commit，例如 `feat: add utility research profile`。
@@ -1032,13 +1311,28 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unitte
 7. GitHub Actions 只运行离线测试，不读取生产 API key。
 8. 使用 `rg` 确认仓库内部已无兼容函数调用后，最终集成代理删除 `pipeline_support.py` 中无调用的 re-export；仍有调用则保留并记录，不为追求目录美观破坏兼容性。
 
+**逐步操作：**
+
+| Step | 执行者 | 操作与精确文件 | 命令/RED 证据 | 完成证据 |
+|---|---|---|---|---|
+| `WP13-S01` | Luna Coder A | 重写 README：5 分钟定位、3 Crew/4 Agent、数据流、coverage、离线 demo、真实运行、artifact 路径和失败解释 | 按 README 从干净临时目录执行文档命令 | 命令可复制；无个人绝对路径；新用户能找到报告和 JSON |
+| `WP13-S02` | Luna Coder B | 创建 GitHub Actions：Python 支持矩阵、uv lock、pytest、Ruff、mypy 新模块；不注入生产 secret | 本地解析 YAML；必要时用 `gh workflow` 只读检查 | CI 只跑离线 fixture；并行结果稳定；缓存不包含 `.env` |
+| `WP13-S03` | Luna Coder C | 用固定 fixture 生成普通企业、REIT、金融机构三份报告和一份 quant 报告；复制最终 artifact，不提交临时图 | 重建后比较 hash | 样例包含 source/as_of/coverage/limitations；数字可追溯 |
+| `WP13-S04` | Luna Coder C | 执行 30–50 公司显式 live coverage runner；输出 `examples/coverage-matrix.md`，分开代码、SEC、Yahoo、LLM、Profile 原因 | live 命令单独执行；失败不改默认测试 | 每家公司有最终 stage/profile/coverage/reason_code；网络失败不算代码通过 |
+| `WP13-S05` | Luna Coder A | 创建 `docs/demo-script.md`、简历项目描述和面试问题；演示 2–3 分钟内展示成功与 typed failure | 按秒演练脚本 | 不宣称无偏 Alpha 或所有证券 full coverage |
+| `WP13-S06` | 集成 Luna Coder | 用 `rg` 检查旧 compatibility caller；仅在零 caller 时清理 `pipeline_support.py` re-export；扫描 secret、trace code、临时图、个人路径 | `rg` caller/secret/path 检查；`git status` | 不误删兼容入口；仓库无 secret 和运行垃圾 |
+| `WP13-S07` | 父代理 + 两个审查代理 | 从新用户视角复现 README、运行完整 CI 等价门禁、核对所有最终 checklist | pytest/unittest/Ruff/mypy/compileall/diff check | 所有 checklist 有命令或 artifact 证据；提交发布版并停止 |
+
 **验收：** 新用户五分钟内能理解 3 Crew/4 Agent 与确定性内核边界；配置合法环境后可运行 `crewai run`；无网络时离线演示仍可复现；仓库不包含 `.env`、trace secret、临时图或个人路径。
 
 **目标命令：**
 
 ```bash
 UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q
 UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m compileall -q src tests
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync ruff check src tests
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync mypy src/stockcrewai/models src/stockcrewai/services src/stockcrewai/pipelines src/stockcrewai/validators src/stockcrewai/quant src/stockcrewai/reporting
 git diff --check
 ```
 
@@ -1093,7 +1387,7 @@ docs/implementation-plan.md、相关源码和测试。若修改 CrewAI 代码，
 使用 superpowers:using-superpowers、test-driven-development、systematic-debugging、
 verification-before-completion 和 ponytail。先给 RED 证据，再做最小实现。
 
-禁止真实 SEC/Yahoo/DeepSeek 进入默认测试；禁止新增依赖、Agent、fallback、伪造数据、
+禁止真实 SEC/Yahoo/DeepSeek 进入默认测试；禁止增加 allowlist 外依赖、Agent、fallback、伪造数据、
 未验证 ID 和二进制浮点财务计算。若需要改独占范围外文件，立即停止并上报接口缺口。
 
 完成时返回：根因/设计、修改文件、RED 命令与结果、GREEN 命令与结果、完整回归结果、
@@ -1194,7 +1488,7 @@ WP09 内可同时建设 packet、report context 和 visuals，但 `flow.py` 只�
 - [ ] Quant 结果不改变 Verdict v1。
 - [ ] 默认测试不访问 SEC、Yahoo、DeepSeek 或付费服务。
 - [ ] 无 fallback、伪造数据、静默吞错和缺失值填 0。
-- [ ] 无未批准的新依赖。
+- [ ] 依赖只包含批准 allowlist；lock diff 无非必要核心升级。
 - [ ] README、CI、样例报告和覆盖矩阵可复现。
 - [ ] 仓库不包含 `.env`、API key、临时图、个人绝对路径或 trace 访问码。
 
