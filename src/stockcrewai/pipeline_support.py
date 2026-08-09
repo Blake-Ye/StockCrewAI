@@ -15,7 +15,7 @@ import os
 import re
 from collections.abc import Mapping
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from stockcrewai.crews.analysis.crew import ANALYSIS_DOMAIN_RULES, AnalysisClaim
@@ -659,7 +659,7 @@ def _filter_analysis_claims_with_diagnostics(
         (
             "valuation",
             set(valuation_categories),
-            set(valuation_categories),
+            set(),
             "valuation_analysis_claims_required",
             valuation_requires_calculations,
             set(valuation_evidence_ids),
@@ -1012,90 +1012,6 @@ def _risk_analysis_input(
     }
 
 
-def build_deterministic_risk_disclosure_claims(
-    risk_input: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    """从 eligible filing packet 生成不含风险判断的披露事实 Claims。
-
-    Builder 只复制当前 packet 的 filing Evidence ID，使用固定文本说明
-    filing 披露了 Item 1A 章节或 8-K 实质事件，不推断严重度、概率、损失、
-    评级、建议或未来影响。调用方仍必须把结果作为第二项 task output 交给
-    现有 Claim Gate。
-    """
-    if not isinstance(risk_input, Mapping):
-        return []
-    validated_filing_ids = risk_input.get("validated_filing_ids")
-    filings = risk_input.get("filings")
-    if not (
-        isinstance(validated_filing_ids, list)
-        and validated_filing_ids
-        and all(
-            isinstance(evidence_id, str) and evidence_id.strip()
-            for evidence_id in validated_filing_ids
-        )
-        and isinstance(filings, list)
-    ):
-        return []
-    filings_by_id = {
-        filing.get("evidence_id"): filing
-        for filing in filings
-        if isinstance(filing, Mapping)
-    }
-    claims: list[dict[str, Any]] = []
-    for evidence_id in validated_filing_ids:
-        filing = filings_by_id.get(evidence_id)
-        if not isinstance(filing, Mapping):
-            continue
-        eligibility = filing.get("risk_eligibility")
-        sections = filing.get("risk_sections")
-        if not (
-            isinstance(evidence_id, str)
-            and isinstance(eligibility, Mapping)
-            and eligibility.get("eligibility") == "eligible"
-            and eligibility.get("evidence_id") == evidence_id
-            and eligibility.get("evidence_kind")
-            in {"item_1a", "substantive_8k_event"}
-            and isinstance(sections, list)
-            and sections
-            and all(
-                isinstance(section, Mapping)
-                and section.get("complete") is True
-                and isinstance(section.get("text"), str)
-                and bool(section["text"].strip())
-                for section in sections
-            )
-        ):
-            continue
-        evidence_kind = eligibility["evidence_kind"]
-        if evidence_kind == "item_1a":
-            statement = "该 filing 披露了 Item 1A 风险因素章节。"
-        else:
-            section_title = next(
-                (
-                    section.get("section_title")
-                    for section in sections
-                    if isinstance(section, Mapping)
-                    and isinstance(section.get("section_title"), str)
-                    and section["section_title"].strip()
-                ),
-                "",
-            )
-            match = re.search(r"item\s+\d+\.\d+", section_title, re.IGNORECASE)
-            item_label = match.group(0) if match else "8-K"
-            statement = f"该 filing 披露了 {item_label} 事件。"
-        claims.append(
-            AnalysisClaim(
-                claim_id=f"claim_risk_disclosure_{evidence_id}",
-                category="risk",
-                statement=statement,
-                evidence_ids=[evidence_id],
-                calculation_ids=[],
-                confidence=1.0,
-            ).model_dump(mode="json")
-        )
-    return claims
-
-
 def _verdict_risk_input(analysis: Any) -> dict[str, Any]:
     """从 Claim Gate 已接受的风险 Claims 构造确定性 Verdict 输入。
 
@@ -1236,19 +1152,20 @@ def _valuation_analysis_input(
 def build_deterministic_valuation_claims(
     valuation_input: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    """从已验证估值 payload 生成固定顺序的三类 Claims。
+    """从已验证估值 payload 按可用域生成固定顺序的 Claims。
 
     当前估值、历史估值和反向 DCF 的存在性由 Python 根据各自状态和
-    payload 白名单决定，不由 LLM 决定。任何状态、结构或 ID 白名单不一致
-    都返回空列表；调用方仍必须把该列表作为第三项任务输出交给现有
+    payload 白名单决定，不由 LLM 决定。当前估值逐项跳过不可用 calculation；
+    历史估值和反向 DCF 各自独立判断，某个估值域不可用不会清空其他域。
+    调用方仍必须把该列表作为第三项任务输出交给现有
     ``_filter_analysis_claims_with_diagnostics``，由 Claim Gate 最终校验。
 
     参数：
         valuation_input：由 ``_valuation_analysis_input`` 产生的 JSON-safe 包。
     返回：
         通过 ``AnalysisClaim`` schema 的 JSON-safe Claim 字典列表，顺序固定
-        为 current_valuation、historical_valuation、reverse_dcf；无法完整
-        构建时返回空列表。
+        为 current_valuation、historical_valuation、reverse_dcf 顺序返回可用域；
+        没有可审计估值域时返回空列表。
     """
     if not isinstance(valuation_input, Mapping):
         return []
@@ -1282,6 +1199,7 @@ def build_deterministic_valuation_claims(
                 result.append(identifier)
         return result or None
 
+    claim_specs: list[tuple[str, str, str, list[str], list[str]]] = []
     current_result = valuation_input.get("valuation_result")
     current_calculation_ids: list[str] = []
     current_evidence_ids: list[str] = []
@@ -1290,35 +1208,44 @@ def build_deterministic_valuation_claims(
         if isinstance(current_result, Mapping)
         else None
     )
-    if not (
+    if (
         isinstance(current_result, Mapping)
         and current_result.get("readiness") == "ready"
         and current_result.get("validation_status") == "valid"
         and isinstance(current_calculations, list)
-        and current_calculations
     ):
-        return []
-    for calculation in current_calculations:
-        if not isinstance(calculation, Mapping):
-            return []
-        calculation_id = calculation.get("calculation_id")
-        input_evidence_ids = evidence_ids_from(calculation.get("input_evidence_ids"))
-        if not (
-            isinstance(calculation_id, str)
-            and calculation_id.strip()
-            and calculation_id in calculation_allowlist
-            and input_evidence_ids
-        ):
-            return []
-        if (
-            calculation.get("status") != "available"
-            or calculation.get("validation_status") != "valid"
-        ):
-            return []
-        current_calculation_ids.append(calculation_id)
-        for evidence_id in input_evidence_ids:
-            if evidence_id not in current_evidence_ids:
-                current_evidence_ids.append(evidence_id)
+        for calculation in current_calculations:
+            if not isinstance(calculation, Mapping):
+                continue
+            calculation_id = calculation.get("calculation_id")
+            input_evidence_ids = evidence_ids_from(
+                calculation.get("input_evidence_ids")
+            )
+            if not (
+                calculation.get("status") == "available"
+                and calculation.get("validation_status") == "valid"
+                and isinstance(calculation_id, str)
+                and calculation_id.strip()
+                and calculation_id in calculation_allowlist
+                and input_evidence_ids
+            ):
+                continue
+            if calculation_id not in current_calculation_ids:
+                current_calculation_ids.append(calculation_id)
+            for evidence_id in input_evidence_ids:
+                if evidence_id not in current_evidence_ids:
+                    current_evidence_ids.append(evidence_id)
+
+    if current_calculation_ids and current_evidence_ids:
+        claim_specs.append(
+            (
+                "claim_current_valuation",
+                "current_valuation",
+                "当前估值结果由已验证计算及输入证据支持。",
+                current_evidence_ids,
+                current_calculation_ids,
+            )
+        )
 
     def auxiliary_ids(result: Any) -> tuple[list[str], list[str]] | None:
         if not isinstance(result, Mapping):
@@ -1335,50 +1262,62 @@ def build_deterministic_valuation_claims(
         return [calculation_id], evidence_ids
 
     historical_result = valuation_input.get("historical_valuation_result")
-    if not (
+    if (
         isinstance(historical_result, Mapping)
         and historical_result.get("status") == "ok"
         and historical_result.get("validation_status") == "valid"
     ):
-        return []
-    historical_ids = auxiliary_ids(historical_result)
-    if historical_ids is None:
-        return []
+        historical_ids = auxiliary_ids(historical_result)
+        if historical_ids is not None:
+            claim_specs.append(
+                (
+                    "claim_historical_valuation",
+                    "historical_valuation",
+                    "历史估值结果由已验证计算及输入证据支持。",
+                    historical_ids[1],
+                    historical_ids[0],
+                )
+            )
+
+    def reason_codes(result: Mapping[str, Any]) -> set[str]:
+        values: list[str] = []
+        for value in (result.get("reason_code"), result.get("reasons")):
+            if isinstance(value, str):
+                value = [value]
+            if isinstance(value, list):
+                values.extend(
+                    item.strip()
+                    for item in value
+                    if isinstance(item, str) and item.strip()
+                )
+        return set(values)
 
     reverse_dcf_result = valuation_input.get("reverse_dcf_result")
-    if not (
+    reverse_dcf_not_applicable_reasons = {
+        "invalid_fcf",
+        "ttm_fcf_required",
+        "policy_not_applicable",
+    }
+    if (
         isinstance(reverse_dcf_result, Mapping)
         and reverse_dcf_result.get("status") == "ok"
         and reverse_dcf_result.get("validation_status") == "valid"
+        and not (
+            reason_codes(reverse_dcf_result)
+            & reverse_dcf_not_applicable_reasons
+        )
     ):
-        return []
-    reverse_dcf_ids = auxiliary_ids(reverse_dcf_result)
-    if reverse_dcf_ids is None:
-        return []
-
-    claim_specs = (
-        (
-            "claim_current_valuation",
-            "current_valuation",
-            "当前估值结果由已验证计算及输入证据支持。",
-            current_evidence_ids,
-            current_calculation_ids,
-        ),
-        (
-            "claim_historical_valuation",
-            "historical_valuation",
-            "历史估值结果由已验证计算及输入证据支持。",
-            historical_ids[1],
-            historical_ids[0],
-        ),
-        (
-            "claim_reverse_dcf",
-            "reverse_dcf",
-            "反向 DCF 结果由已验证计算及输入证据支持。",
-            reverse_dcf_ids[1],
-            reverse_dcf_ids[0],
-        ),
-    )
+        reverse_dcf_ids = auxiliary_ids(reverse_dcf_result)
+        if reverse_dcf_ids is not None:
+            claim_specs.append(
+                (
+                    "claim_reverse_dcf",
+                    "reverse_dcf",
+                    "反向 DCF 结果由已验证计算及输入证据支持。",
+                    reverse_dcf_ids[1],
+                    reverse_dcf_ids[0],
+                )
+            )
     return [
         AnalysisClaim(
             claim_id=claim_id,
@@ -1390,6 +1329,116 @@ def build_deterministic_valuation_claims(
         ).model_dump(mode="json")
         for claim_id, category, statement, evidence_ids, calculation_ids in claim_specs
     ]
+
+_REVERSE_DCF_APPLICABILITY_REASONS = frozenset({"invalid_fcf", "ttm_fcf_required"})
+_REVERSE_DCF_POLICY_FIELDS = (
+    "issuer_type",
+    "company_type",
+    "industry",
+    "industry_name",
+    "sector",
+)
+_REVERSE_DCF_NON_APPLICABLE_GROUPS = {
+    "bank": {"bank", "banking", "commercialbank", "financialinstitution", "银行"},
+    "reit": {"reit", "realestateinvestmenttrust", "房地产投资信托"},
+}
+
+
+def _reverse_dcf_reason_codes(reverse_dcf: Mapping[str, Any]) -> list[str]:
+    """读取反向 DCF 工具的机器原因码，不从 warning 文本推断状态。"""
+    values: list[str] = []
+    for value in (reverse_dcf.get("reason_code"), reverse_dcf.get("reasons", [])):
+        if isinstance(value, str):
+            value = [value]
+        if isinstance(value, list):
+            values.extend(item.strip() for item in value if isinstance(item, str) and item.strip())
+    return list(dict.fromkeys(values))
+
+
+def _policy_token(value: Any) -> str:
+    return re.sub(r"[\s_\-/]+", "", value.strip().lower()) if isinstance(value, str) else ""
+
+
+def _numeric_policy_value(payload: Any, keys: tuple[str, ...]) -> Decimal | None:
+    if not isinstance(payload, Mapping):
+        return None
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            if value.get("validation_status") not in (None, "valid"):
+                continue
+            value = next(
+                (value.get(name) for name in ("value", "raw_result", "numeric_value") if value.get(name) is not None),
+                None,
+            )
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            continue
+        if parsed.is_finite():
+            return parsed
+    return None
+
+
+def _reverse_dcf_policy_reason(
+    state: Mapping[str, Any], reverse_dcf: Mapping[str, Any]
+) -> str | None:
+    """只从结构化 policy、issuer/industry 和已验证数值判断不适用。"""
+    for key in ("reverse_dcf_applicability", "reverse_dcf_policy"):
+        policy = state.get(key)
+        if isinstance(policy, Mapping):
+            status = _policy_token(policy.get("status") or policy.get("applicability"))
+            if status == "notapplicable" or policy.get("applicable") is False:
+                return str(policy.get("reason_code") or "policy_not_applicable")
+        elif _policy_token(policy) == "notapplicable":
+            return "policy_not_applicable"
+
+    for field in ("is_bank", "is_financial_institution", "is_reit"):
+        if state.get(field) is True:
+            return f"{field}_policy"
+    for field in _REVERSE_DCF_POLICY_FIELDS:
+        token = _policy_token(state.get(field))
+        for policy_name, aliases in _REVERSE_DCF_NON_APPLICABLE_GROUPS.items():
+            if token in aliases:
+                return f"{field}_{policy_name}"
+
+    facts = state.get("facts")
+    fcf = _numeric_policy_value(facts, ("current_fcf", "free_cash_flow", "fcf"))
+    fcf = fcf if fcf is not None else _numeric_policy_value(reverse_dcf, ("base_fcf",))
+    if fcf is not None and fcf <= 0:
+        return "negative_fcf"
+    eps = _numeric_policy_value(facts, ("diluted_eps", "earnings_per_share_diluted", "ttm_eps"))
+    return "negative_eps" if eps is not None and eps <= 0 else None
+
+
+def _current_valuation_gate(valuation: Mapping[str, Any]) -> dict[str, Any]:
+    """接受完整估值，或至少一个带有效 Evidence 的确定性指标。"""
+    fully_ready = valuation.get("readiness") == "ready" and valuation.get("validation_status") == "valid"
+    audited_metrics: list[str] = []
+    for calculation in valuation.get("calculations", []):
+        if not isinstance(calculation, Mapping):
+            continue
+        formula_id = calculation.get("formula_id")
+        evidence_ids = calculation.get("input_evidence_ids")
+        result = next(
+            (calculation.get(key) for key in ("raw_result", "normalized_result", "display_result") if calculation.get(key) not in (None, "")),
+            None,
+        )
+        if (
+            formula_id in VALUATION_FORMULAS
+            and calculation.get("calculation_id") == f"calc_{formula_id}"
+            and calculation.get("status") == "available"
+            and calculation.get("validation_status") == "valid"
+            and isinstance(evidence_ids, list)
+            and evidence_ids
+            and all(isinstance(item, str) and item.strip() for item in evidence_ids)
+            and result is not None
+        ):
+            audited_metrics.append(formula_id)
+    status = "ready" if fully_ready else "partial" if audited_metrics else "required"
+    return {"status": status, "audited_metrics": audited_metrics}
 
 
 def _analysis_gate(
@@ -1403,10 +1452,9 @@ def _analysis_gate(
     """执行 Analysis Crew 之前的确定性完整性门禁。
 
     该门禁检查五类前置条件：财务事实和基础计算、可读取的风险章节、
-    当前估值、历史估值以及反向 DCF。每一项都要求对应状态和验证标记
-    正确；任何一项缺失都会返回 ``blocked`` 和机器可读的 ``required_data``。
-    门禁失败时主流程不会调用 Analysis Crew，避免 Agent 在输入不完整时
-    生成看似完整但无法审计的 Claim。
+    当前估值、历史估值以及反向 DCF。只有确实需要补数据的项目才进入
+    ``required_data``；确定性 policy 判定不适用的估值模型会写入
+    ``limitations`` 和 ``applicability``，不会伪装成已完成的计算。
 
     参数：
         validation_result：批量事实/计算验证结果。
@@ -1416,9 +1464,12 @@ def _analysis_gate(
         historical_valuation：历史估值结果。
         reverse_dcf：反向 DCF 结果。
     返回：
-        ``status`` 为 ``ready`` 或 ``blocked``，以及缺失项列表。
+        ``status`` 为 ``ready`` 或 ``blocked``，以及 required_data、limitations
+        和每个估值域的 applicability 状态。
     """
     required_data: list[str] = []
+    limitations: list[str] = []
+    applicability: dict[str, dict[str, Any]] = {}
     validated_facts = any(
         isinstance(fact, Mapping) and fact.get("validation_status") == "valid"
         for fact in state.get("facts", {}).values()
@@ -1463,24 +1514,53 @@ def _analysis_gate(
     )
     if not risk_evidence_ready:
         required_data.append("risk_evidence_missing")
-    if not (
-        valuation.get("readiness") == "ready"
-        and valuation.get("validation_status") == "valid"
-    ):
+    current_valuation = _current_valuation_gate(valuation)
+    applicability["current_valuation"] = current_valuation
+    if current_valuation["status"] == "partial":
+        metrics = ", ".join(current_valuation["audited_metrics"])
+        limitations.append(
+            f"当前估值为部分可用：P/E 可能不可用，但已保留可审计指标（{metrics}）。"
+        )
+    elif current_valuation["status"] == "required":
         required_data.append("current_valuation_required")
     if not (
         historical_valuation.get("status") == "ok"
         and historical_valuation.get("validation_status") == "valid"
     ):
         required_data.append("historical_valuation_required")
-    if not (
-        reverse_dcf.get("status") == "ok"
+    reverse_reason_codes = _reverse_dcf_reason_codes(reverse_dcf)
+    reverse_dcf_status = (
+        "applicable"
+        if reverse_dcf.get("status") == "ok"
         and reverse_dcf.get("validation_status") == "valid"
-    ):
-        required_data.append("reverse_dcf_required")
+        else "required"
+    )
+    reverse_applicability: dict[str, Any] = {
+        "status": reverse_dcf_status,
+        "reason_codes": reverse_reason_codes,
+    }
+    if reverse_dcf_status == "required":
+        applicable_reason = _reverse_dcf_policy_reason(state, reverse_dcf)
+        if applicable_reason and set(reverse_reason_codes) & _REVERSE_DCF_APPLICABILITY_REASONS:
+            reverse_applicability.update(
+                {
+                    "status": "not_applicable",
+                    "reason_code": applicable_reason,
+                    "policy": "deterministic",
+                }
+            )
+            reason_text = ", ".join(reverse_reason_codes) or "unavailable"
+            limitations.append(
+                f"反向 DCF 不适用（确定性 policy={applicable_reason}；工具原因={reason_text}）。"
+            )
+        else:
+            required_data.append("reverse_dcf_required")
+    applicability["reverse_dcf"] = reverse_applicability
     return {
         "status": "blocked" if required_data else "ready",
         "required_data": required_data,
+        "limitations": limitations,
+        "applicability": applicability,
     }
 
 

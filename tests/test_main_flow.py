@@ -186,6 +186,23 @@ def _offline_flow_patches(parser_result: Any, verdict: Any = _UNSET):
 
 
 class MainFlowDefinitionTests(unittest.TestCase):
+    def test_ready_gate_summary_has_no_failure_diagnostics(self):
+        _, flow_class, _ = _flow_symbols()
+        flow = flow_class()
+        flow.state.status = "running"
+        flow.state.required_data = []
+        flow.state.analysis_diagnostics = {}
+
+        self.assertEqual(
+            flow._gate_summary(),
+            {
+                "status": "READY",
+                "domain": "none",
+                "reason_code": "none",
+                "required_data": "none",
+            },
+        )
+
     def test_state_and_flow_are_defined_directly_in_main(self):
         _, flow, state = _flow_symbols()
 
@@ -835,50 +852,28 @@ class MainFlowExecutionTests(unittest.TestCase):
             )
         self.assertIn("不得编造", retry_inputs["risk_analysis_input"]["retry_notice"])
 
-    def test_empty_risk_claim_gate_result_retries_once_then_uses_builder(self):
+    def test_empty_risk_claim_gate_result_retries_once_then_blocks(self):
         empty_outputs = _valid_analysis_outputs()
         empty_outputs[1] = json.dumps({"claims": []}, ensure_ascii=False)
         analysis_crew = SequencedAnalysisCrew([empty_outputs, empty_outputs])
-        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
+        report_crew = RecordingCrew("must not run")
         parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
         events = []
         flow._progress_callback = events.append
-        module = _main_module()
 
-        with _offline_flow_patches(
-            parser_result, verdict={"status": "ready"}
-        ) as (_, verdict_mocks), patch.object(
-            module.pipeline_support,
-            "build_deterministic_risk_disclosure_claims",
-            wraps=module.pipeline_support.build_deterministic_risk_disclosure_claims,
-        ) as builder, patch.object(
-            module,
-            "_filter_analysis_claims_with_diagnostics",
-            wraps=module._filter_analysis_claims_with_diagnostics,
-        ) as claim_gate:
+        with _offline_flow_patches(parser_result) as (_, verdict_mocks):
             result = _run_flow(flow)
 
         self.assertEqual(analysis_crew.kickoff_calls, 2)
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["stage"], "report")
-        self.assertEqual(result["analysis"][2]["category"], "risk")
-        self.assertEqual(result["analysis"][2]["claim_id"], "claim_risk_disclosure_ev_filing")
-        self.assertEqual(report_crew.kickoff_calls, 1)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["stage"], "analysis")
+        self.assertEqual(result["required_data"], ["risk_analysis_claims_required"])
+        self.assertEqual(report_crew.kickoff_calls, 0)
         self.assertEqual(getattr(flow.state, "analysis_attempts", 0), 2)
-        self.assertEqual(sum(mock.call_count for mock in verdict_mocks), 1)
-        builder.assert_called_once()
-        final_gate_output = claim_gate.call_args_list[-1].args[0]
-        self.assertEqual(len(final_gate_output.tasks_output), 3)
-        self.assertEqual(
-            json.loads(final_gate_output.tasks_output[1].raw)["claims"][0][
-                "claim_id"
-            ],
-            "claim_risk_disclosure_ev_filing",
-        )
+        self.assertEqual(sum(mock.call_count for mock in verdict_mocks), 0)
         analysis_events = [event for event in events if event.step == 5]
         self.assertEqual(len(analysis_events), 1)
         self.assertIn("attempts=2", analysis_events[0].output_summary)
-        self.assertIn("deterministic_risk_claims=1", analysis_events[0].output_summary)
 
     def test_only_rejected_shell_blocks_before_analysis_kickoff(self):
         from stockcrewai.tools.edgar_tool import EdgarRiskEligibility
@@ -951,17 +946,11 @@ class MainFlowExecutionTests(unittest.TestCase):
                     analysis_crew, report_crew
                 )
 
-                module = _main_module()
-                with _offline_flow_patches(parser_result), patch.object(
-                    module.pipeline_support,
-                    "build_deterministic_risk_disclosure_claims",
-                    wraps=module.pipeline_support.build_deterministic_risk_disclosure_claims,
-                ) as builder:
+                with _offline_flow_patches(parser_result):
                     result = _run_flow(flow)
 
                 self.assertEqual(result["status"], "blocked")
                 self.assertEqual(analysis_crew.kickoff_calls, 1)
-                self.assertEqual(builder.call_count, 0)
 
     def test_run_research_parser_failure_keeps_legacy_error_contract(self):
         module = _main_module()

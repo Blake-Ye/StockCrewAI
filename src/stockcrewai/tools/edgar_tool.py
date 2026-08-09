@@ -42,6 +42,7 @@ TTM_FACT_CONCEPTS = (
     "diluted_eps",
 )
 TTM_ROLES = ("latest_fy", "current_ytd", "prior_ytd")
+DIRECT_TTM_ROLE = "direct_ttm"
 SUBSTANTIVE_8K_ITEMS = frozenset(
     {"1.03", "2.05", "2.06", "3.01", "4.01", "4.02", "5.02", "8.01"}
 )
@@ -85,6 +86,7 @@ class EdgarFact(BaseModel):
     value: str
     unit: str | None = None
     period_type: str | None = None
+    period_basis: Literal["TTM"] | None = None
     period: str | None = None
     period_start: str | None = None
     period_end: str | None = None
@@ -234,6 +236,45 @@ def _prior_comparable_period(period: Any) -> str | None:
     if match is None:
         return None
     return f"{int(match.group(1)) - 1}-{match.group(2)}"
+
+
+def _is_complete_fiscal_year_ttm(metadata: dict[str, Any]) -> bool:
+    """检查单个完整财年是否足以作为直接 TTM Evidence。"""
+    try:
+        fiscal_year = int(metadata.get("fiscal_year"))
+    except (TypeError, ValueError):
+        return False
+    if (
+        str(metadata.get("period") or "") != f"{fiscal_year}-FY"
+        or str(metadata.get("fiscal_period") or "").upper() != "FY"
+        or str(metadata.get("period_type") or "").lower() != "duration"
+    ):
+        return False
+    if any(
+        metadata.get(key) in (None, "")
+        for key in (
+            "value",
+            "unit",
+            "tag_used",
+            "filing_date",
+            "form_type",
+            "accession",
+        )
+    ):
+        return False
+    if not str(metadata.get("form_type")).upper().startswith("10-K"):
+        return False
+    try:
+        _decimal_string(metadata.get("value"))
+    except ValueError:
+        return False
+    period_start = _as_date(metadata.get("period_start"))
+    period_end = _as_date(metadata.get("period_end"))
+    filed_at = _as_date(metadata.get("filing_date"))
+    if not period_start or not period_end or not filed_at or period_start > period_end:
+        return False
+    duration = period_end - period_start
+    return timedelta(days=300) <= duration <= timedelta(days=400)
 
 
 class EdgarTool(BaseTool):
@@ -796,6 +837,54 @@ class EdgarTool(BaseTool):
                         enriched[metadata_key] = value
             return enriched
 
+        def build_fact(
+            metric_id: str,
+            role: str,
+            metadata: dict[str, Any],
+            *,
+            period_basis: Literal["TTM"] | None = None,
+        ) -> EdgarFact | None:
+            try:
+                value = _decimal_string(metadata.get("value"))
+            except ValueError:
+                return None
+            period = str(metadata.get("period") or "unknown")
+            accession = str(
+                metadata.get("accession")
+                or metadata.get("accession_number")
+                or "unknown"
+            )
+            evidence_id = "ev_{}_{}_{}_{}_{}".format(
+                _safe_id(ticker or "company"),
+                _safe_id(metric_id),
+                role,
+                _safe_id(period),
+                _safe_id(accession),
+            )
+            return EdgarFact(
+                metric_id=metric_id,
+                evidence_id=evidence_id,
+                value=value,
+                unit=str(metadata.get("unit")) if metadata.get("unit") else None,
+                period_type=metadata.get("period_type"),
+                period_basis=period_basis,
+                period=period,
+                period_start=_as_iso(metadata.get("period_start")),
+                period_end=_as_iso(metadata.get("period_end")),
+                fiscal_year=metadata.get("fiscal_year"),
+                fiscal_period=metadata.get("fiscal_period"),
+                filed_at=_as_iso(metadata.get("filing_date", metadata.get("filed_at"))),
+                form=metadata.get("form_type", metadata.get("form")),
+                accession_number=accession,
+                taxonomy=(
+                    str(metadata.get("tag_used")).split(":", 1)[0]
+                    if metadata.get("tag_used")
+                    else None
+                ),
+                xbrl_tag=metadata.get("tag_used"),
+                source_reference=f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json",
+            )
+
         for metric_id in TTM_FACT_CONCEPTS:
             # 内部统一使用 diluted_eps，但 edgartools/SEC Company Facts
             # 实际可能只接受 earnings_per_share_diluted。先按内部名查询，
@@ -879,16 +968,29 @@ class EdgarTool(BaseTool):
                 if item["fiscal_year"] == latest_year + 1
                 and item["fiscal_period"] in {"Q1", "Q2", "Q3"}
             ]
-            if not ytd_candidates:
-                continue
-            current_ytd = max(
-                ytd_candidates,
-                key=lambda item: _as_date(item.get("period_end")) or date.min,
+            current_ytd = (
+                max(
+                    ytd_candidates,
+                    key=lambda item: _as_date(item.get("period_end")) or date.min,
+                )
+                if ytd_candidates
+                else None
             )
-            prior_ytd = by_period.get(
-                f"{latest_year}-{current_ytd['fiscal_period']}"
+            prior_ytd = (
+                by_period.get(f"{latest_year}-{current_ytd['fiscal_period']}")
+                if current_ytd is not None
+                else None
             )
-            if prior_ytd is None:
+            if current_ytd is None or prior_ytd is None:
+                if _is_complete_fiscal_year_ttm(latest_fy):
+                    direct_fact = build_fact(
+                        metric_id,
+                        DIRECT_TTM_ROLE,
+                        latest_fy,
+                        period_basis="TTM",
+                    )
+                    if direct_fact is not None:
+                        inputs[metric_id] = {DIRECT_TTM_ROLE: direct_fact}
                 continue
             selected = {
                 "latest_fy": latest_fy,
@@ -898,45 +1000,9 @@ class EdgarTool(BaseTool):
             by_role: dict[str, EdgarFact] = {}
             for role in TTM_ROLES:
                 metadata = selected[role]
-                try:
-                    value = _decimal_string(metadata.get("value"))
-                except ValueError:
-                    continue
-                period = str(metadata.get("period") or "unknown")
-                accession = str(
-                    metadata.get("accession")
-                    or metadata.get("accession_number")
-                    or "unknown"
-                )
-                evidence_id = "ev_{}_{}_{}_{}_{}".format(
-                    _safe_id(ticker or "company"),
-                    _safe_id(metric_id),
-                    role,
-                    _safe_id(period),
-                    _safe_id(accession),
-                )
-                by_role[role] = EdgarFact(
-                    metric_id=metric_id,
-                    evidence_id=evidence_id,
-                    value=value,
-                    unit=str(metadata.get("unit")) if metadata.get("unit") else None,
-                    period_type=metadata.get("period_type"),
-                    period=period,
-                    period_start=_as_iso(metadata.get("period_start")),
-                    period_end=_as_iso(metadata.get("period_end")),
-                    fiscal_year=metadata.get("fiscal_year"),
-                    fiscal_period=metadata.get("fiscal_period"),
-                    filed_at=_as_iso(metadata.get("filing_date", metadata.get("filed_at"))),
-                    form=metadata.get("form_type", metadata.get("form")),
-                    accession_number=accession,
-                    taxonomy=(
-                        str(metadata.get("tag_used")).split(":", 1)[0]
-                        if metadata.get("tag_used")
-                        else None
-                    ),
-                    xbrl_tag=metadata.get("tag_used"),
-                    source_reference=f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json",
-                )
+                fact = build_fact(metric_id, role, metadata)
+                if fact is not None:
+                    by_role[role] = fact
             if by_role:
                 inputs[metric_id] = by_role
         return inputs

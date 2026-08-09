@@ -315,6 +315,169 @@ class ValuationToolTests(unittest.TestCase):
         self.assertEqual(by_formula["fcf_yield"].status, "unavailable")
         self.assertIn("common_shares_outstanding_unit", result.readiness_reasons)
 
+    def test_stale_brk_b_shares_block_current_valuation(self):
+        from stockcrewai.tools.valuation_tool import ValuationTool
+
+        result = ValuationTool().run(
+            ticker="BRK.B",
+            market_price="500",
+            price_timestamp="2026-08-06T15:30:00Z",
+            currency="USD",
+            source_reference="manual:yahoo:BRK-B",
+            facts={
+                "common_shares_outstanding": {
+                    "value": "1500000000",
+                    "evidence_id": "ev_brk_shares",
+                    "unit": "shares",
+                    "period_end": "2024-03-01",
+                    "share_class": "B",
+                },
+                "diluted_eps": self._ttm(
+                    "30", unit="USD/share", evidence_id="ev_brk_eps"
+                ),
+                "current_fcf": self._ttm(
+                    "30000000000", unit="USD", evidence_id="ev_brk_fcf"
+                ),
+            },
+        )
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.readiness, "not_ready")
+        self.assertIn("share_count_stale", result.readiness_reasons)
+        self.assertTrue(
+            any("share_count_stale" in warning for warning in result.warnings)
+        )
+        by_formula = {item.formula_id: item for item in result.calculations}
+        self.assertEqual(by_formula["market_capitalization"].status, "unavailable")
+        self.assertEqual(by_formula["fcf_yield"].status, "unavailable")
+
+    def test_unconfirmed_brk_b_share_class_blocks_current_valuation(self):
+        from stockcrewai.tools.valuation_tool import ValuationTool
+
+        result = ValuationTool().run(
+            ticker="BRK-B",
+            market_price="500",
+            price_timestamp="2026-08-06T15:30:00Z",
+            currency="USD",
+            source_reference="manual:yahoo:BRK-B",
+            facts={
+                "common_shares_outstanding": {
+                    "value": "1500000000",
+                    "evidence_id": "ev_brk_shares",
+                    "unit": "shares",
+                    "period_end": "2026-07-31",
+                },
+                "diluted_eps": self._ttm(
+                    "30", unit="USD/share", evidence_id="ev_brk_eps"
+                ),
+                "current_fcf": self._ttm(
+                    "30000000000", unit="USD", evidence_id="ev_brk_fcf"
+                ),
+            },
+        )
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.readiness, "not_ready")
+        self.assertIn("share_class_mismatch_risk", result.readiness_reasons)
+        self.assertTrue(
+            any("share_class_mismatch_risk" in warning for warning in result.warnings)
+        )
+
+    def test_implausible_brk_b_market_cap_is_not_ready(self):
+        from stockcrewai.tools.valuation_tool import ValuationTool
+
+        result = ValuationTool().run(
+            ticker="BRK.B",
+            market_price="500",
+            price_timestamp="2026-08-06T15:30:00Z",
+            currency="USD",
+            source_reference="manual:yahoo:BRK-B",
+            facts={
+                "common_shares_outstanding": {
+                    "value": "100000",
+                    "evidence_id": "ev_brk_shares",
+                    "unit": "shares",
+                    "period_end": "2026-07-31",
+                    "share_class": "B",
+                },
+                "diluted_eps": self._ttm(
+                    "30", unit="USD/share", evidence_id="ev_brk_eps"
+                ),
+                "current_fcf": self._ttm(
+                    "10000000", unit="USD", evidence_id="ev_brk_fcf"
+                ),
+            },
+        )
+
+        self.assertEqual(result.readiness, "not_ready")
+        self.assertIn("market_cap_magnitude_check_failed", result.readiness_reasons)
+        by_formula = {item.formula_id: item for item in result.calculations}
+        self.assertEqual(by_formula["market_capitalization"].status, "unavailable")
+
+    def test_implausible_brk_b_fcf_yield_is_not_ready(self):
+        from stockcrewai.tools.valuation_tool import ValuationTool
+
+        result = ValuationTool().run(
+            ticker="BRK.B",
+            market_price="500",
+            price_timestamp="2026-08-06T15:30:00Z",
+            currency="USD",
+            source_reference="manual:yahoo:BRK-B",
+            facts={
+                "common_shares_outstanding": {
+                    "value": "1500000000",
+                    "evidence_id": "ev_brk_shares",
+                    "unit": "shares",
+                    "period_end": "2026-07-31",
+                    "share_class": "B",
+                },
+                "diluted_eps": self._ttm(
+                    "30", unit="USD/share", evidence_id="ev_brk_eps"
+                ),
+                "current_fcf": self._ttm(
+                    "1000000000000", unit="USD", evidence_id="ev_brk_fcf"
+                ),
+            },
+        )
+
+        self.assertEqual(result.readiness, "not_ready")
+        self.assertIn("fcf_yield_magnitude_check_failed", result.readiness_reasons)
+        by_formula = {item.formula_id: item for item in result.calculations}
+        self.assertEqual(by_formula["market_capitalization"].status, "available")
+        self.assertEqual(by_formula["fcf_yield"].status, "unavailable")
+
+    def test_normal_mega_cap_market_cap_and_fcf_yield_remain_ready(self):
+        from stockcrewai.tools.valuation_tool import ValuationTool
+
+        result = ValuationTool().run(
+            ticker="AAPL",
+            market_price="250",
+            price_timestamp="2026-08-06T15:30:00Z",
+            currency="USD",
+            source_reference="manual:yahoo:AAPL",
+            facts={
+                "common_shares_outstanding": {
+                    "value": "15000000000",
+                    "evidence_id": "ev_aapl_shares",
+                    "unit": "shares",
+                    "period_end": "2026-07-31",
+                },
+                "diluted_eps": self._ttm(
+                    "10", unit="USD/share", evidence_id="ev_aapl_eps"
+                ),
+                "current_fcf": self._ttm(
+                    "100000000000", unit="USD", evidence_id="ev_aapl_fcf"
+                ),
+            },
+        )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.readiness, "ready")
+        self.assertEqual(
+            {item.formula_id: item for item in result.calculations}["fcf_yield"].status,
+            "available",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

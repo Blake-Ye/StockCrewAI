@@ -11,6 +11,7 @@ from stockcrewai.tools.edgar_tool import EdgarFact
 
 
 TTM_ROLES = ("latest_fy", "current_ytd", "prior_ytd")
+DIRECT_TTM_ROLE = "direct_ttm"
 SUPPORTED_TTM_METRICS = (
     "revenue",
     "operating_income",
@@ -132,6 +133,11 @@ class TTMBuilderTool(BaseTool):
         return [facts[role].evidence_id for role in TTM_ROLES if facts[role].evidence_id]
 
     @staticmethod
+    def _direct_ids(facts: dict[str, EdgarFact]) -> list[str]:
+        fact = facts.get(DIRECT_TTM_ROLE)
+        return [fact.evidence_id] if fact and fact.evidence_id else []
+
+    @staticmethod
     def _base_result(metric_id: str, **kwargs: Any) -> TTMMetricResult:
         return TTMMetricResult(
             metric_id=metric_id,
@@ -161,6 +167,76 @@ class TTMBuilderTool(BaseTool):
                 metric_id,
                 status="unavailable",
                 reasons=["invalid_evidence"],
+            ), None
+        if set(facts) == {DIRECT_TTM_ROLE}:
+            fact = facts[DIRECT_TTM_ROLE]
+            reasons: list[str] = []
+            if fact.validation_status != "valid":
+                reasons.append("invalid_evidence")
+            if not all(
+                getattr(fact, field)
+                for field in (
+                    "evidence_id",
+                    "value",
+                    "unit",
+                    "period_type",
+                    "period",
+                    "period_start",
+                    "period_end",
+                    "fiscal_year",
+                    "fiscal_period",
+                    "source_reference",
+                )
+            ):
+                reasons.append("missing_metadata")
+            if fact.period_basis != "TTM":
+                reasons.append("period_basis_required")
+            if fact.period_type != "duration":
+                reasons.append("period_mismatch")
+            if str(fact.fiscal_period).upper() != "FY":
+                reasons.append("period_mismatch")
+            start = _date(fact.period_start)
+            end = _date(fact.period_end)
+            if not start or not end or start > end:
+                reasons.append("period_mismatch")
+            value = None
+            raw_inputs: dict[str, str] = {}
+            try:
+                value = _decimal(fact.value)
+                raw_inputs[DIRECT_TTM_ROLE] = format(value, "f")
+            except ValueError:
+                reasons.append("invalid_value")
+            unit = fact.unit
+            normalized_unit = _unit(unit)
+            if normalized_unit is None:
+                reasons.append("unit_mismatch")
+            if metric_id == "diluted_eps":
+                if normalized_unit not in {"USD/SHARE", "USD/SHARES", "USD_PER_SHARE"}:
+                    reasons.append("unit_mismatch")
+                unit = "USD/share"
+            if metric_id == "capex" and value is not None and value < 0:
+                reasons.append("capex_sign")
+            reasons = list(dict.fromkeys(reasons))
+            if not reasons and value is not None:
+                return self._base_result(
+                    metric_id,
+                    input_evidence_ids=self._direct_ids(facts),
+                    raw_inputs=raw_inputs,
+                    raw_result=format(value, "f"),
+                    unit=unit,
+                    period_basis="TTM",
+                    period_start=fact.period_start,
+                    period_end=fact.period_end,
+                    status="available",
+                    validation_status="valid",
+                ), value
+            return self._base_result(
+                metric_id,
+                input_evidence_ids=self._direct_ids(facts),
+                raw_inputs=raw_inputs,
+                unit=unit,
+                status="unavailable",
+                reasons=reasons,
             ), None
         ids = [
             facts[role].evidence_id

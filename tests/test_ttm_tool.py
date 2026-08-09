@@ -29,6 +29,14 @@ PERIODS = {
         "fiscal_period": "Q3",
         "form": "10-Q",
     },
+    "direct_ttm": {
+        "period": "2025-FY",
+        "period_start": "2025-01-01",
+        "period_end": "2025-12-31",
+        "fiscal_year": 2025,
+        "fiscal_period": "FY",
+        "form": "10-K",
+    },
 }
 
 
@@ -48,6 +56,7 @@ def fact(
         value=value,
         unit=unit,
         period_type="duration",
+        period_basis="TTM" if role == "direct_ttm" else None,
         period=metadata["period"],
         period_start=metadata["period_start"],
         period_end=metadata["period_end"],
@@ -133,6 +142,51 @@ class TTMBuilderToolTests(unittest.TestCase):
         self.assertEqual(metric.status, "unavailable")
         self.assertIn("missing_input", metric.reasons)
         self.assertIsNone(metric.raw_result)
+
+    def test_builds_direct_fy_ttm_metric(self):
+        result = TTMBuilderTool().run(
+            company_name="Microsoft Corporation",
+            ticker="MSFT",
+            metric_inputs={
+                "diluted_eps": {
+                    "direct_ttm": fact(
+                        "diluted_eps",
+                        "direct_ttm",
+                        "13.64",
+                        unit="USD/share",
+                    )
+                }
+            },
+        )
+
+        metric = result.metrics[0]
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(metric.status, "available")
+        self.assertEqual(metric.raw_result, "13.64")
+        self.assertEqual(metric.unit, "USD/share")
+        self.assertEqual(metric.period_basis, "TTM")
+        self.assertEqual(metric.period_start, "2025-01-01")
+        self.assertEqual(metric.period_end, "2025-12-31")
+        self.assertEqual(metric.input_evidence_ids, ["ev_diluted_eps_direct_ttm"])
+
+    def test_builds_direct_fy_free_cash_flow(self):
+        result = TTMBuilderTool().run(
+            company_name="Microsoft Corporation",
+            ticker="MSFT",
+            metric_inputs={
+                "operating_cash_flow": {
+                    "direct_ttm": fact("operating_cash_flow", "direct_ttm", "100")
+                },
+                "capex": {"direct_ttm": fact("capex", "direct_ttm", "20")},
+            },
+        )
+
+        by_metric = {metric.metric_id: metric for metric in result.metrics}
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(by_metric["operating_cash_flow"].raw_result, "100")
+        self.assertEqual(by_metric["capex"].raw_result, "20")
+        self.assertEqual(by_metric["free_cash_flow"].raw_result, "80")
+        self.assertEqual(by_metric["free_cash_flow"].period_basis, "TTM")
 
     def test_builds_all_supported_ttm_metrics_and_derived_fcf(self):
         result = TTMBuilderTool().run(

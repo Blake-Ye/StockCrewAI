@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext, ROUND_HALF_EVEN
 from typing import Any, Literal, Type
 
@@ -32,6 +33,12 @@ _FACT_ALIASES = {
         "free_cash_flow_current",
     ),
 }
+
+SHARES_EVIDENCE_MAX_AGE = timedelta(days=548)  # 约 18 个月
+MARKET_CAP_SANITY_MINIMUM = Decimal("1E8")
+MARKET_CAP_SANITY_MAXIMUM = Decimal("1E14")
+FCF_YIELD_SANITY_MAXIMUM = Decimal("1")
+MAGNITUDE_CHECK_MINIMUM_SHARES = Decimal("1E6")
 
 
 class ValuationToolInput(BaseModel):
@@ -150,7 +157,7 @@ def _as_text(value: Any) -> str | None:
     return text if text.strip() else None
 
 
-def _valid_timestamp(value: Any) -> str | None:
+def _parse_timestamp(value: Any) -> datetime | None:
     text = _as_text(value)
     if text is None or ("T" not in text and " " not in text):
         return None
@@ -161,7 +168,177 @@ def _valid_timestamp(value: Any) -> str | None:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return parsed.astimezone(timezone.utc)
+
+
+def _valid_timestamp(value: Any) -> str | None:
+    parsed = _parse_timestamp(value)
+    return parsed.isoformat().replace("+00:00", "Z") if parsed else None
+
+
+def _fact_payload(facts: Mapping[str, Any], canonical_name: str) -> dict[str, Any]:
+    for fact_name in _FACT_ALIASES[canonical_name]:
+        if fact_name not in facts:
+            continue
+        raw_fact = facts[fact_name]
+        if isinstance(raw_fact, BaseModel):
+            raw_fact = raw_fact.model_dump(mode="json")
+        if isinstance(raw_fact, Mapping):
+            return dict(raw_fact)
+        return {"value": raw_fact}
+    return {}
+
+
+def _fact_period_date(payload: Mapping[str, Any]) -> tuple[date | None, bool]:
+    provided = False
+    for field_name in (
+        "period_end",
+        "end",
+        "period",
+        "as_of",
+        "filed_at",
+        "fiscal_year",
+    ):
+        if field_name not in payload or payload[field_name] is None:
+            continue
+        provided = True
+        value = payload[field_name]
+        if isinstance(value, datetime):
+            return value.date(), True
+        if isinstance(value, date):
+            return value, True
+        if field_name == "fiscal_year":
+            try:
+                return date(int(str(value)), 12, 31), True
+            except (TypeError, ValueError):
+                continue
+        text = _as_text(value)
+        if text is None:
+            continue
+        try:
+            if "T" in text or " " in text:
+                parsed = _parse_timestamp(text)
+                if parsed is not None:
+                    return parsed.date(), True
+            else:
+                return date.fromisoformat(text[:10]), True
+        except ValueError:
+            continue
+    return None, provided
+
+
+def _share_class_identity(ticker: str | None) -> tuple[str, str, str] | None:
+    normalized = _as_text(ticker)
+    if normalized is None:
+        return None
+    normalized = normalized.upper()
+    if normalized == "GOOG":
+        return normalized, "GOOG", "C"
+    if normalized == "GOOGL":
+        return normalized, "GOOG", "A"
+    if "." not in normalized and "-" not in normalized:
+        return None
+    issuer, share_class = re.split(r"[.-]", normalized, maxsplit=1)
+    if not issuer or not share_class:
+        return None
+    return f"{issuer}.{share_class}", issuer, share_class
+
+
+def _share_class_candidates(payload: Mapping[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    for field_name in (
+        "ticker",
+        "symbol",
+        "security_ticker",
+        "security_symbol",
+        "share_class_ticker",
+        "class_ticker",
+        "share_class",
+        "class",
+        "class_name",
+        "security_class",
+        "metric_id",
+        "xbrl_tag",
+        "description",
+        "security_description",
+    ):
+        value = payload.get(field_name)
+        if isinstance(value, (list, tuple, set)):
+            candidates.extend(str(item) for item in value if item is not None)
+        elif value is not None:
+            candidates.append(str(value))
+    return candidates
+
+
+def _share_class_matches(
+    candidate: str, expected_symbol: str, issuer: str, share_class: str
+) -> bool:
+    normalized = candidate.strip().upper().replace("-", ".")
+    if normalized in {expected_symbol, f"{issuer}.{share_class}", f"{issuer}{share_class}"}:
+        return True
+    compact = re.sub(r"[^A-Z0-9]", "", normalized)
+    if compact in {share_class, f"CLASS{share_class}", f"SHARECLASS{share_class}"}:
+        return True
+    return bool(
+        re.search(
+            rf"(?:CLASS|SHARE\s*CLASS|COMMON\s+CLASS)[\s_-]*{re.escape(share_class)}\b",
+            candidate.upper(),
+        )
+    )
+
+
+def _share_evidence_checks(
+    ticker: str | None,
+    payload: Mapping[str, Any],
+    valuation_timestamp: str | None,
+) -> tuple[list[str], list[str]]:
+    reasons: list[str] = []
+    warnings: list[str] = []
+    identity = _share_class_identity(ticker)
+    if identity is not None:
+        expected_symbol, issuer, share_class = identity
+        candidates = _share_class_candidates(payload)
+        if not candidates or not any(
+            _share_class_matches(candidate, expected_symbol, issuer, share_class)
+            for candidate in candidates
+        ):
+            reasons.append("share_class_mismatch_risk")
+            warnings.append(
+                "share_class_mismatch_risk: 无法确认 shares evidence 与当前 ticker/share class 兼容"
+            )
+
+    evidence_date, date_provided = _fact_period_date(payload)
+    valuation_date = _parse_timestamp(valuation_timestamp).date() if valuation_timestamp else None
+    if valuation_date is not None:
+        if evidence_date is None:
+            if date_provided or identity is not None:
+                reasons.append("share_count_date_unvalidated")
+                warnings.append(
+                    "share_count_date_unvalidated: shares evidence 缺少可解析的 period/end date"
+                )
+        elif valuation_date - evidence_date > SHARES_EVIDENCE_MAX_AGE:
+            reasons.append("share_count_stale")
+            warnings.append(
+                "share_count_stale: shares evidence 明显早于估值价格时间戳"
+            )
+        elif evidence_date - valuation_date > SHARES_EVIDENCE_MAX_AGE:
+            reasons.append("share_count_period_future")
+            warnings.append(
+                "share_count_period_future: shares evidence period/end date 晚于估值时间戳"
+            )
+    return list(dict.fromkeys(reasons)), list(dict.fromkeys(warnings))
+
+
+def _market_cap_magnitude_is_plausible(
+    ticker: str | None, shares: Decimal, market_cap: Decimal
+) -> bool:
+    if _share_class_identity(ticker) is None and shares < MAGNITUDE_CHECK_MINIMUM_SHARES:
+        return True
+    return MARKET_CAP_SANITY_MINIMUM <= market_cap <= MARKET_CAP_SANITY_MAXIMUM
+
+
+def _fcf_yield_magnitude_is_plausible(fcf_yield: Decimal) -> bool:
+    return abs(fcf_yield) <= FCF_YIELD_SANITY_MAXIMUM
 
 
 def _normalized_unit(value: Any) -> str | None:
@@ -523,6 +700,7 @@ class ValuationTool(BaseTool):
             _,
             _,
         ) = _fact(facts, "common_shares_outstanding")
+        share_fact_payload = _fact_payload(facts, "common_shares_outstanding")
         (
             eps,
             eps_ids,
@@ -576,9 +754,24 @@ class ValuationTool(BaseTool):
             readiness_reasons.append("ttm_fcf_required")
         if fcf_unit_reason:
             readiness_reasons.append(fcf_unit_reason)
-        warnings: list[str] = []
+        share_guard_reasons, share_guard_warnings = (
+            _share_evidence_checks(
+                normalized_ticker,
+                share_fact_payload,
+                timestamp,
+            )
+            if shares is not None
+            else ([], [])
+        )
+        readiness_reasons.extend(share_guard_reasons)
+        warnings: list[str] = list(share_guard_warnings)
 
-        shares_ready = shares is not None and shares > 0 and shares_unit_ok
+        shares_ready = (
+            shares is not None
+            and shares > 0
+            and shares_unit_ok
+            and not share_guard_reasons
+        )
         eps_ready = (
             eps is not None
             and eps > 0
@@ -593,7 +786,9 @@ class ValuationTool(BaseTool):
             and fcf_validation_status == "valid"
         )
         share_warning = (
-            f"缺少 common_shares_outstanding：{share_problem}"
+            share_guard_warnings[0]
+            if share_guard_warnings
+            else f"缺少 common_shares_outstanding：{share_problem}"
             if shares is None
             else "common_shares_outstanding 必须为正数"
             if shares <= 0
@@ -672,61 +867,121 @@ class ValuationTool(BaseTool):
             else:
                 assert shares is not None
                 market_cap = _multiply(price, shares)
-                calculations.append(
-                    self._available(
-                        "market_capitalization",
-                        market_cap,
-                        "currency",
-                        _unique_ids(market_evidence_ids, share_ids),
-                        {
-                            "market_price": price_text,
-                            "common_shares_outstanding": _plain(shares),
-                        },
-                        price_text,
-                        market_price_evidence_id,
-                        timestamp or "",
-                        price_currency or "",
-                        price_source or "",
-                        _has_financial_evidence(share_ids, market_price_evidence_id),
+                if not _market_cap_magnitude_is_plausible(
+                    normalized_ticker, shares, market_cap
+                ):
+                    market_cap_warning = (
+                        "market_cap_magnitude_check_failed: "
+                        "market cap 超出确定性数量级检查范围"
                     )
-                )
-                if not fcf_ready:
-                    calculations.append(
-                        self._unavailable(
-                            "fcf_yield",
-                            _unique_ids(market_evidence_ids, fcf_ids, share_ids),
-                            {**fcf_inputs, **share_inputs},
-                            fcf_warning,
-                            **provenance,
-                        )
+                    readiness_reasons.append("market_cap_magnitude_check_failed")
+                    warnings.append(market_cap_warning)
+                    calculations.extend(
+                        [
+                            self._unavailable(
+                                "market_capitalization",
+                                _unique_ids(market_evidence_ids, share_ids),
+                                {
+                                    "market_price": price_text,
+                                    "common_shares_outstanding": _plain(shares),
+                                },
+                                market_cap_warning,
+                                **provenance,
+                            ),
+                            self._unavailable(
+                                "fcf_yield",
+                                _unique_ids(
+                                    market_evidence_ids, fcf_ids, share_ids
+                                ),
+                                {**fcf_inputs, **share_inputs},
+                                market_cap_warning,
+                                **provenance,
+                            ),
+                        ]
                     )
                 else:
-                    assert fcf is not None
                     calculations.append(
                         self._available(
-                            "fcf_yield",
-                            _divide(fcf, market_cap),
-                            "ratio",
-                            _unique_ids(market_evidence_ids, fcf_ids, share_ids),
+                            "market_capitalization",
+                            market_cap,
+                            "currency",
+                            _unique_ids(market_evidence_ids, share_ids),
                             {
-                                "current_fcf": _plain(fcf),
                                 "market_price": price_text,
-                                **share_inputs,
+                                "common_shares_outstanding": _plain(shares),
                             },
                             price_text,
                             market_price_evidence_id,
                             timestamp or "",
                             price_currency or "",
                             price_source or "",
-                        _has_financial_evidence(
-                                fcf_ids, market_price_evidence_id
-                            )
-                            and _has_financial_evidence(
+                            _has_financial_evidence(
                                 share_ids, market_price_evidence_id
                             ),
-                            period_basis="TTM",
                         )
                     )
+                    if not fcf_ready:
+                        calculations.append(
+                            self._unavailable(
+                                "fcf_yield",
+                                _unique_ids(market_evidence_ids, fcf_ids, share_ids),
+                                {**fcf_inputs, **share_inputs},
+                                fcf_warning,
+                                **provenance,
+                            )
+                        )
+                    else:
+                        assert fcf is not None
+                        fcf_yield = _divide(fcf, market_cap)
+                        if not _fcf_yield_magnitude_is_plausible(fcf_yield):
+                            fcf_yield_warning = (
+                                "fcf_yield_magnitude_check_failed: "
+                                "FCF yield 超出确定性数量级检查范围"
+                            )
+                            readiness_reasons.append(
+                                "fcf_yield_magnitude_check_failed"
+                            )
+                            warnings.append(fcf_yield_warning)
+                            calculations.append(
+                                self._unavailable(
+                                    "fcf_yield",
+                                    _unique_ids(
+                                        market_evidence_ids, fcf_ids, share_ids
+                                    ),
+                                    {**fcf_inputs, **share_inputs},
+                                    fcf_yield_warning,
+                                    **provenance,
+                                    period_basis="TTM",
+                                )
+                            )
+                        else:
+                            calculations.append(
+                                self._available(
+                                    "fcf_yield",
+                                    fcf_yield,
+                                    "ratio",
+                                    _unique_ids(
+                                        market_evidence_ids, fcf_ids, share_ids
+                                    ),
+                                    {
+                                        "current_fcf": _plain(fcf),
+                                        "market_price": price_text,
+                                        **share_inputs,
+                                    },
+                                    price_text,
+                                    market_price_evidence_id,
+                                    timestamp or "",
+                                    price_currency or "",
+                                    price_source or "",
+                                    _has_financial_evidence(
+                                        fcf_ids, market_price_evidence_id
+                                    )
+                                    and _has_financial_evidence(
+                                        share_ids, market_price_evidence_id
+                                    ),
+                                    period_basis="TTM",
+                                )
+                            )
 
             if not eps_ready:
                 calculations.append(

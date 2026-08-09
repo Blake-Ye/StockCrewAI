@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _EVIDENCE_ID = re.compile(r"ev_[A-Za-z0-9][A-Za-z0-9_.:-]*")
 HISTORICAL_VALUATION_CALCULATION_ID = "calc_historical_pe"
+HISTORICAL_VALUATION_REQUIRED_MONTHS = 60
 
 
 def _copy_alias(payload: dict[str, Any], target: str, aliases: tuple[str, ...]) -> None:
@@ -118,7 +119,7 @@ class HistoricalValuationToolInput(BaseModel):
 
 
 class HistoricalValuationResult(BaseModel):
-    status: Literal["ok", "unavailable"]
+    status: Literal["ok", "unavailable", "not_applicable"]
     calculation_id: str = HISTORICAL_VALUATION_CALCULATION_ID
     company_name: str | None = None
     ticker: str | None = None
@@ -134,6 +135,9 @@ class HistoricalValuationResult(BaseModel):
     history_count: int = 0
     selected_dates: list[str] = Field(default_factory=list)
     input_evidence_ids: list[str] = Field(default_factory=list)
+    available_months: int = 0
+    required_months: int = HISTORICAL_VALUATION_REQUIRED_MONTHS
+    applicability_reason: str | None = None
     reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -266,7 +270,8 @@ class HistoricalValuationTool(BaseTool):
     name: str = "historical_valuation_calculator"
     description: str = (
         "使用显式历史价格和 point-in-time 财务快照计算 P/E 历史统计；"
-        "无法确认 Evidence 或日期时返回 unavailable，不使用前视数据。"
+        "历史样本不足时返回 not_applicable；无法确认 Evidence 或日期时返回 "
+        "unavailable，不使用前视数据。"
     )
     args_schema: Type[BaseModel] = HistoricalValuationToolInput
     result_schema: Type[BaseModel] = HistoricalValuationResult
@@ -274,7 +279,7 @@ class HistoricalValuationTool(BaseTool):
     @staticmethod
     def _result(
         *,
-        status: Literal["ok", "unavailable"],
+        status: Literal["ok", "unavailable", "not_applicable"],
         company_name: str | None,
         ticker: str | None,
         metric: str,
@@ -407,16 +412,6 @@ class HistoricalValuationTool(BaseTool):
                 reasons=["missing_historical_prices"],
                 warnings=warnings,
             )
-        if not parsed_snapshots:
-            return self._result(
-                status="unavailable",
-                company_name=company_name,
-                ticker=ticker,
-                metric=metric_name,
-                reasons=["missing_financial_snapshots"],
-                warnings=warnings,
-            )
-
         parsed_prices.sort(key=lambda item: item[0])
         analysis_date = requested_as_of or parsed_prices[-1][0]
         eligible_prices = [item for item in parsed_prices if item[0] <= analysis_date]
@@ -437,7 +432,7 @@ class HistoricalValuationTool(BaseTool):
             month_key = point[0].year * 12 + point[0].month
             monthly[month_key] = point
         latest_month = eligible_prices[-1][0].year * 12 + eligible_prices[-1][0].month
-        first_month = latest_month - 59
+        first_month = latest_month - (HISTORICAL_VALUATION_REQUIRED_MONTHS - 1)
         selected_prices = sorted(
             (
                 point
@@ -446,14 +441,29 @@ class HistoricalValuationTool(BaseTool):
             ),
             key=lambda item: item[0],
         )
-        if len(selected_prices) < 60:
+        if len(selected_prices) < HISTORICAL_VALUATION_REQUIRED_MONTHS:
+            return self._result(
+                status="not_applicable",
+                company_name=company_name,
+                ticker=ticker,
+                metric=metric_name,
+                history_count=len(selected_prices),
+                available_months=len(selected_prices),
+                required_months=HISTORICAL_VALUATION_REQUIRED_MONTHS,
+                applicability_reason="insufficient_history",
+                reasons=["insufficient_history"],
+                warnings=warnings,
+            )
+
+        if not parsed_snapshots:
             return self._result(
                 status="unavailable",
                 company_name=company_name,
                 ticker=ticker,
                 metric=metric_name,
-                history_count=len(selected_prices),
-                reasons=["insufficient_history"],
+                available_months=len(selected_prices),
+                required_months=HISTORICAL_VALUATION_REQUIRED_MONTHS,
+                reasons=["missing_financial_snapshots"],
                 warnings=warnings,
             )
 
@@ -493,8 +503,11 @@ class HistoricalValuationTool(BaseTool):
                 if _valid_evidence_id(evidence_id) and evidence_id not in input_ids:
                     input_ids.append(evidence_id)
 
-        if reasons or len(values) != 60:
-            if len(values) != 60 and "insufficient_history" not in reasons:
+        if reasons or len(values) != HISTORICAL_VALUATION_REQUIRED_MONTHS:
+            if (
+                len(values) != HISTORICAL_VALUATION_REQUIRED_MONTHS
+                and "insufficient_history" not in reasons
+            ):
                 reasons.append("insufficient_history")
             return self._result(
                 status="unavailable",
@@ -502,6 +515,8 @@ class HistoricalValuationTool(BaseTool):
                 ticker=ticker,
                 metric=metric_name,
                 history_count=len(values),
+                available_months=len(values),
+                required_months=HISTORICAL_VALUATION_REQUIRED_MONTHS,
                 selected_dates=selected_dates,
                 input_evidence_ids=input_ids,
                 series=[],
@@ -516,7 +531,7 @@ class HistoricalValuationTool(BaseTool):
             context.prec = 28
             context.rounding = ROUND_HALF_EVEN
             current_percentile = _percentile(ordered, current_value)
-        if len(monthly) > 60:
+        if len(monthly) > HISTORICAL_VALUATION_REQUIRED_MONTHS:
             warnings.append("only the 60 latest monthly observations were used")
         return self._result(
             status="ok",
@@ -532,6 +547,8 @@ class HistoricalValuationTool(BaseTool):
             percentile_75=_plain(_quantile(ordered, Decimal("0.75"))),
             current_percentile=_plain(current_percentile),
             history_count=len(values),
+            available_months=len(values),
+            required_months=HISTORICAL_VALUATION_REQUIRED_MONTHS,
             selected_dates=selected_dates,
             input_evidence_ids=input_ids,
             reasons=[],
@@ -546,6 +563,7 @@ __all__ = [
     "HistoricalValuationResult",
     "HistoricalValuationTool",
     "HISTORICAL_VALUATION_CALCULATION_ID",
+    "HISTORICAL_VALUATION_REQUIRED_MONTHS",
     "HistoricalValuationInput",
     "HistoricalFinancialSnapshot",
 ]

@@ -82,6 +82,73 @@ class MissingPriorYTDFacts(OfflineEPSFacts):
     records = [record for record in OfflineEPSFacts.records if record["period"] != "2024-Q3"]
 
 
+class DirectFYFacts:
+    records = [
+        {
+            "concept_name": "diluted_eps",
+            "tag_used": "us-gaap:EarningsPerShareDiluted",
+            "value": "12.00",
+            "unit": "USD/share",
+            "period": "2025-FY",
+            "period_type": "duration",
+            "period_start": date(2025, 1, 1),
+            "period_end": date(2025, 12, 31),
+            "filing_date": date(2026, 2, 1),
+            "form_type": "10-K",
+            "accession": "acc-eps-fy-2025",
+            "fiscal_year": 2025,
+            "fiscal_period": "FY",
+        },
+        {
+            "concept_name": "operating_cash_flow",
+            "tag_used": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+            "value": "30",
+            "unit": "USD",
+            "period": "2025-FY",
+            "period_type": "duration",
+            "period_start": date(2025, 1, 1),
+            "period_end": date(2025, 12, 31),
+            "filing_date": date(2026, 2, 1),
+            "form_type": "10-K",
+            "accession": "acc-ocf-fy-2025",
+            "fiscal_year": 2025,
+            "fiscal_period": "FY",
+        },
+        {
+            "concept_name": "capex",
+            "tag_used": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+            "value": "10",
+            "unit": "USD",
+            "period": "2025-FY",
+            "period_type": "duration",
+            "period_start": date(2025, 1, 1),
+            "period_end": date(2025, 12, 31),
+            "filing_date": date(2026, 2, 1),
+            "form_type": "10-K",
+            "accession": "acc-capex-fy-2025",
+            "fiscal_year": 2025,
+            "fiscal_period": "FY",
+        },
+    ]
+
+    def get_concept(self, concept, period=None, return_metadata=False):
+        selected_period = period or "2025-FY"
+        for record in self.records:
+            if record["concept_name"] == concept and record["period"] == selected_period:
+                return dict(record) if return_metadata else record["value"]
+        return None
+
+    def get_fact(self, tag, period=None):
+        selected_period = period or "2025-FY"
+        for record in self.records:
+            if record["tag_used"] == tag and record["period"] == selected_period:
+                return SimpleNamespace(**record)
+        return None
+
+    def get_all_facts(self):
+        return []
+
+
 class SecConceptOnlyFacts(OfflineEPSFacts):
     def get_concept(self, concept, period=None, return_metadata=False):
         if concept == "diluted_eps":
@@ -163,6 +230,42 @@ class EdgarToolTTMTests(unittest.TestCase):
         self.assertTrue(all(fact.source_reference == SOURCE for fact in inputs.values()))
         self.assertEqual(len({fact.evidence_id for fact in inputs.values()}), 3)
         self.assertTrue(all(fact.evidence_id.startswith("ev_") for fact in inputs.values()))
+
+    def test_collects_direct_fy_ttm_inputs_when_no_ytd_pair_exists(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+            result = EdgarTool(
+                edgar_module=OfflineEdgar(DirectFYFacts()),
+                as_of=date(2026, 8, 8),
+            ).run(ticker="AAPL")
+
+        self.assertEqual(
+            set(result.ttm_inputs),
+            {"diluted_eps", "operating_cash_flow", "capex"},
+        )
+        for metric_id, expected_value, expected_unit in (
+            ("diluted_eps", "12.00", "USD/share"),
+            ("operating_cash_flow", "30", "USD"),
+            ("capex", "10", "USD"),
+        ):
+            with self.subTest(metric_id=metric_id):
+                inputs = result.ttm_inputs[metric_id]
+                self.assertEqual(set(inputs), {"direct_ttm"})
+                direct = inputs["direct_ttm"]
+                self.assertEqual(direct.value, expected_value)
+                self.assertEqual(direct.unit, expected_unit)
+                self.assertEqual(direct.period, "2025-FY")
+                self.assertEqual(direct.period_type, "duration")
+                self.assertEqual(direct.period_basis, "TTM")
+                self.assertEqual(direct.period_start, "2025-01-01")
+                self.assertEqual(direct.period_end, "2025-12-31")
+                self.assertEqual(direct.fiscal_year, 2025)
+                self.assertEqual(direct.fiscal_period, "FY")
+                self.assertEqual(direct.form, "10-K")
+                self.assertTrue(direct.evidence_id.startswith("ev_"))
+                self.assertIn("direct_ttm", direct.evidence_id)
+                self.assertEqual(direct.source_reference, SOURCE)
 
     def test_builds_only_complete_point_in_time_ttm_eps_snapshot(self):
         from stockcrewai.tools.edgar_tool import EdgarTool

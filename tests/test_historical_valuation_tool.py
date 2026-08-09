@@ -155,7 +155,7 @@ class HistoricalValuationToolTests(unittest.TestCase):
         self.assertEqual(result.current_value, result.series[-1]["pe_ratio"])
         self.assertEqual(result.current_date, result.series[-1]["date"])
 
-    def test_unavailable_result_does_not_fabricate_series(self):
+    def test_insufficient_history_does_not_fabricate_series(self):
         from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
 
         result = HistoricalValuationTool().run(
@@ -164,9 +164,44 @@ class HistoricalValuationToolTests(unittest.TestCase):
             financial_snapshots=self._ttm_snapshots(),
         )
 
-        self.assertEqual(result.status, "unavailable")
+        self.assertEqual(result.status, "not_applicable")
+        self.assertEqual(result.available_months, 59)
+        self.assertEqual(result.required_months, 60)
         self.assertEqual(result.series, [])
         self.assertIsNone(result.current_date)
+
+    def test_short_price_history_is_not_applicable_without_fabricating_five_year_series(self):
+        from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
+
+        short_prices = []
+        seen_months = set()
+        for point in reversed(self._prices()):
+            month = point["date"][:7]
+            if month in seen_months:
+                continue
+            short_prices.append(point)
+            seen_months.add(month)
+        short_prices = list(reversed(short_prices))[-36:]
+        first_month = short_prices[0]["date"][:7]
+        snapshots = [
+            snapshot
+            for snapshot in self._ttm_snapshots()
+            if snapshot["filed_at"][:7] >= first_month
+        ]
+
+        result = HistoricalValuationTool().run(
+            ticker="UBER",
+            historical_prices=short_prices,
+            financial_snapshots=snapshots,
+        )
+
+        self.assertEqual(result.status, "not_applicable")
+        self.assertEqual(result.available_months, 36)
+        self.assertEqual(result.required_months, 60)
+        self.assertIn("insufficient_history", result.reasons)
+        self.assertIn("history", result.applicability_reason)
+        self.assertEqual(result.series, [])
+        self.assertIsNone(result.five_year_median)
 
     def test_look_ahead_snapshot_makes_history_unavailable(self):
         from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool

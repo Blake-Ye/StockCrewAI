@@ -137,111 +137,147 @@ class AnalysisGateRiskEvidenceTests(unittest.TestCase):
         self.assertEqual(gate["status"], "blocked")
         self.assertEqual(gate["required_data"], ["risk_evidence_missing"])
 
-    def test_risk_builder_emits_only_disclosure_fact_claims(self):
-        packet = pipeline_support._risk_analysis_input(
-            EdgarResult(status="ok", filings=self._filings()),
-            {"validated_filing_ids": ["ev_item1a", "ev_shell", "ev_missing"]},
-        )
-        builder = getattr(
-            pipeline_support,
-            "build_deterministic_risk_disclosure_claims",
-            None,
-        )
-        self.assertIsNotNone(builder)
 
-        claims = builder(packet)
-
-        self.assertEqual(len(claims), 1)
-        claim = claims[0]
-        self.assertEqual(claim["category"], "risk")
-        self.assertEqual(claim["calculation_ids"], [])
-        self.assertIs(type(claim["confidence"]), float)
-        self.assertEqual(claim["confidence"], 1.0)
-        self.assertEqual(claim["evidence_ids"], ["ev_item1a"])
-        self.assertIn("披露了", claim["statement"])
-        self.assertIn("Item 1A", claim["statement"])
-        forbidden = (
-            "概率",
-            "严重度",
-            "损失",
-            "评级",
-            "买卖建议",
-            "投资建议",
-            "未来",
-            "probability",
-            "severity",
-            "loss",
-            "rating",
-        )
-        self.assertFalse(
-            any(word.lower() in claim["statement"].lower() for word in forbidden),
-            claim["statement"],
-        )
-
-    def test_risk_builder_returns_empty_without_eligible_evidence(self):
-        packet = pipeline_support._risk_analysis_input(
-            EdgarResult(status="ok", filings=self._filings()[1:]),
-            {"validated_filing_ids": ["ev_shell", "ev_missing"]},
-        )
-        builder = getattr(
-            pipeline_support,
-            "build_deterministic_risk_disclosure_claims",
-            None,
-        )
-        self.assertIsNotNone(builder)
-
-        self.assertEqual(builder(packet), [])
-
-    def test_risk_builder_orders_multiple_filings_by_allowlist_with_stable_ids(self):
-        item1a = self._filing(
-            "ev_item1a",
-            eligibility="eligible",
-            reason_code="eligible_item_1a",
-            evidence_kind="item_1a",
-            form="10-K",
-            section_type="10k_item_1a",
-            section_title="Item 1A. Risk Factors",
-            section_text="供应链与客户集中风险因素。",
-        )
-        event = self._filing(
-            "ev_8k",
-            eligibility="eligible",
-            reason_code="eligible_8k_event",
-            evidence_kind="substantive_8k_event",
-            form="8-K",
-            section_type="8k_event",
-            section_title="Item 2.02 Results of Operations",
-            section_text="公司披露了经营结果事件。",
-        )
-        shell = self._filings()[1]
-        packet = pipeline_support._risk_analysis_input(
-            EdgarResult(status="ok", filings=[item1a, event, shell]),
-            {"validated_filing_ids": ["ev_item1a", "ev_8k", "ev_shell"]},
-        )
-
-        claims = pipeline_support.build_deterministic_risk_disclosure_claims(packet)
-
-        expected_evidence_ids = ["ev_8k", "ev_item1a"]
-        expected_claim_ids = [
-            "claim_risk_disclosure_ev_8k",
-            "claim_risk_disclosure_ev_item1a",
-        ]
-        self.assertEqual(
-            [claim["evidence_ids"][0] for claim in claims],
-            expected_evidence_ids,
-        )
-        self.assertEqual(
-            [claim["claim_id"] for claim in claims],
-            expected_claim_ids,
-        )
-        self.assertEqual(
-            [claim["statement"] for claim in claims],
-            [
-                "该 filing 披露了 Item 2.02 事件。",
-                "该 filing 披露了 Item 1A 风险因素章节。",
+class AnalysisGateApplicabilityTests(unittest.TestCase):
+    @staticmethod
+    def _ready_risk_input() -> dict[str, object]:
+        return {
+            "validated_filing_ids": ["ev_risk"],
+            "filings": [
+                {
+                    "evidence_id": "ev_risk",
+                    "risk_eligibility": {"eligibility": "eligible"},
+                    "risk_sections": [{"complete": True, "text": "risk evidence"}],
+                }
             ],
+        }
+
+    @classmethod
+    def _gate(
+        cls,
+        *,
+        state: dict[str, object] | None = None,
+        valuation: dict[str, object] | None = None,
+        reverse_dcf: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return pipeline_support._analysis_gate(
+            SimpleNamespace(status="valid", validated=True),
+            {
+                "company_name": "Example Holdings",
+                "ticker": "EXM",
+                "facts": {"revenue": {"validation_status": "valid"}},
+                "calculations": [{"validation_status": "valid"}],
+                "validated_evidence_ids": ["ev_revenue"],
+                "validated_calculation_ids": ["calc_margin"],
+                **(state or {}),
+            },
+            cls._ready_risk_input(),
+            valuation
+            or {"readiness": "ready", "validation_status": "valid"},
+            {"status": "ok", "validation_status": "valid"},
+            reverse_dcf or {"status": "ok", "validation_status": "valid"},
         )
-        self.assertNotIn("ev_shell", [claim["evidence_ids"][0] for claim in claims])
+
+    def test_invalid_fcf_is_non_blocking_for_deterministic_negative_fcf_policy(self):
+        gate = self._gate(
+            state={
+                "facts": {
+                    "current_fcf": {
+                        "value": "-10",
+                        "validation_status": "valid",
+                    }
+                }
+            },
+            reverse_dcf={
+                "status": "unavailable",
+                "reasons": ["invalid_fcf"],
+            },
+        )
+
+        self.assertEqual(gate["status"], "ready")
+        self.assertNotIn("reverse_dcf_required", gate["required_data"])
+        self.assertEqual(
+            gate["applicability"]["reverse_dcf"]["status"], "not_applicable"
+        )
+        self.assertTrue(
+            any("反向 DCF" in note for note in gate["limitations"]),
+            gate["limitations"],
+        )
+
+    def test_ttm_fcf_required_is_non_blocking_for_deterministic_bank_policy(self):
+        gate = self._gate(
+            state={"issuer_type": "bank"},
+            reverse_dcf={
+                "status": "unavailable",
+                "reasons": ["ttm_fcf_required"],
+            },
+        )
+
+        self.assertEqual(gate["status"], "ready")
+        self.assertNotIn("reverse_dcf_required", gate["required_data"])
+        self.assertEqual(
+            gate["applicability"]["reverse_dcf"]["status"], "not_applicable"
+        )
+        self.assertEqual(
+            gate["applicability"]["reverse_dcf"]["reason_code"],
+            "issuer_type_bank",
+        )
+
+    def test_reverse_dcf_stays_required_without_applicability_policy(self):
+        gate = self._gate(
+            reverse_dcf={
+                "status": "unavailable",
+                "reasons": ["ttm_fcf_required"],
+            }
+        )
+
+        self.assertEqual(gate["status"], "blocked")
+        self.assertIn("reverse_dcf_required", gate["required_data"])
+        self.assertEqual(
+            gate["applicability"]["reverse_dcf"]["status"], "required"
+        )
+
+    def test_partial_current_valuation_is_ready_with_auditable_fcf_yield(self):
+        gate = self._gate(
+            valuation={
+                "status": "partial",
+                "readiness": "not_ready",
+                "validation_status": "unvalidated",
+                "readiness_reasons": ["diluted_eps_positive"],
+                "calculations": [
+                    {
+                        "calculation_id": "calc_market_capitalization",
+                        "formula_id": "market_capitalization",
+                        "status": "available",
+                        "validation_status": "valid",
+                        "input_evidence_ids": ["ev_price", "ev_shares"],
+                        "raw_result": "100",
+                    },
+                    {
+                        "calculation_id": "calc_pe_ratio",
+                        "formula_id": "pe_ratio",
+                        "status": "unavailable",
+                        "validation_status": "unvalidated",
+                        "input_evidence_ids": ["ev_price"],
+                    },
+                    {
+                        "calculation_id": "calc_fcf_yield",
+                        "formula_id": "fcf_yield",
+                        "status": "available",
+                        "validation_status": "valid",
+                        "input_evidence_ids": ["ev_price", "ev_fcf"],
+                        "raw_result": "0.05",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(gate["status"], "ready")
+        self.assertNotIn("current_valuation_required", gate["required_data"])
+        self.assertTrue(
+            any("P/E" in note or "估值" in note for note in gate["limitations"]),
+            gate["limitations"],
+        )
 
 
 if __name__ == "__main__":

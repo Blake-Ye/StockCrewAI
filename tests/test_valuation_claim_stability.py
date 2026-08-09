@@ -64,7 +64,6 @@ def _valuation_payload() -> dict[str, object]:
         ],
     }
 
-
 def _claim_output(claims: list[dict[str, object]]) -> str:
     return json.dumps({"claims": claims}, ensure_ascii=False)
 
@@ -162,33 +161,83 @@ class DeterministicValuationClaimTests(unittest.TestCase):
         self.assertNotIn("100", serialized)
         self.assertNotIn("25", serialized)
 
-    def test_invalid_status_or_missing_allowlisted_id_fails_closed(self):
+    def test_partial_current_valuation_keeps_valid_calculations(self):
         from stockcrewai.pipeline_support import build_deterministic_valuation_claims
 
-        cases = []
-        invalid_current = _valuation_payload()
-        invalid_current["valuation_result"]["readiness"] = "not_ready"
-        cases.append(("current status", invalid_current))
+        payload = _valuation_payload()
+        payload["valuation_result"]["calculations"][1]["status"] = "unavailable"
+        payload["valuation_result"]["calculations"][1]["validation_status"] = (
+            "unvalidated"
+        )
 
-        invalid_historical = _valuation_payload()
-        invalid_historical["historical_valuation_result"]["status"] = "unavailable"
-        cases.append(("historical status", invalid_historical))
+        claims = build_deterministic_valuation_claims(payload)
 
-        invalid_reverse = _valuation_payload()
-        invalid_reverse["reverse_dcf_result"]["validation_status"] = "unvalidated"
-        cases.append(("reverse validation", invalid_reverse))
+        self.assertEqual(
+            [claim["category"] for claim in claims],
+            ["current_valuation", "historical_valuation", "reverse_dcf"],
+        )
+        current_claim = claims[0]
+        self.assertEqual(current_claim["calculation_ids"], ["calc_pe_ratio"])
+        self.assertEqual(current_claim["evidence_ids"], ["ev_price", "ev_eps"])
 
-        missing_calculation = _valuation_payload()
-        missing_calculation["validated_calculation_ids"].remove("calc_historical")
-        cases.append(("calculation allowlist", missing_calculation))
+    def test_unavailable_historical_and_reverse_dcf_skip_only_their_claims(self):
+        from stockcrewai.pipeline_support import build_deterministic_valuation_claims
 
-        missing_evidence = _valuation_payload()
-        missing_evidence["validated_evidence_ids"].remove("ev_history")
-        cases.append(("evidence allowlist", missing_evidence))
+        cases = (
+            {
+                "status": "unavailable",
+                "validation_status": "unvalidated",
+                "reason_code": "invalid_fcf",
+            },
+            {
+                "status": "ok",
+                "validation_status": "valid",
+                "reasons": ["policy_not_applicable"],
+            },
+        )
+        for reverse_dcf_result in cases:
+            with self.subTest(reverse_dcf_result=reverse_dcf_result):
+                payload = _valuation_payload()
+                payload["historical_valuation_result"]["status"] = "not_applicable"
+                payload["reverse_dcf_result"] = {
+                    **reverse_dcf_result,
+                    "calculation_id": "calc_reverse_dcf",
+                    "input_evidence_ids": ["ev_price", "ev_fcf"],
+                }
 
-        for name, payload in cases:
-            with self.subTest(case=name):
-                self.assertEqual(build_deterministic_valuation_claims(payload), [])
+                claims = build_deterministic_valuation_claims(payload)
+
+                self.assertEqual(
+                    [claim["category"] for claim in claims],
+                    ["current_valuation"],
+                )
+
+    def test_all_valuation_domains_unavailable_returns_empty(self):
+        from stockcrewai.pipeline_support import build_deterministic_valuation_claims
+
+        payload = _valuation_payload()
+        payload["valuation_result"]["readiness"] = "not_ready"
+        payload["historical_valuation_result"]["status"] = "insufficient_history"
+        payload["reverse_dcf_result"]["status"] = "not_applicable"
+        payload["reverse_dcf_result"]["reason_code"] = "policy_not_applicable"
+
+        self.assertEqual(build_deterministic_valuation_claims(payload), [])
+
+    def test_missing_auxiliary_allowlist_only_skips_that_domain(self):
+        from stockcrewai.pipeline_support import build_deterministic_valuation_claims
+
+        for field, identifier in (
+            ("validated_calculation_ids", "calc_historical"),
+            ("validated_evidence_ids", "ev_history"),
+        ):
+            with self.subTest(field=field):
+                payload = _valuation_payload()
+                payload[field].remove(identifier)
+                claims = build_deterministic_valuation_claims(payload)
+                self.assertEqual(
+                    [claim["category"] for claim in claims],
+                    ["current_valuation", "reverse_dcf"],
+                )
 
     def test_current_calculation_requires_explicit_status_fields(self):
         from stockcrewai.pipeline_support import build_deterministic_valuation_claims
@@ -197,7 +246,15 @@ class DeterministicValuationClaimTests(unittest.TestCase):
             with self.subTest(field=field):
                 payload = _valuation_payload()
                 payload["valuation_result"]["calculations"][0].pop(field)
-                self.assertEqual(build_deterministic_valuation_claims(payload), [])
+                claims = build_deterministic_valuation_claims(payload)
+                self.assertEqual(
+                    [claim["category"] for claim in claims],
+                    ["current_valuation", "historical_valuation", "reverse_dcf"],
+                )
+                self.assertEqual(
+                    claims[0]["calculation_ids"],
+                    ["calc_fcf_yield"],
+                )
 
     def test_valuation_input_does_not_self_authorize_injected_ids(self):
         from stockcrewai.pipeline_support import (
@@ -250,7 +307,10 @@ class DeterministicValuationClaimTests(unittest.TestCase):
         self.assertNotIn("ev_injected", payload["validated_evidence_ids"])
         self.assertNotIn("calc_injected", payload["validated_calculation_ids"])
         self.assertIn("calc_state", payload["validated_calculation_ids"])
-        self.assertEqual(build_deterministic_valuation_claims(payload), [])
+        self.assertEqual(
+            [claim["category"] for claim in build_deterministic_valuation_claims(payload)],
+            ["historical_valuation", "reverse_dcf"],
+        )
 
     def test_missing_trusted_evidence_set_only_keeps_original_state_ids(self):
         from stockcrewai.pipeline_support import (
@@ -301,7 +361,65 @@ class DeterministicValuationClaimTests(unittest.TestCase):
 
         self.assertNotIn("ev_injected", payload["validated_evidence_ids"])
         self.assertNotIn("calc_injected", payload["validated_calculation_ids"])
-        self.assertEqual(build_deterministic_valuation_claims(payload), [])
+        self.assertEqual(
+            [claim["category"] for claim in build_deterministic_valuation_claims(payload)],
+            ["reverse_dcf"],
+        )
+
+class AnalysisClaimGateTests(unittest.TestCase):
+    def test_claim_gate_accepts_partial_valuation_but_rejects_empty_claims(self):
+        from stockcrewai.pipeline_support import (
+            _filter_analysis_claims_with_diagnostics,
+        )
+
+        valuation_output = _claim_output(
+            [
+                {
+                    "claim_id": "claim_current_valuation",
+                    "category": "current_valuation",
+                    "statement": "当前估值输入可验证。",
+                    "evidence_ids": ["ev_market_price"],
+                    "calculation_ids": ["calc_pe"],
+                    "confidence": 0.8,
+                }
+            ]
+        )
+        output = SimpleNamespace(
+            tasks_output=[
+                SimpleNamespace(raw=_financial_output()),
+                SimpleNamespace(raw=_risk_output()),
+                SimpleNamespace(raw=valuation_output),
+            ]
+        )
+
+        _, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
+            output,
+            ["ev_revenue"],
+            ["ev_filing"],
+            ["ev_market_price"],
+            ["calc_margin", "calc_pe"],
+        )
+
+        self.assertEqual(required_data, [])
+        self.assertIsNone(diagnostics)
+
+        empty_valuation_output = SimpleNamespace(
+            tasks_output=[
+                SimpleNamespace(raw=_financial_output()),
+                SimpleNamespace(raw=_risk_output()),
+                SimpleNamespace(raw=_claim_output([])),
+            ]
+        )
+        _, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
+            empty_valuation_output,
+            ["ev_revenue"],
+            ["ev_filing"],
+            ["ev_market_price"],
+            ["calc_margin", "calc_pe"],
+        )
+
+        self.assertEqual(required_data, ["valuation_analysis_claims_required"])
+        self.assertEqual(diagnostics["reason_code"], "claims_empty")
 
 
 class AnalysisCrewStabilityTests(unittest.TestCase):
@@ -381,7 +499,7 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
         self.assertNotIn("calc_", analysis_event.output_summary)
         self.assertNotIn("ev_", analysis_event.output_summary)
 
-    def test_empty_deterministic_valuation_claims_blocks_without_retry_or_report(self):
+    def test_unavailable_current_valuation_keeps_other_claims(self):
         parser_result, dependencies = _valid_pipeline_fakes()
         dependencies["valuation_tool"].run.return_value["calculations"][0].pop(
             "input_evidence_ids"
@@ -400,7 +518,7 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
             ),
             patch(
                 "stockcrewai.pipeline_support._deterministic_verdict",
-                return_value={"status": "must not run"},
+                return_value={"status": "ready"},
             ) as verdict,
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
@@ -413,15 +531,25 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
                 **dependencies,
             )
 
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(
-            result["required_data"], ["valuation_analysis_claims_required"]
-        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result.get("required_data", []), [])
         self.assertEqual(analysis_crew.kickoff_calls, 1)
-        self.assertEqual(report_crew.kickoff_calls, 0)
-        verdict.assert_not_called()
+        self.assertEqual(report_crew.kickoff_calls, 1)
+        verdict.assert_called_once()
+        self.assertEqual(
+            [
+                claim["category"]
+                for claim in result["analysis"]
+                if claim["category"] in (
+                    "current_valuation",
+                    "historical_valuation",
+                    "reverse_dcf",
+                )
+            ],
+            ["historical_valuation", "reverse_dcf"],
+        )
 
-    def test_injected_current_ids_block_before_verdict_and_report(self):
+    def test_injected_current_ids_are_skipped_while_other_claims_pass(self):
         parser_result, dependencies = _valid_pipeline_fakes()
         valuation = dependencies["valuation_tool"].run.return_value
         valuation["status"] = "ok"
@@ -442,7 +570,7 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
             ),
             patch(
                 "stockcrewai.pipeline_support._deterministic_verdict",
-                return_value={"status": "must not run"},
+                return_value={"status": "ready"},
             ) as verdict,
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
@@ -455,13 +583,23 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
                 **dependencies,
             )
 
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(
-            result["required_data"], ["valuation_analysis_claims_required"]
-        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result.get("required_data", []), [])
         self.assertEqual(analysis_crew.kickoff_calls, 1)
-        self.assertEqual(report_crew.kickoff_calls, 0)
-        verdict.assert_not_called()
+        self.assertEqual(report_crew.kickoff_calls, 1)
+        verdict.assert_called_once()
+        self.assertEqual(
+            [
+                claim["category"]
+                for claim in result["analysis"]
+                if claim["category"] in (
+                    "current_valuation",
+                    "historical_valuation",
+                    "reverse_dcf",
+                )
+            ],
+            ["historical_valuation", "reverse_dcf"],
+        )
 
     def test_market_evidence_id_cannot_be_self_reported_by_valuation(self):
         parser_result, dependencies = _valid_pipeline_fakes()
@@ -549,7 +687,7 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
         self.assertEqual(report_crew.kickoff_calls, 0)
         verdict.assert_not_called()
 
-    def test_risk_empty_claims_retry_once_uses_verified_builder_claims(self):
+    def test_risk_empty_claims_retry_once_then_blocks(self):
         analysis_crew = _SequenceAnalysisCrew(
             [
                 [_financial_output(), _risk_output(empty=True)],
@@ -560,30 +698,14 @@ class AnalysisFlowStabilityTests(unittest.TestCase):
 
         result, verdict = self._run_flow(analysis_crew, report_crew)
 
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(analysis_crew.kickoff_calls, 2)
-        self.assertEqual(report_crew.kickoff_calls, 1)
-        verdict.assert_called_once()
-
-        risk_claims = [
-            claim
-            for claim in result["analysis"]
-            if claim["category"] == "risk"
-        ]
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(
-            [claim["claim_id"] for claim in risk_claims],
-            ["claim_risk_disclosure_ev_filing"],
+            result["required_data"],
+            ["risk_analysis_claims_required"],
         )
-        input_allowlist = set(
-            analysis_crew.inputs[0]["risk_analysis_input"]["validated_filing_ids"]
-        )
-        self.assertEqual(input_allowlist, {"ev_filing"})
-        self.assertTrue(
-            all(
-                set(claim["evidence_ids"]) <= input_allowlist
-                for claim in risk_claims
-            )
-        )
+        self.assertEqual(analysis_crew.kickoff_calls, 2)
+        self.assertEqual(report_crew.kickoff_calls, 0)
+        verdict.assert_not_called()
 
     def test_success_claim_counts_and_blocked_diagnostics_remain_domain_correct(self):
         analysis_crew = _SequenceAnalysisCrew(

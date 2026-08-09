@@ -1325,24 +1325,21 @@ class AnalysisGateTests(unittest.TestCase):
         self.assertEqual(risk_input.get("policy_version"), "risk_claim_presence_v1")
         json.dumps(risk_input, ensure_ascii=False, allow_nan=False)
 
-    def test_missing_risk_claim_uses_deterministic_disclosure_fallback(self):
-        """风险 Claim 两次为空时应使用已验证披露事实继续通过 Gate。"""
+    def test_missing_risk_claim_blocks_after_retry_without_fallback(self):
+        """风险 Claim 两次为空时应由 Claim Gate 阻断，不由 Python 补写。"""
         outputs = _valid_analysis_outputs()
         analysis_crew = RecordingCrew(
             task_raws=[outputs[0], json.dumps({"claims": []}), outputs[2]]
         )
-        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
+        report_crew = RecordingCrew("must not run")
 
         result, verdict = _run_valid_pipeline(analysis_crew, report_crew)
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["required_data"], ["risk_analysis_claims_required"])
         self.assertEqual(analysis_crew.kickoff_calls, 2)
-        self.assertEqual(report_crew.kickoff_calls, 1)
-        verdict.assert_called_once()
-        self.assertIn(
-            "claim_risk_disclosure_ev_filing",
-            {claim["claim_id"] for claim in result["analysis"]},
-        )
+        self.assertEqual(report_crew.kickoff_calls, 0)
+        verdict.assert_not_called()
 
     def test_missing_risk_sections_blocks_before_analysis_verdict_and_report(self):
         from stockcrewai.main import run_research
@@ -2611,6 +2608,69 @@ class CrewConfigurationTests(unittest.TestCase):
 
         for agent in configured_crew.agents:
             self.assertEqual(agent.tools, [])
+
+    def test_analysis_prompts_require_claim_gate_safe_json_contract(self):
+        from stockcrewai.crews.analysis.crew import AnalysisCrew
+
+        configured_crew = AnalysisCrew()
+        financial_prompt = "\n".join(
+            str(configured_crew.agents_config["financial_quality_agent"][field])
+            for field in ("role", "goal", "backstory")
+        ) + "\n" + str(
+            configured_crew.tasks_config["financial_quality_analysis_task"]
+        )
+        risk_prompt = "\n".join(
+            str(configured_crew.agents_config["risk_analysis_agent"][field])
+            for field in ("role", "goal", "backstory")
+        ) + "\n" + str(configured_crew.tasks_config["risk_analysis_task"])
+
+        expected_fields = {
+            "claim_id",
+            "category",
+            "statement",
+            "evidence_ids",
+            "calculation_ids",
+            "confidence",
+        }
+        for task_name, prompt in (
+            ("financial_quality_analysis_task", financial_prompt),
+            ("risk_analysis_task", risk_prompt),
+        ):
+            with self.subTest(task=task_name):
+                self.assertIn("JSON-only", prompt)
+                self.assertIn("limitations", prompt)
+                self.assertIn("warnings", prompt)
+                self.assertIn(
+                    "claim_id、category、statement、evidence_ids、calculation_ids、confidence",
+                    prompt,
+                )
+                self.assertIn("禁止额外字段", prompt)
+                for forbidden_field in ("metric", "value", "domain", "reason", "status"):
+                    self.assertIn(forbidden_field, prompt)
+
+            expected_output = configured_crew.tasks_config[task_name][
+                "expected_output"
+            ].replace("{{", "{").replace("}}", "}")
+            example, _ = json.JSONDecoder().raw_decode(
+                expected_output[expected_output.index("{") :]
+            )
+            self.assertTrue(example["claims"])
+            for claim in example["claims"]:
+                self.assertEqual(set(claim), expected_fields)
+
+        self.assertIn(
+            "validated_evidence_ids 和 validated_calculation_ids 非空",
+            financial_prompt,
+        )
+        self.assertIn("facts/calculations 里有可解释内容", financial_prompt)
+        self.assertIn("不得返回空 claims", financial_prompt)
+        self.assertIn("financial_quality 与 financial_trend", financial_prompt)
+        self.assertIn(
+            "validated_filing_ids 非空且 risk_sections 完整可见",
+            risk_prompt,
+        )
+        self.assertIn("没有完整风险文本时才可返回空 claims", risk_prompt)
+        self.assertIn("calculation_ids 必须为空列表", risk_prompt)
 
     def test_report_crew_keeps_crewai_agent_variable_mapping(self):
         from stockcrewai.crews.report.crew import ReportCrew
