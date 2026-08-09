@@ -1,0 +1,25 @@
+{
+  "fixture_version": "wp00-baseline-1",
+  "synthetic": true,
+  "purpose": "WP00 确定性回归：文本安全、反向 DCF 不适用、Profile 传播和外部错误。",
+  "source_note": "手工构造的离线 fixture；不代表任何实时公司数据。",
+  "tsla_text": "TSLA 持有现金和短期投资；估值模型的高估敏感性需要单独说明。",
+  "reverse_dcf_not_applicable": {
+    "status": "unavailable",
+    "reason_code": "policy_not_applicable",
+    "reasons": ["policy_not_applicable"]
+  },
+  "profile": {
+    "issuer_type": "operating_company",
+    "security_type": "common_stock",
+    "reporting_profile": "us_sec"
+  },
+  "external_error": {
+    "status": "error",
+    "error": {
+      "category": "external_dependency",
+      "reason_code": "sec_timeout",
+      "message": "fixture external failure"
+    }
+  }
+}

@@ -1330,7 +1330,15 @@ def build_deterministic_valuation_claims(
         for claim_id, category, statement, evidence_ids, calculation_ids in claim_specs
     ]
 
-_REVERSE_DCF_APPLICABILITY_REASONS = frozenset({"invalid_fcf", "ttm_fcf_required"})
+_REVERSE_DCF_APPLICABILITY_REASONS = frozenset(
+    {
+        "invalid_fcf",
+        "negative_fcf",
+        "negative_eps",
+        "policy_not_applicable",
+        "ttm_fcf_required",
+    }
+)
 _REVERSE_DCF_POLICY_FIELDS = (
     "issuer_type",
     "company_type",

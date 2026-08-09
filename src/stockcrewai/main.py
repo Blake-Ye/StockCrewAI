@@ -36,20 +36,21 @@ from stockcrewai.crews.report.crew import (
     render_validated_report,
     validate_rendered_report,
 )
-from stockcrewai.crews.request_parser.crew import RequestParserCrew
+# 这些名称保留为旧入口的兼容导出；本模块内部不直接调用它们。
+from stockcrewai.crews.request_parser.crew import RequestParserCrew  # noqa: F401
 from stockcrewai.pipeline_support import (
     DEFAULT_REQUEST,
-    _NoopTaskOutputStorageHandler,
+    _NoopTaskOutputStorageHandler,  # noqa: F401
     _analysis_gate,
     _blocked_analysis_result,
     _calculation_facts,
-    _configure_crewai_runtime,
+    _configure_crewai_runtime,  # noqa: F401
     _crew_instance,
     _crew_output,
-    _deterministic_verdict,
+    _deterministic_verdict,  # noqa: F401
     _edgar_error,
     _first_value,
-    _filter_analysis_claims,
+    _filter_analysis_claims,  # noqa: F401
     _filter_analysis_claims_with_diagnostics,
     _financial_analysis_input,
     _historical_financial_snapshots,
@@ -67,12 +68,12 @@ from stockcrewai.pipeline_support import (
     _verdict_risk_input,
     _with_validation_status,
     build_deterministic_valuation_claims,
-    run_request_parser,
+    run_request_parser,  # noqa: F401
     sync_validation_status,
 )
 from stockcrewai.run_output import CompactRunReporter, RunStageEvent, sanitize_text
 from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
-from stockcrewai.tools.edgar_tool import EdgarError, EdgarResult, EdgarTool
+from stockcrewai.tools.edgar_tool import EdgarError, EdgarResult, EdgarTool  # noqa: F401
 from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
 from stockcrewai.tools.market_price_tool import MarketPriceTool
 from stockcrewai.tools.reverse_dcf_tool import ReverseDCFTool
@@ -182,6 +183,7 @@ class ResearchFlowState(BaseModel):
     """
 
     request: str = ""
+    profile: dict[str, Any] = Field(default_factory=dict)
     parsed_request: dict[str, Any] = Field(default_factory=dict)
     input_requirements: dict[str, Any] = Field(default_factory=dict)
     edgar: dict[str, Any] = Field(default_factory=dict)
@@ -458,6 +460,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self.state.stage = "evidence"
         self.state.required_data = []
         snapshot = self._stage_snapshot()
+        requested_focus = parsed_request.get("requested_focus")
+        if requested_focus is None:
+            requested_focus = parsed_request.get("focus")
         self._emit_stage(
             RunStageEvent(
                 step=1,
@@ -465,13 +470,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 actor="Crew/Agent：Request Parser Crew",
                 status="completed",
                 input_summary="request=provided",
-                output_summary=(
-                    f"{snapshot['identity']}; focus={_summary_count(
-                        parsed_request.get('requested_focus')
-                        if parsed_request.get('requested_focus') is not None
-                        else parsed_request.get('focus')
-                    )}"
-                ),
+                output_summary=f"{snapshot['identity']}; focus={_summary_count(requested_focus)}",
                 next_step="SEC 证据与财务验证",
             )
         )
@@ -619,6 +618,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self._calculation_result = calculation_result
         self._validation_result = validation_result
         self._pipeline_state = _json_safe(pipeline_state)
+        self._pipeline_state["profile"] = _json_safe(self.state.profile)
         self._risk_input = _json_safe(
             _risk_analysis_input(edgar_result, self._pipeline_state)
         )
@@ -872,9 +872,15 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 or ["invalid_parser_output"],
             }
         else:
+            gate_state = dict(self._pipeline_state)
+            profile = _json_safe(self.state.profile)
+            if isinstance(profile, Mapping):
+                gate_state["profile"] = profile
+                for key, value in profile.items():
+                    gate_state.setdefault(key, value)
             gate = _analysis_gate(
                 self._validation_result,
-                self._pipeline_state,
+                gate_state,
                 self._risk_input,
                 dict(valuation or self.state.valuation),
                 self.state.historical_valuation,
@@ -968,6 +974,14 @@ class ResearchFlow(Flow[ResearchFlowState]):
         来自固定注册表与基础已验证计算集合。
         """
         financial_input = _financial_analysis_input(self._pipeline_state)
+        profile = _json_safe(self.state.profile)
+        if not isinstance(profile, Mapping):
+            profile = {}
+        financial_input["profile"] = profile
+        risk_input = _json_safe(self._risk_input)
+        if not isinstance(risk_input, dict):
+            risk_input = {}
+        risk_input["profile"] = profile
         valuation_input = _valuation_analysis_input(
             self._pipeline_state,
             self.state.valuation,
@@ -978,7 +992,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         valuation_claims = build_deterministic_valuation_claims(valuation_input)
         self._analysis_inputs = {
             "financial_analysis_input": financial_input,
-            "risk_analysis_input": self._risk_input,
+            "risk_analysis_input": risk_input,
         }
         self._valuation_analysis_input = valuation_input
         analysis_crew = _crew_instance(self._analysis_crew, AnalysisCrew)
@@ -1019,7 +1033,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
             list(valuation_input.get("validated_evidence_ids", [])),
             list(valuation_input.get("validated_calculation_ids", [])),
         )
-        first_diagnostics = diagnostics
         retryable_claim_empty = (
             diagnostics is not None
             and diagnostics.get("reason_code") == "claims_empty"
@@ -1309,6 +1322,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             "name": self._pipeline_state.get("company_name"),
             "ticker": self._pipeline_state.get("ticker"),
             "horizon": self.state.parsed_request.get("investment_horizon"),
+            "profile": _json_safe(self.state.profile),
             },
             validated_claims=self.state.analysis,
             deterministic_verdict=verdict,
@@ -1492,6 +1506,7 @@ def run_research(
     reverse_dcf_tool: ReverseDCFTool | Any | None = None,
     ttm_builder_tool: Any | None = None,
     progress_callback: Any | None = None,
+    profile: Mapping[str, Any] | None = None,
 ):
     """以完整的 CrewAI 原生 Flow 保持旧 ``run_research`` 调用契约。
 
@@ -1518,10 +1533,15 @@ def run_research(
     }
     if progress_callback is not None:
         flow_kwargs["progress_callback"] = progress_callback
-    flow = ResearchFlow(
-        **flow_kwargs,
-    )
-    result = _json_safe(flow.kickoff(inputs={"request": request}))
+    profile_payload = _json_safe(profile) if profile is not None else {}
+    if not isinstance(profile_payload, dict):
+        raise TypeError("profile 必须是 JSON-safe 映射")
+    flow_inputs: dict[str, Any] = {"request": request}
+    if profile is not None:
+        flow_kwargs["profile"] = profile_payload
+        flow_inputs["profile"] = profile_payload
+    flow = ResearchFlow(**flow_kwargs)
+    result = _json_safe(flow.kickoff(inputs=flow_inputs))
     if not isinstance(result, dict):
         return result
 
@@ -1556,6 +1576,8 @@ def run_research(
     deterministic_outputs = {
         key: result.get(key) for key in deterministic_keys
     }
+    if result.get("profile"):
+        deterministic_outputs["profile"] = result["profile"]
 
     if result.get("required_data") == ["invalid_parser_output"]:
         parsed_request = result.get("parsed_request")
