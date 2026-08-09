@@ -2303,14 +2303,13 @@ class ReportContractTests(unittest.TestCase):
     def test_report_task_has_local_guardrail_and_retries(self):
         from stockcrewai.crews.report.crew import (
             ReportCrew,
-            ReportDraft,
             validate_report_draft,
         )
 
         task = ReportCrew().generate_validated_report_task()
         self.assertIs(task.guardrail, validate_report_draft)
         self.assertEqual(task.guardrail_max_retries, 2)
-        self.assertIs(task.output_pydantic, ReportDraft)
+        self.assertIsNone(task.output_pydantic)
         self.assertIsNone(task.output_json)
 
     def test_report_prompt_forbids_new_numbers_claims_and_advice(self):
@@ -2341,6 +2340,59 @@ class ReportContractTests(unittest.TestCase):
         ):
             with self.subTest(removed_phrase=phrase):
                 self.assertNotIn(phrase, prompt)
+
+    def test_report_prompt_contains_valid_nine_field_json_example(self):
+        from stockcrewai.crews.report.crew import ReportCrew, parse_report_draft
+
+        prompt = ReportCrew().tasks_config["generate_validated_report_task"][
+            "description"
+        ]
+        marker = "JSON 格式示例"
+        self.assertIn(marker, prompt)
+        example_start = prompt.index("{", prompt.index(marker))
+        example_end = prompt.index("}", example_start) + 1
+        example = json.loads(prompt[example_start:example_end])
+        expected_fields = (
+            "execution_summary",
+            "company_quality",
+            "financial_trend",
+            "current_valuation",
+            "historical_valuation",
+            "reverse_dcf",
+            "key_risks",
+            "sources_and_method",
+            "non_investment_disclaimer",
+        )
+
+        self.assertEqual(tuple(example), expected_fields)
+        self.assertEqual(len(example), 9)
+        for field in expected_fields[:-1]:
+            value = example[field]
+            with self.subTest(field=field):
+                self.assertIsInstance(value, str)
+                self.assertTrue(value.strip())
+                self.assertNotRegex(value, r"[0-9]")
+                for forbidden in (
+                    "评级",
+                    "买入",
+                    "卖出",
+                    "持有",
+                    "增持",
+                    "减持",
+                    "推荐",
+                    "投资建议",
+                    "投资推荐",
+                    "买卖建议",
+                    "status",
+                    "确定性状态",
+                ):
+                    self.assertNotIn(forbidden, value)
+
+        disclaimer = example["non_investment_disclaimer"]
+        self.assertNotRegex(disclaimer, r"[0-9]")
+        self.assertRegex(disclaimer, r"不构成|不提供|不代表")
+        self.assertRegex(disclaimer, r"投资建议|投资推荐|买卖建议")
+        parse_report_draft(json.dumps(example, ensure_ascii=False))
 
     def test_renderer_only_accepts_validated_claims_and_injects_verified_values(self):
         from stockcrewai.crews.report.crew import parse_report_draft, render_validated_report
@@ -2470,6 +2522,15 @@ class CrewConfigurationTests(unittest.TestCase):
         self.assertEqual(len(configured_crew.agents), 1)
         self.assertEqual(len(configured_crew.tasks), 1)
         self._assert_deepseek_agent(configured_crew.agents[0])
+        self.assertEqual(
+            f"{configured_crew.agents[0].llm.provider}/"
+            f"{configured_crew.agents[0].llm.model}",
+            "deepseek/deepseek-v4-flash",
+        )
+        self.assertEqual(
+            configured_crew.agents[0].llm.response_format,
+            {"type": "json_object"},
+        )
         self.assertIs(configured_crew.tasks[0].agent, configured_crew.agents[0])
         self.assertEqual(configured_crew.agents[0].tools, [])
 

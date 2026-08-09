@@ -1460,6 +1460,11 @@ class ReportCrew:
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
 
+    def __init__(self) -> None:
+        # CrewAI 1.15.11's CrewBase mapper expects string LLM references;
+        # Agent resolves the structured LLM config itself.
+        self.map_all_agent_variables = lambda: None
+
     @agent
     def report_writer_agent(self) -> Agent:
         """装配只生成无数字 ReportDraft 的 Agent。"""
@@ -1472,7 +1477,6 @@ class ReportCrew:
         """装配本地 ReportDraft Guardrail，避免依赖模型原生响应格式。"""
         return Task(
             config=self.tasks_config["generate_validated_report_task"],  # type: ignore[index]
-            output_pydantic=ReportDraft,
             guardrail=validate_report_draft,
             guardrail_max_retries=2,
         )
