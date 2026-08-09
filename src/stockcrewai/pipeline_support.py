@@ -928,8 +928,9 @@ def _risk_analysis_input(
 ) -> dict[str, Any]:
     """构造 RiskAnalysisAgent 的可审计 filing 输入包。
 
-    函数只保留验证通过、正文检索成功、未截断且包含风险章节的申报文件，
-    并把它们裁剪为 Agent 需要的来源字段和风险文本。没有满足条件的文件
+    函数只保留通过 Task 1 资格结果、正文检索成功且所有风险章节完整的
+    申报文件，并把它们裁剪为 Agent 需要的来源、资格字段和风险文本。截断
+    的 filing 预览不影响已经独立提取且标记完整的章节；没有满足条件的文件
     时返回 ``status='unavailable'``，而不是让 Agent 根据文件元数据猜测
     风险内容。
 
@@ -939,19 +940,47 @@ def _risk_analysis_input(
     返回：
         ``status``、可审计 filings 和 ``validated_filing_ids`` 组成的字典。
     """
-    validated_filing_ids = set(state.get("validated_filing_ids", []))
+    validated_filing_ids = {
+        evidence_id
+        for evidence_id in state.get("validated_filing_ids", [])
+        if isinstance(evidence_id, str) and evidence_id
+    }
     filings: list[dict[str, Any]] = []
     for filing in edgar_result.filings:
-        if validated_filing_ids and filing.evidence_id not in validated_filing_ids:
+        if filing.evidence_id not in validated_filing_ids:
             continue
-        if (
-            filing.text_retrieval_status != "available"
-            or filing.text_truncated
-            or not filing.risk_sections
+        eligibility = _json_safe(filing.risk_eligibility)
+        sections = _json_safe(filing.risk_sections)
+        if not (
+            isinstance(eligibility, Mapping)
+            and eligibility.get("eligibility") == "eligible"
+            and eligibility.get("evidence_id") == filing.evidence_id
+            and eligibility.get("evidence_kind")
+            in {"item_1a", "substantive_8k_event"}
+            and eligibility.get("source_reference")
+            and filing.text_retrieval_status == "available"
+            and isinstance(sections, list)
+            and sections
+            and all(
+                isinstance(section, Mapping)
+                and section.get("complete") is True
+                and isinstance(section.get("text"), str)
+                and bool(section["text"].strip())
+                for section in sections
+            )
         ):
             continue
+        if isinstance(sections, list):
+            sections = [
+                {
+                    key: section.get(key)
+                    for key in ("section_type", "section_title", "text", "complete")
+                    if section.get(key) is not None
+                }
+                for section in sections
+            ]
         payload = _json_safe(filing)
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and isinstance(sections, list):
             filings.append(
                 {
                     key: payload.get(key)
@@ -964,13 +993,16 @@ def _risk_analysis_input(
                         "accession_number",
                         "source_reference",
                         "text_source_reference",
-                        "risk_sections",
+                        "risk_eligibility",
                     )
                     if payload.get(key) is not None
                 }
+                | {"risk_sections": sections}
             )
     return {
         "status": "available" if filings else "unavailable",
+        "company_name": _json_safe(edgar_result.company_name),
+        "ticker": _json_safe(edgar_result.ticker),
         "filings": filings,
         "validated_filing_ids": sorted(
             str(filing["evidence_id"])
@@ -978,6 +1010,87 @@ def _risk_analysis_input(
             if filing.get("evidence_id")
         ),
     }
+
+
+def build_deterministic_risk_disclosure_claims(
+    risk_input: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """从 eligible filing packet 生成不含风险判断的披露事实 Claims。
+
+    Builder 只复制当前 packet 的 filing Evidence ID，使用固定文本说明
+    filing 披露了 Item 1A 章节或 8-K 实质事件，不推断严重度、概率、损失、
+    评级、建议或未来影响。调用方仍必须把结果作为第二项 task output 交给
+    现有 Claim Gate。
+    """
+    if not isinstance(risk_input, Mapping):
+        return []
+    validated_filing_ids = risk_input.get("validated_filing_ids")
+    filings = risk_input.get("filings")
+    if not (
+        isinstance(validated_filing_ids, list)
+        and validated_filing_ids
+        and all(
+            isinstance(evidence_id, str) and evidence_id.strip()
+            for evidence_id in validated_filing_ids
+        )
+        and isinstance(filings, list)
+    ):
+        return []
+    evidence_allowlist = set(validated_filing_ids)
+    claims: list[dict[str, Any]] = []
+    for filing in filings:
+        if not isinstance(filing, Mapping):
+            continue
+        evidence_id = filing.get("evidence_id")
+        eligibility = filing.get("risk_eligibility")
+        sections = filing.get("risk_sections")
+        if not (
+            isinstance(evidence_id, str)
+            and evidence_id in evidence_allowlist
+            and isinstance(eligibility, Mapping)
+            and eligibility.get("eligibility") == "eligible"
+            and eligibility.get("evidence_id") == evidence_id
+            and eligibility.get("evidence_kind")
+            in {"item_1a", "substantive_8k_event"}
+            and isinstance(sections, list)
+            and sections
+            and all(
+                isinstance(section, Mapping)
+                and section.get("complete") is True
+                and isinstance(section.get("text"), str)
+                and bool(section["text"].strip())
+                for section in sections
+            )
+        ):
+            continue
+        evidence_kind = eligibility["evidence_kind"]
+        if evidence_kind == "item_1a":
+            statement = "该 filing 披露了 Item 1A 风险因素章节。"
+        else:
+            section_title = next(
+                (
+                    section.get("section_title")
+                    for section in sections
+                    if isinstance(section, Mapping)
+                    and isinstance(section.get("section_title"), str)
+                    and section["section_title"].strip()
+                ),
+                "",
+            )
+            match = re.search(r"item\s+\d+\.\d+", section_title, re.IGNORECASE)
+            item_label = match.group(0) if match else "8-K"
+            statement = f"该 filing 披露了 {item_label} 事件。"
+        claims.append(
+            AnalysisClaim(
+                claim_id=f"claim_risk_disclosure_{evidence_id}",
+                category="risk",
+                statement=statement,
+                evidence_ids=[evidence_id],
+                calculation_ids=[],
+                confidence=1.0,
+            ).model_dump(mode="json")
+        )
+    return claims
 
 
 def _verdict_risk_input(analysis: Any) -> dict[str, Any]:
@@ -1321,10 +1434,32 @@ def _analysis_gate(
         and state.get("validated_calculation_ids")
     ):
         required_data.append("financial_evidence_and_calculations_required")
-    if not any(
-        filing.get("risk_sections") for filing in risk_input.get("filings", [])
-    ):
-        required_data.append("risk_sections_required")
+    risk_ids = risk_input.get("validated_filing_ids")
+    risk_filings = risk_input.get("filings")
+    risk_id_allowlist = set(risk_ids) if isinstance(risk_ids, list) else set()
+    risk_evidence_ready = (
+        isinstance(risk_ids, list)
+        and bool(risk_ids)
+        and isinstance(risk_filings, list)
+        and any(
+            isinstance(filing, Mapping)
+            and filing.get("evidence_id") in risk_id_allowlist
+            and isinstance(filing.get("risk_eligibility"), Mapping)
+            and filing["risk_eligibility"].get("eligibility") == "eligible"
+            and isinstance(filing.get("risk_sections"), list)
+            and filing["risk_sections"]
+            and all(
+                isinstance(section, Mapping)
+                and section.get("complete") is True
+                and isinstance(section.get("text"), str)
+                and bool(section["text"].strip())
+                for section in filing["risk_sections"]
+            )
+            for filing in risk_filings
+        )
+    )
+    if not risk_evidence_ready:
+        required_data.append("risk_evidence_missing")
     if not (
         valuation.get("readiness") == "ready"
         and valuation.get("validation_status") == "valid"

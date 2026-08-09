@@ -950,16 +950,17 @@ class ResearchFlow(Flow[ResearchFlowState]):
 
     @listen("analysis_ready")
     def run_analysis(self) -> Any:
-        """把两个 LLM 输入和一项确定性估值 Claims 交给 Claim Gate。
+        """把两个 LLM 输入和确定性 Claims 交给 Claim Gate。
 
         财务和风险输入分别由 ``pipeline_support`` 构造并交给 Analysis
         Crew；估值输入同样构造，但只由 Python 的确定性构建器生成第三项
         Claims。三个输出按 financial/risk/valuation 顺序组合后，仍由
         Claim Gate 解析和校验，不直接写入 SQLite state。只有财务或风险
         Claims 为空时才对两个 LLM 输入做一次带 ``retry_notice`` 的重试；
-        确定性估值 Claims 为空时直接 fail closed，不重跑 LLM。估值输入的
-        Evidence allowlist 来自 ``prepare_valuation`` 保存的 trusted set，
-        Calculation allowlist 来自固定注册表与基础已验证计算集合。
+        两次风险域空输出且存在 eligible Evidence 时，才把确定性披露事实
+        Claim 替换为第二项 task output。估值输入的 Evidence allowlist
+        来自 ``prepare_valuation`` 保存的 trusted set，Calculation allowlist
+        来自固定注册表与基础已验证计算集合。
         """
         financial_input = _financial_analysis_input(self._pipeline_state)
         valuation_input = _valuation_analysis_input(
@@ -982,11 +983,24 @@ class ResearchFlow(Flow[ResearchFlowState]):
             getattr(raw_analysis_result, "tasks_output", None)
         )
 
-        def with_deterministic_valuation_claims(result: Any) -> Any:
-            """把 Python 估值 Claims 作为 Claim Gate 的第三项任务输出。"""
+        deterministic_risk_claims: list[dict[str, Any]] = []
+
+        def with_deterministic_claims(
+            result: Any,
+            risk_claims: list[dict[str, Any]] | None = None,
+        ) -> Any:
+            """保留两个 Agent task，并追加估值 task；风险 Claim 只替换第二项。"""
             task_outputs = getattr(result, "tasks_output", None)
             if not isinstance(task_outputs, (list, tuple)):
                 task_outputs = ()
+            task_outputs = list(task_outputs)
+            if risk_claims is not None and len(task_outputs) >= 2:
+                task_outputs[1] = SimpleNamespace(
+                    raw=json.dumps(
+                        {"claims": risk_claims},
+                        ensure_ascii=False,
+                    )
+                )
             valuation_task_output = SimpleNamespace(
                 raw=json.dumps(
                     {"claims": valuation_claims},
@@ -1000,7 +1014,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 tasks_output=[*task_outputs, valuation_task_output],
             )
 
-        self._analysis_result = with_deterministic_valuation_claims(
+        self._analysis_result = with_deterministic_claims(
             raw_analysis_result
         )
         _, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
@@ -1010,6 +1024,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             list(valuation_input.get("validated_evidence_ids", [])),
             list(valuation_input.get("validated_calculation_ids", [])),
         )
+        first_diagnostics = diagnostics
         retryable_claim_empty = (
             diagnostics is not None
             and diagnostics.get("reason_code") == "claims_empty"
@@ -1036,8 +1051,34 @@ class ResearchFlow(Flow[ResearchFlowState]):
             agent_task_count = _summary_count(
                 getattr(raw_analysis_result, "tasks_output", None)
             )
-            self._analysis_result = with_deterministic_valuation_claims(
-                raw_analysis_result
+            _, _, retry_diagnostics = (
+                _filter_analysis_claims_with_diagnostics(
+                    with_deterministic_claims(raw_analysis_result),
+                    list(financial_input.get("validated_evidence_ids", [])),
+                    list(self._risk_input.get("validated_filing_ids", [])),
+                    list(valuation_input.get("validated_evidence_ids", [])),
+                    list(valuation_input.get("validated_calculation_ids", [])),
+                )
+            )
+            deterministic_risk_conditions = (
+                isinstance(first_diagnostics, Mapping)
+                and first_diagnostics.get("domain") == "risk"
+                and first_diagnostics.get("reason_code") == "claims_empty"
+                and isinstance(retry_diagnostics, Mapping)
+                and retry_diagnostics.get("domain") == "risk"
+                and retry_diagnostics.get("reason_code") == "claims_empty"
+            )
+            if deterministic_risk_conditions and self._risk_input.get(
+                "validated_filing_ids"
+            ):
+                deterministic_risk_claims = (
+                    pipeline_support.build_deterministic_risk_disclosure_claims(
+                        self._risk_input
+                    )
+                )
+            self._analysis_result = with_deterministic_claims(
+                raw_analysis_result,
+                risk_claims=deterministic_risk_claims or None,
             )
         snapshot = self._stage_snapshot()
         self._emit_stage(
@@ -1052,6 +1093,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 ),
                 output_summary=(
                     f"agent_tasks={agent_task_count}; "
+                    f"deterministic_risk_claims={len(deterministic_risk_claims)}; "
                     f"deterministic_valuation_claims={len(valuation_claims)}; "
                     f"attempts={self.state.analysis_attempts}; "
                     "Claims=awaiting Claim Gate; "

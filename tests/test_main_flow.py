@@ -73,6 +73,19 @@ def _flow_class():
 def _flow_dependencies():
     """复用现有完整流水线 fake，并注入离线市场价格工具。"""
     parser_result, dependencies = _valid_pipeline_fakes()
+    from stockcrewai.tools.edgar_tool import EdgarRiskEligibility
+
+    filing = dependencies["edgar_tool"].run.return_value.filings[0]
+    filing.risk_eligibility = EdgarRiskEligibility(
+        evidence_id=filing.evidence_id,
+        eligibility="eligible",
+        evidence_kind="item_1a",
+        reason_code="eligible_item_1a",
+        section_title="Item 1A. Risk Factors",
+        filed_at=filing.filed_at,
+        source_reference=filing.source_reference,
+    )
+    filing.risk_sections[0].section_title = "Item 1A. Risk Factors"
     market_price_tool = Mock()
     market_price_tool.run.return_value = dependencies.pop("market_price_data")
     dependencies["market_price_tool"] = market_price_tool
@@ -822,32 +835,133 @@ class MainFlowExecutionTests(unittest.TestCase):
             )
         self.assertIn("不得编造", retry_inputs["risk_analysis_input"]["retry_notice"])
 
-    def test_empty_claim_gate_result_retries_once_then_remains_blocked(self):
+    def test_empty_risk_claim_gate_result_retries_once_then_uses_builder(self):
         empty_outputs = _valid_analysis_outputs()
         empty_outputs[1] = json.dumps({"claims": []}, ensure_ascii=False)
         analysis_crew = SequencedAnalysisCrew([empty_outputs, empty_outputs])
-        report_crew = RecordingCrew("must not run")
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
         parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
         events = []
         flow._progress_callback = events.append
+        module = _main_module()
 
         with _offline_flow_patches(
-            parser_result, verdict={"status": "must not run"}
-        ) as (_, verdict_mocks):
+            parser_result, verdict={"status": "ready"}
+        ) as (_, verdict_mocks), patch.object(
+            module.pipeline_support,
+            "build_deterministic_risk_disclosure_claims",
+            wraps=module.pipeline_support.build_deterministic_risk_disclosure_claims,
+        ) as builder, patch.object(
+            module,
+            "_filter_analysis_claims_with_diagnostics",
+            wraps=module._filter_analysis_claims_with_diagnostics,
+        ) as claim_gate:
             result = _run_flow(flow)
 
         self.assertEqual(analysis_crew.kickoff_calls, 2)
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["stage"], "analysis")
-        self.assertEqual(result["required_data"], ["risk_analysis_claims_required"])
-        self.assertIsNone(result["verdict"])
-        self.assertIsNone(result["report"])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["stage"], "report")
+        self.assertEqual(result["analysis"][2]["category"], "risk")
+        self.assertEqual(result["analysis"][2]["claim_id"], "claim_risk_disclosure_ev_filing")
+        self.assertEqual(report_crew.kickoff_calls, 1)
         self.assertEqual(getattr(flow.state, "analysis_attempts", 0), 2)
-        self.assertEqual(report_crew.kickoff_calls, 0)
-        self.assertEqual(sum(mock.call_count for mock in verdict_mocks), 0)
+        self.assertEqual(sum(mock.call_count for mock in verdict_mocks), 1)
+        builder.assert_called_once()
+        final_gate_output = claim_gate.call_args_list[-1].args[0]
+        self.assertEqual(len(final_gate_output.tasks_output), 3)
+        self.assertEqual(
+            json.loads(final_gate_output.tasks_output[1].raw)["claims"][0][
+                "claim_id"
+            ],
+            "claim_risk_disclosure_ev_filing",
+        )
         analysis_events = [event for event in events if event.step == 5]
         self.assertEqual(len(analysis_events), 1)
         self.assertIn("attempts=2", analysis_events[0].output_summary)
+        self.assertIn("deterministic_risk_claims=1", analysis_events[0].output_summary)
+
+    def test_only_rejected_shell_blocks_before_analysis_kickoff(self):
+        from stockcrewai.tools.edgar_tool import EdgarRiskEligibility
+
+        analysis_crew = RecordingCrew("must not run")
+        report_crew = RecordingCrew("must not run")
+        parser_result, flow, dependencies = self._make_flow(
+            analysis_crew, report_crew
+        )
+        filing = dependencies["edgar_tool"].run.return_value.filings[0]
+        filing.risk_eligibility = EdgarRiskEligibility(
+            evidence_id=filing.evidence_id,
+            eligibility="rejected",
+            reason_code="attachment_shell",
+            source_reference=filing.source_reference,
+            filed_at=filing.filed_at,
+        )
+
+        with _offline_flow_patches(parser_result):
+            result = _run_flow(flow)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["stage"], "analysis")
+        self.assertEqual(result["required_data"], ["risk_evidence_missing"])
+        self.assertEqual(analysis_crew.kickoff_calls, 0)
+        self.assertEqual(report_crew.kickoff_calls, 0)
+
+    def test_builder_is_not_called_for_invalid_or_nonempty_risk_output(self):
+        invalid_risk_outputs = (
+            "not JSON",
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "claim_id": "claim_bad_evidence",
+                            "category": "risk",
+                            "statement": "申报文本披露了事件。",
+                            "evidence_ids": ["ev_not_allowlisted"],
+                            "calculation_ids": [],
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "claim_id": "claim_wrong_category",
+                            "category": "financial_quality",
+                            "statement": "申报文本披露了事件。",
+                            "evidence_ids": ["ev_filing"],
+                            "calculation_ids": [],
+                            "confidence": 0.9,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        for invalid_risk_output in invalid_risk_outputs:
+            with self.subTest(invalid_risk_output=invalid_risk_output):
+                analysis_outputs = _valid_analysis_outputs()
+                analysis_outputs[1] = invalid_risk_output
+                analysis_crew = SequencedAnalysisCrew([analysis_outputs])
+                report_crew = RecordingCrew("must not run")
+                parser_result, flow, _ = self._make_flow(
+                    analysis_crew, report_crew
+                )
+
+                module = _main_module()
+                with _offline_flow_patches(parser_result), patch.object(
+                    module.pipeline_support,
+                    "build_deterministic_risk_disclosure_claims",
+                    wraps=module.pipeline_support.build_deterministic_risk_disclosure_claims,
+                ) as builder:
+                    result = _run_flow(flow)
+
+                self.assertEqual(result["status"], "blocked")
+                self.assertEqual(analysis_crew.kickoff_calls, 1)
+                self.assertEqual(builder.call_count, 0)
 
     def test_run_research_parser_failure_keeps_legacy_error_contract(self):
         module = _main_module()
@@ -1205,7 +1319,7 @@ class MainFlowExecutionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "analysis")
-        self.assertIn("risk_sections_required", result["required_data"])
+        self.assertIn("risk_evidence_missing", result["required_data"])
         self.assertEqual(analysis_crew.kickoff_calls, 0)
         self.assertEqual(report_crew.kickoff_calls, 0)
         self.assertEqual(flow.state.status, "blocked")
