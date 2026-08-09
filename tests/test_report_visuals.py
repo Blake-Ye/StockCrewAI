@@ -1,11 +1,14 @@
 import base64
 from datetime import date, timedelta
 import importlib
+from io import BytesIO
 import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+
+from PIL import Image
 
 
 def _financial_metrics():
@@ -161,6 +164,116 @@ class ReportVisualsTests(unittest.TestCase):
         for label in ("16.15%", "33.60%", "27.85%", "30.24%"):
             _, extent, bar = by_label[label]
             self.assertGreater(extent.x0, bar.x1)
+
+    def test_financial_kpi_axis_padding_follows_real_data_range(self):
+        module = importlib.import_module("stockcrewai.report_visuals")
+
+        def render(values):
+            records = {
+                metric_id: {
+                    "display_value": f"{value:.2f}%",
+                    "unit": "percentage",
+                }
+                for metric_id, value in values.items()
+            }
+            uri = module._financial_kpi_png(records)
+            self.assertIsNotNone(uri)
+            image = Image.open(
+                BytesIO(base64.b64decode(uri.split(",", 1)[1]))
+            ).convert("RGB")
+
+            black = (0, 0, 0)
+            gray = (85, 85, 85)
+            blue = (53, 104, 168)
+            axis_columns = [
+                x
+                for x in range(image.width)
+                if sum(
+                    image.getpixel((x, y)) == black
+                    for y in range(image.height)
+                )
+                > image.height // 2
+            ]
+            self.assertGreaterEqual(len(axis_columns), 2)
+            axes_left, axes_right = min(axis_columns), max(axis_columns)
+            zero_columns = [
+                x
+                for x in range(image.width)
+                if sum(
+                    image.getpixel((x, y)) == gray
+                    for y in range(image.height)
+                )
+                > image.height // 2
+            ]
+            self.assertEqual(len(zero_columns), 1)
+
+            blue_rows = [
+                y
+                for y in range(image.height)
+                if any(
+                    image.getpixel((x, y)) == blue
+                    for x in range(image.width)
+                )
+            ]
+            row_groups = []
+            group_start = previous_row = blue_rows[0]
+            for row in blue_rows[1:]:
+                if row != previous_row + 1:
+                    row_groups.append((group_start, previous_row))
+                    group_start = row
+                previous_row = row
+            row_groups.append((group_start, previous_row))
+            self.assertEqual(len(row_groups), len(module._FINANCIAL_KPI_IDS))
+
+            negative_left = min(
+                x
+                for y in range(row_groups[-1][0], row_groups[-1][1] + 1)
+                for x in range(image.width)
+                if image.getpixel((x, y)) == blue
+            )
+            axis_width = axes_right - axes_left
+            return {
+                "zero_fraction": (zero_columns[0] - axes_left) / axis_width,
+                "negative_left_fraction": (negative_left - axes_left)
+                / axis_width,
+            }
+
+        negative_values = {
+            "revenue_growth": 10.0,
+            "operating_margin": 20.0,
+            "net_margin": 30.0,
+            "free_cash_flow_margin": 40.0,
+            "cash_conversion": 50.0,
+            "share_dilution": -5.0,
+        }
+        negative_chart = render(negative_values)
+        expected_negative_xlim = (-16.0, 55.5)
+        expected_negative_zero_fraction = (
+            -expected_negative_xlim[0]
+            / (expected_negative_xlim[1] - expected_negative_xlim[0])
+        )
+        self.assertAlmostEqual(
+            negative_chart["zero_fraction"],
+            expected_negative_zero_fraction,
+            delta=0.01,
+        )
+        self.assertGreaterEqual(negative_chart["negative_left_fraction"], 0.15)
+
+        positive_values = {**negative_values, "share_dilution": 5.0}
+        positive_chart = render(positive_values)
+        expected_positive_xlim = (-5.0, 55.0)
+        expected_positive_zero_fraction = (
+            -expected_positive_xlim[0]
+            / (expected_positive_xlim[1] - expected_positive_xlim[0])
+        )
+        self.assertAlmostEqual(
+            positive_chart["zero_fraction"],
+            expected_positive_zero_fraction,
+            delta=0.01,
+        )
+        self.assertLess(
+            positive_chart["zero_fraction"], negative_chart["zero_fraction"]
+        )
 
     def test_builds_three_deterministic_png_data_uris_from_verified_inputs(self):
         builder = self._builder()
