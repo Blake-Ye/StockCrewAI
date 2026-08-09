@@ -29,7 +29,6 @@ from stockcrewai.crews.analysis.crew import AnalysisCrew
 from stockcrewai.crews.report.crew import (
     ReportCrew,
     ReportDraft,
-    build_deterministic_report_draft,
     build_report_context,
     parse_report_draft,
     render_validated_report,
@@ -1182,9 +1181,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
         Claims、确定性结果、计算结果、估值和来源元数据交给 Report Crew。
         Verdict 和报告都会先转为 JSON-safe 值后写入 state；Report Crew
         不能改变 Verdict、补造引用或绕过 Gate。若 Crew kickoff 或 Draft
-        解析失败，Python 使用无动态事实的 deterministic fallback，随后仍
-        经过同一个 Renderer 和最终 Markdown 安全检查；这些检查失败时
-        fail closed。本节点只由 ``claims_ready`` 触发，因此任一阻断分支
+        解析失败，Python 直接阻断报告阶段，不把失败伪装成成功报告；Renderer
+        和最终 Markdown 安全检查失败时同样 fail closed。本节点只由
+        ``claims_ready`` 触发，因此任一阻断分支
         都不会调用下游依赖。
         """
         verdict_risk_input = _verdict_risk_input(self.state.analysis)
@@ -1314,14 +1313,24 @@ class ResearchFlow(Flow[ResearchFlowState]):
         report_inputs = {"report_context": report_context}
         self.state.verdict = _json_safe(verdict)
         draft_source = "agent"
-        fallback_reason = ""
 
         def _failure_summary(phase: str, exc: BaseException) -> str:
             """只保留异常阶段和类型，不把模型文本写入运行输出。"""
-            return sanitize_text(f"{phase}:{type(exc).__name__}", 120)
+            exception_types: list[str] = []
+            current: BaseException | None = exc
+            seen: set[int] = set()
+            while (
+                isinstance(current, BaseException)
+                and id(current) not in seen
+                and len(exception_types) < 4
+            ):
+                seen.add(id(current))
+                exception_types.append(type(current).__name__)
+                current = current.__cause__ or current.__context__
+            return sanitize_text(f"{phase}:{'->'.join(exception_types)}", 120)
 
         def _block_report_output_invalid(reason: Any) -> dict[str, Any]:
-            """报告 fallback、Renderer 或最终安全检查失败时 fail closed。"""
+            """报告 Draft、Renderer 或最终安全检查失败时 fail closed。"""
             safe_reason = sanitize_text(str(reason), 240) or "unknown"
             self.state.report = None
             self.state.status = "blocked"
@@ -1354,41 +1363,27 @@ class ResearchFlow(Flow[ResearchFlowState]):
             )
             return self._flow_result()
 
-        def _fallback_draft(exc: BaseException) -> ReportDraft | None:
-            """为预期的 Crew/草稿失败构造安全 fallback；失败则阻断。"""
-            nonlocal draft_source, fallback_reason
-            draft_source = "deterministic_fallback"
-            fallback_reason = _failure_summary("fallback", exc)
-            try:
-                draft = build_deterministic_report_draft()
-                if not isinstance(draft, ReportDraft):
-                    raise TypeError("deterministic_fallback:invalid_type")
-                return parse_report_draft(draft.model_dump(mode="json"))
-            except Exception as fallback_exc:
-                _block_report_output_invalid(
-                    _failure_summary("deterministic_fallback", fallback_exc)
-                )
-                return None
-
-        report_draft: ReportDraft | None = None
         try:
             report_crew = _crew_instance(self._report_crew, ReportCrew)
             report_result = report_crew.kickoff(inputs=report_inputs)
         except Exception as exc:
-            report_draft = _fallback_draft(exc)
-        else:
-            try:
-                report_output = _crew_output(report_result)
-            except Exception as exc:
-                report_draft = _fallback_draft(exc)
-            else:
-                try:
-                    report_draft = parse_report_draft(report_output)
-                except (TypeError, ValueError) as exc:
-                    report_draft = _fallback_draft(exc)
+            return _block_report_output_invalid(
+                _failure_summary("report_kickoff", exc)
+            )
 
-        if report_draft is None:
-            return self._flow_result()
+        try:
+            report_output = _crew_output(report_result)
+        except Exception as exc:
+            return _block_report_output_invalid(
+                _failure_summary("report_output", exc)
+            )
+
+        try:
+            report_draft: ReportDraft = parse_report_draft(report_output)
+        except Exception as exc:
+            return _block_report_output_invalid(
+                _failure_summary("report_parse", exc)
+            )
 
         try:
             report = render_validated_report(
@@ -1422,9 +1417,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
             keys=("status", "decision", "verdict"),
         )
         report_status = "generated" if self.state.report not in (None, "", {}, []) else "unavailable"
-        fallback_summary = (
-            f"fallback_reason={fallback_reason}; " if fallback_reason else ""
-        )
         claim_counts = snapshot["claims"]
         self._emit_stage(
             RunStageEvent(
@@ -1439,7 +1431,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 output_summary=(
                     f"Verdict={verdict_status}; Report={report_status}; "
                     f"draft_source={draft_source}; "
-                    f"{fallback_summary}"
                     f"PE={snapshot['pe']}; FCF Yield={snapshot['fcf_yield']}; "
                     f"historical percentile={snapshot['historical_percentile']}; "
                     f"reverse DCF growth={snapshot['reverse_dcf_growth']}"

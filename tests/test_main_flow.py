@@ -943,17 +943,20 @@ class MainFlowExecutionTests(unittest.TestCase):
         ):
             self.assertNotIn(private_dependency, result)
 
-    def test_report_kickoff_failure_uses_deterministic_fallback(self):
+    def test_report_kickoff_failure_blocks_without_leaking_exception_details(self):
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
+        secret = "raw model output claim_forged=secret must not leak"
 
         class FailingReportCrew:
             kickoff_calls = 0
 
             def kickoff(self, *, inputs):
                 self.kickoff_calls += 1
-                raise RuntimeError(
-                    "BadRequestError: raw model output claim_forged=secret must not leak"
-                )
+                cause = ValueError(secret)
+                failure = RuntimeError(secret)
+                failure.__cause__ = cause
+                cause.__cause__ = failure
+                raise failure
 
         report_crew = FailingReportCrew()
         parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
@@ -963,37 +966,36 @@ class MainFlowExecutionTests(unittest.TestCase):
         with _offline_flow_patches(parser_result, verdict={"status": "ready"}):
             result = _run_flow(flow)
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "report")
-        self.assertTrue(result["report"])
-        self.assertEqual(result["required_data"], [])
-        self.assertEqual(result["analysis_diagnostics"], {})
-        self.assertNotIn("raw model output", result["report"])
-        self.assertNotIn("claim_forged", result["report"])
+        self.assertIsNone(result["report"])
+        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["analysis_diagnostics"]["domain"], "report")
+        self.assertEqual(
+            result["analysis_diagnostics"]["reason_code"],
+            "report_output_invalid",
+        )
         report_event = next(
             event
             for event in events
-            if event.step == 7 and event.status == "completed"
+            if event.step == 7 and event.status == "blocked"
         )
-        self.assertIn("draft_source=deterministic_fallback", report_event.output_summary)
-        self.assertIn("fallback_reason=fallback:RuntimeError", report_event.output_summary)
-        self.assertNotIn("claim_forged", report_event.output_summary)
-        self.assertNotIn("raw model output", report_event.output_summary)
+        self.assertIn("report_kickoff:RuntimeError", report_event.output_summary)
+        self.assertIn("report_kickoff:RuntimeError", report_event.reason)
+        serialized = json.dumps(
+            {"result": result, "event": report_event.__dict__},
+            ensure_ascii=False,
+        )
+        self.assertNotIn(secret, serialized)
         self.assertEqual(report_crew.kickoff_calls, 1)
 
-    def test_report_fallback_renderer_failure_remains_report_output_invalid(self):
+    def test_report_renderer_failure_remains_report_output_invalid(self):
         module = _main_module()
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
-
-        class FailingReportCrew:
-            kickoff_calls = 0
-
-            def kickoff(self, *, inputs):
-                self.kickoff_calls += 1
-                raise RuntimeError("guardrail model output must stay hidden")
-
-        report_crew = FailingReportCrew()
+        report_crew = RecordingCrew(VALID_REPORT_DRAFT)
         parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
+        events = []
+        flow._progress_callback = events.append
 
         with (
             _offline_flow_patches(parser_result, verdict={"status": "ready"}),
@@ -1013,44 +1015,17 @@ class MainFlowExecutionTests(unittest.TestCase):
             result["analysis_diagnostics"]["reason_code"], "report_output_invalid"
         )
         self.assertNotIn("renderer implementation detail", json.dumps(result))
-        self.assertNotIn("guardrail model output", json.dumps(result))
-        self.assertEqual(report_crew.kickoff_calls, 1)
-
-    def test_report_deterministic_fallback_failure_remains_report_output_invalid(self):
-        module = _main_module()
-        analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
-
-        class FailingReportCrew:
-            kickoff_calls = 0
-
-            def kickoff(self, *, inputs):
-                self.kickoff_calls += 1
-                raise RuntimeError("model output must stay hidden")
-
-        report_crew = FailingReportCrew()
-        parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
-
-        with (
-            _offline_flow_patches(parser_result, verdict={"status": "ready"}),
-            patch.object(
-                module,
-                "build_deterministic_report_draft",
-                side_effect=RuntimeError("fallback implementation detail"),
-            ),
-        ):
-            result = _run_flow(flow)
-
-        self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["stage"], "report")
-        self.assertEqual(result["required_data"], ["report_output_invalid"])
-        self.assertIsNone(result["report"])
-        self.assertEqual(
-            result["analysis_diagnostics"]["reason_code"], "report_output_invalid"
+        report_event = next(
+            event
+            for event in events
+            if event.step == 7 and event.status == "blocked"
         )
-        self.assertNotIn("fallback implementation detail", json.dumps(result))
+        self.assertIn("renderer:RuntimeError", report_event.output_summary)
+        self.assertIn("renderer:RuntimeError", report_event.reason)
+        self.assertNotIn("renderer implementation detail", json.dumps(report_event.__dict__))
         self.assertEqual(report_crew.kickoff_calls, 1)
 
-    def test_report_result_getter_failure_falls_back_without_leaking_secret(self):
+    def test_report_result_getter_failure_blocks_without_leaking_secret(self):
         secret = "raw-model-secret-should-not-leak"
         events = []
 
@@ -1093,44 +1068,36 @@ class MainFlowExecutionTests(unittest.TestCase):
             ensure_ascii=False,
         )
         self.assertNotIn(secret, serialized)
-        self.assertIn(result["status"], {"ok", "blocked"})
-        if result["status"] == "ok":
-            self.assertTrue(result["report"])
-        else:
-            self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["stage"], "report")
+        self.assertIsNone(result["report"])
+        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        report_event = next(
+            event
+            for event in events
+            if event.step == 7 and event.status == "blocked"
+        )
+        self.assertIn("report_output:RuntimeError", report_event.output_summary)
+        self.assertIn("report_output:RuntimeError", report_event.reason)
         self.assertEqual(report_crew.kickoff_calls, 1)
 
-    def test_invalid_constructed_fallback_is_rejected_before_renderer(self):
-        from stockcrewai.crews.report.crew import ReportDraft, parse_report_draft
-
-        valid_draft = parse_report_draft(VALID_REPORT_DRAFT)
-        invalid_payload = valid_draft.model_dump()
-        invalid_payload["execution_summary"] = "非法 fallback 数字 42。"
-        invalid_fallback = ReportDraft.model_construct(**invalid_payload)
+    def test_report_draft_parse_failure_blocks_before_renderer(self):
         module = _main_module()
+        invalid_payload = json.loads(VALID_REPORT_DRAFT)
+        secret = "raw model output claim_forged=secret"
+        invalid_payload["execution_summary"] = f"非法数字 42；{secret}。"
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
-
-        class FailingReportCrew:
-            kickoff_calls = 0
-
-            def kickoff(self, *, inputs):
-                self.kickoff_calls += 1
-                raise RuntimeError("guardrail failure")
-
-        report_crew = FailingReportCrew()
+        report_crew = RecordingCrew(json.dumps(invalid_payload, ensure_ascii=False))
         parser_result, flow, _ = self._make_flow(analysis_crew, report_crew)
+        events = []
+        flow._progress_callback = events.append
 
         with (
             _offline_flow_patches(parser_result, verdict={"status": "ready"}),
             patch.object(
                 module,
-                "build_deterministic_report_draft",
-                return_value=invalid_fallback,
-            ),
-            patch.object(
-                module,
                 "render_validated_report",
-                side_effect=AssertionError("invalid fallback reached Renderer"),
+                side_effect=AssertionError("ReportDraft parse failure reached Renderer"),
             ) as renderer,
         ):
             result = _run_flow(flow)
@@ -1140,6 +1107,18 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertEqual(result["required_data"], ["report_output_invalid"])
         self.assertIsNone(result["report"])
         renderer.assert_not_called()
+        report_event = next(
+            event
+            for event in events
+            if event.step == 7 and event.status == "blocked"
+        )
+        self.assertIn("report_parse:ValueError", report_event.output_summary)
+        self.assertIn("report_parse:ValueError", report_event.reason)
+        serialized = json.dumps(
+            {"result": result, "events": [event.__dict__ for event in events]},
+            ensure_ascii=False,
+        )
+        self.assertNotIn(secret, serialized)
         self.assertEqual(report_crew.kickoff_calls, 1)
 
     def test_report_crew_and_renderer_share_one_json_safe_report_context(self):

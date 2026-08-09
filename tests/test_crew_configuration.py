@@ -1550,7 +1550,7 @@ class AnalysisGateTests(unittest.TestCase):
         self.assertEqual(report_crew.kickoff_calls, 1)
         verdict.assert_called_once()
 
-    def test_report_draft_parse_failure_uses_deterministic_fallback(self):
+    def test_report_draft_parse_failure_blocks_without_fallback(self):
         analysis_crew = RecordingCrew(task_raws=_valid_analysis_outputs())
         payload = json.loads(VALID_REPORT_DRAFT)
         payload["execution_summary"] = "确定性状态：status=ready。"
@@ -1562,11 +1562,15 @@ class AnalysisGateTests(unittest.TestCase):
             verdict_value={"status": "insufficient_data"},
         )
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["stage"], "report")
-        self.assertTrue(result["report"])
-        self.assertIn("当前估值部分由确定性 Renderer 注入已验证内容。", result["report"])
-        self.assertNotIn("确定性状态：status=ready。", result["report"])
+        self.assertIsNone(result["report"])
+        self.assertEqual(result["required_data"], ["report_output_invalid"])
+        self.assertEqual(result["analysis_diagnostics"]["domain"], "report")
+        self.assertEqual(
+            result["analysis_diagnostics"]["reason_code"],
+            "report_output_invalid",
+        )
         self.assertEqual(report_crew.kickoff_calls, 1)
         verdict.assert_called_once()
 
