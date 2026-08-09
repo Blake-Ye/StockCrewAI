@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import io
 import json
@@ -1245,7 +1246,18 @@ class MainEntrypointTests(unittest.TestCase):
                 module.kickoff(REQUEST, output_path=output_path)
 
             exported = output_path.with_name("investment-report.md")
-            self.assertEqual(exported.read_text(encoding="utf-8"), "# 正式报告\n")
+            exported_text = exported.read_text(encoding="utf-8")
+            self.assertEqual(exported_text, "# 正式报告\n")
+            exported_bytes = exported_text.encode("utf-8")
+            result_path = output_path.with_name("run-result.json")
+            persisted = json.loads(result_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(persisted["report"], exported_text)
+        self.assertEqual(
+            persisted["artifacts"]["report_sha256"],
+            hashlib.sha256(exported_bytes).hexdigest(),
+        )
+        self.assertEqual(persisted["artifacts"]["report_bytes"], len(exported_bytes))
 
     def test_kickoff_does_not_export_blocked_or_empty_report(self):
         module = _main_module()
@@ -1256,12 +1268,21 @@ class MainEntrypointTests(unittest.TestCase):
         for run_result in results:
             with self.subTest(run_result=run_result), tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / "run-output.md"
+                exported = output_path.with_name("investment-report.md")
+                exported.write_text("旧正式报告\n", encoding="utf-8")
                 with patch.object(module, "run_research", return_value=run_result):
                     module.kickoff(REQUEST, output_path=output_path)
 
-                self.assertFalse(
-                    output_path.with_name("investment-report.md").exists()
+                self.assertEqual(
+                    exported.read_text(encoding="utf-8"), "旧正式报告\n"
                 )
+                persisted = json.loads(
+                    output_path.with_name("run-result.json").read_text(encoding="utf-8")
+                )
+                artifacts = persisted.get("artifacts", {})
+                self.assertNotIn("report_path", artifacts)
+                self.assertNotIn("report_sha256", artifacts)
+                self.assertNotIn("report_bytes", artifacts)
 
     def test_kickoff_exports_report_next_to_custom_output_path(self):
         module = _main_module()
@@ -1276,6 +1297,57 @@ class MainEntrypointTests(unittest.TestCase):
 
             exported = output_path.with_name("investment-report.md")
             self.assertEqual(exported.read_text(encoding="utf-8"), "正文\n")
+            result_path = output_path.with_name("run-result.json")
+            persisted = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                {output_path.parent, exported.parent, result_path.parent},
+                {Path(temp_dir) / "nested"},
+            )
+            self.assertEqual(persisted["report"], exported.read_text(encoding="utf-8"))
+
+    def test_kickoff_does_not_claim_report_when_atomic_export_fails(self):
+        module = _main_module()
+        run_output = importlib.import_module("stockcrewai.run_output")
+        real_atomic_write = getattr(run_output, "_atomic_write_text", None)
+
+        def fail_formal_report(path, text):
+            if path.name == "investment-report.md":
+                raise OSError("formal report replace failed")
+            if real_atomic_write is not None:
+                return real_atomic_write(path, text)
+            return path.write_text(text, encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "run-output.md"
+            exported = output_path.with_name("investment-report.md")
+            exported.write_text("旧正式报告\n", encoding="utf-8")
+            with (
+                patch.object(
+                    module,
+                    "run_research",
+                    return_value={
+                        "status": "ok",
+                        "stage": "report",
+                        "report": "新正式报告",
+                    },
+                ),
+                patch.object(
+                    run_output,
+                    "_atomic_write_text",
+                    side_effect=fail_formal_report,
+                    create=True,
+                ),
+            ):
+                module.kickoff(REQUEST, output_path=output_path)
+
+            self.assertEqual(exported.read_text(encoding="utf-8"), "旧正式报告\n")
+            persisted = json.loads(
+                output_path.with_name("run-result.json").read_text(encoding="utf-8")
+            )
+            artifacts = persisted.get("artifacts", {})
+            self.assertNotIn("report_path", artifacts)
+            self.assertNotIn("report_sha256", artifacts)
+            self.assertNotIn("report_bytes", artifacts)
 
     def test_kickoff_swallows_error_reporter_failure_and_does_not_append_raw_error(self):
         module = _main_module()
@@ -1351,7 +1423,7 @@ class MainEntrypointTests(unittest.TestCase):
                 with result_path.open(encoding="utf-8") as result_file:
                     saved_result = json.load(result_file)
                 self.assertEqual(saved_result["status"], "ok")
-                self.assertEqual(saved_result["report"], "offline")
+                self.assertEqual(saved_result["report"], "offline\n")
             finally:
                 os.chdir(original_cwd)
 

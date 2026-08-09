@@ -1,16 +1,57 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 
+_TEST_FLOW_STORAGE = tempfile.TemporaryDirectory(prefix="stockcrewai-run-output-")
+os.environ.setdefault("CREWAI_STORAGE_DIR", _TEST_FLOW_STORAGE.name)
+
+
 class RunAndSaveOutputTests(unittest.TestCase):
+    def test_finalize_persists_one_authoritative_report(self):
+        from stockcrewai.run_output import CompactRunReporter
+
+        report = "# 正式报告\n\n- 风险一\n- 风险二\n\n"
+        result = {"status": "ok", "stage": "report", "report": report}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "run-output.md"
+            result_path = Path(temp_dir) / "run-result.json"
+            reporter = CompactRunReporter(io.StringIO())
+            reporter.finalize(
+                result=result,
+                output_path=output_path,
+                result_path=result_path,
+                started_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+                finished_at=datetime(2026, 8, 9, 0, 1, tzinfo=timezone.utc),
+                exit_code=0,
+            )
+
+            persisted = json.loads(result_path.read_text(encoding="utf-8"))
+            exported = output_path.with_name("investment-report.md").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(exported, persisted["report"])
+        self.assertEqual(
+            persisted["artifacts"]["report_path"], "investment-report.md"
+        )
+        self.assertEqual(
+            persisted["artifacts"]["report_sha256"],
+            hashlib.sha256(exported.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(
+            persisted["artifacts"]["report_bytes"], len(exported.encode("utf-8"))
+        )
+
     def test_successful_run_output_names_report_without_including_body(self):
         from stockcrewai.main import cli
 

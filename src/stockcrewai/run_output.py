@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import re
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -554,17 +557,58 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
-def _write_formal_report(result: Mapping[str, Any], output_path: Path) -> Path | None:
-    """只写出已经通过 Flow 最终校验的非空 Markdown 报告。"""
+def _normalized_report(report: str) -> str:
+    """统一正式报告为恰好一个末尾换行符。"""
+
+    return report.rstrip("\r\n") + "\n"
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """在目标目录使用唯一临时文件原子替换文本文件。"""
+
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    fd_open = True
+    try:
+        with os.fdopen(temporary_fd, "w", encoding="utf-8") as temporary_file:
+            fd_open = False
+            temporary_file.write(text)
+        os.replace(temporary_path, path)
+    except BaseException:
+        if fd_open:
+            try:
+                os.close(temporary_fd)
+            except OSError:
+                pass
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _formal_report_text(result: Mapping[str, Any]) -> str | None:
+    """返回符合正式报告条件的规范化文本，否则返回 ``None``。"""
 
     if result.get("status") != "ok" or result.get("stage") != "report":
         return None
     report = result.get("report")
     if not isinstance(report, str) or not report.strip():
         return None
+    return _normalized_report(report)
+
+
+def _write_formal_report(result: Mapping[str, Any], output_path: Path) -> Path | None:
+    """只写出已经通过 Flow 最终校验的非空 Markdown 报告。"""
+
+    report = _formal_report_text(result)
+    if report is None:
+        return None
 
     report_path = output_path.with_name("investment-report.md")
-    report_path.write_text(report.rstrip("\r\n") + "\n", encoding="utf-8")
+    _atomic_write_text(report_path, report)
     return report_path
 
 
@@ -871,40 +915,66 @@ class CompactRunReporter:
         """输出最终终端框并写入摘要 Markdown 与完整 JSON 结果。"""
 
         summary = summarize_result(result)
+        persisted_result = _json_ready(result)
+        if not isinstance(persisted_result, dict):
+            persisted_result = {"result": persisted_result}
         output_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            self._markdown(summary, result_path.name, started_at, finished_at, exit_code),
-            encoding="utf-8",
-        )
-        result_path.write_text(
-            json.dumps(_json_ready(result), ensure_ascii=False, indent=2, allow_nan=False)
-            + "\n",
-            encoding="utf-8",
-        )
+
         formal_report = None
         export_error = ""
-        try:
-            formal_report = _write_formal_report(result, output_path)
-        except Exception as exc:
-            export_error = type(exc).__name__
+        report_text = _formal_report_text(persisted_result)
+        artifacts = persisted_result.get("artifacts")
+        if isinstance(artifacts, dict):
+            for key in ("report_path", "report_sha256", "report_bytes"):
+                artifacts.pop(key, None)
+            if not artifacts:
+                persisted_result.pop("artifacts", None)
+        if report_text is not None:
+            persisted_result["report"] = report_text
+            try:
+                formal_report = _write_formal_report(persisted_result, output_path)
+            except Exception as exc:
+                export_error = type(exc).__name__
+            else:
+                report_bytes = report_text.encode("utf-8")
+                if formal_report is not None:
+                    manifest = (
+                        dict(persisted_result.get("artifacts", {}))
+                        if isinstance(persisted_result.get("artifacts"), dict)
+                        else {}
+                    )
+                    manifest.update(
+                        {
+                            "report_path": formal_report.name,
+                            "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+                            "report_bytes": len(report_bytes),
+                        }
+                    )
+                    persisted_result["artifacts"] = manifest
 
         report = summary.get("report")
         if isinstance(report, dict):
-            if formal_report is not None:
-                report["formal_report"] = formal_report.name
+            report_artifacts = persisted_result.get("artifacts")
+            report_path = (
+                report_artifacts.get("report_path")
+                if isinstance(report_artifacts, dict)
+                else None
+            )
+            if report_path:
+                report["formal_report"] = report_path
             elif export_error:
                 report["export_error"] = export_error
-        if formal_report is not None or export_error:
-            try:
-                output_path.write_text(
-                    self._markdown(
-                        summary, result_path.name, started_at, finished_at, exit_code
-                    ),
-                    encoding="utf-8",
-                )
-            except (Exception, SystemExit):
-                pass
+
+        _atomic_write_text(
+            result_path,
+            json.dumps(persisted_result, ensure_ascii=False, indent=2, allow_nan=False)
+            + "\n",
+        )
+        _atomic_write_text(
+            output_path,
+            self._markdown(summary, result_path.name, started_at, finished_at, exit_code),
+        )
         try:
             self._render_final(summary)
         except (Exception, SystemExit):
