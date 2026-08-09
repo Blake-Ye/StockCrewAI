@@ -183,7 +183,7 @@ git commit -m "fix: qualify complete SEC risk evidence"
 **Files:**
 - Modify: `src/stockcrewai/pipeline_support.py`
 - Modify: `src/stockcrewai/main.py`
-- Modify: `tests/test_analysis_gate.py`
+- Create: `tests/test_analysis_gate.py`
 - Modify: `tests/test_main_flow.py`
 
 **Interfaces:**
@@ -332,4 +332,3 @@ git commit -m "test: protect custom report output paths"
 每家公司使用独立 `/private/tmp/stockcrewai-multi-company-acceptance/<ticker>` 输出目录，顺序运行以降低 SEC/Yahoo 限流。每轮检查 `status=ok`、`stage=report`、Claim Gate READY、Verdict ready、`report_status=complete`、Markdown 与 JSON report 相等、manifest 哈希/bytes 正确，并确认 ticker、价格来源和 SEC Evidence 不串写。
 
 外部 SEC、Yahoo 或 DeepSeek 不可用时，记录明确的外部错误和未完成验收状态；不得因此放宽 Gate 或宣称代码回归通过。
-
