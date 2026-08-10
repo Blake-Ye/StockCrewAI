@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,6 +62,7 @@ from stockcrewai.pipeline_support import (
     sync_validation_status,
 )
 from stockcrewai.run_output import RunStageEvent, sanitize_text
+from stockcrewai.models.evidence import EvidenceRecord, MarketPriceRecord
 from stockcrewai.models.policy import PolicyDecision
 from stockcrewai.models.profile import ProfileResult
 from stockcrewai.services.evidence_store import EvidenceStore
@@ -258,6 +259,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
         "quant_packet",
         "market_price_data",
         "progress_callback",
+        "reit_profile_input",
+        "reit_evidence_records",
+        "reit_market_price_records",
     )
 
     _edgar_tool: Any = PrivateAttr(default=None)
@@ -273,6 +277,13 @@ class ResearchFlow(Flow[ResearchFlowState]):
     _report_crew: Any = PrivateAttr(default=None)
     _quant_packet: Any = PrivateAttr(default=None)
     _market_price_data: Any = PrivateAttr(default=None)
+    _reit_profile_input: Mapping[str, Any] | None = PrivateAttr(default=None)
+    _reit_evidence_records: tuple[EvidenceRecord, ...] = PrivateAttr(
+        default_factory=tuple
+    )
+    _reit_market_price_records: tuple[MarketPriceRecord, ...] = PrivateAttr(
+        default_factory=tuple
+    )
 
     _parser_result: Any = PrivateAttr(default=None)
     _parser_failed: bool = PrivateAttr(default=False)
@@ -310,6 +321,16 @@ class ResearchFlow(Flow[ResearchFlowState]):
         dependencies = {
             name: data.pop(name, None) for name in self._DEPENDENCY_NAMES
         }
+        reit_profile_input = dependencies["reit_profile_input"]
+        dependencies["reit_profile_input"] = (
+            dict(reit_profile_input) if isinstance(reit_profile_input, Mapping) else None
+        )
+        dependencies["reit_evidence_records"] = self._validated_reit_records(
+            dependencies["reit_evidence_records"], EvidenceRecord
+        )
+        dependencies["reit_market_price_records"] = self._validated_reit_records(
+            dependencies["reit_market_price_records"], MarketPriceRecord
+        )
         super().__init__(**data)
         for name, dependency in dependencies.items():
             setattr(self, f"_{name}", dependency)
@@ -320,6 +341,134 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 run_id=str(self.state.id)
             )
             self._runtime_metrics_stage_started_at = time.monotonic()
+
+    @staticmethod
+    def _validated_reit_records(value: Any, record_type: Any) -> tuple[Any, ...]:
+        if not isinstance(value, Sequence) or isinstance(
+            value, (str, bytes, bytearray)
+        ):
+            return ()
+        records: list[Any] = []
+        for item in value:
+            try:
+                records.append(record_type.model_validate(item))
+            except (TypeError, ValueError, ValidationError):
+                continue
+        return tuple(records)
+
+    def _is_reit_profile(self) -> bool:
+        candidates = (
+            self.state.profile,
+            self.state.policy_context.get("profile"),
+            self._pipeline_state.get("profile"),
+            self._reit_profile_input,
+        )
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            issuer_profile = candidate.get(
+                "issuer_profile", candidate.get("issuer_type")
+            )
+            issuer_profile = getattr(issuer_profile, "value", issuer_profile)
+            if str(issuer_profile).strip().casefold() == "reit":
+                return True
+        return False
+
+    @staticmethod
+    def _market_price_record_from_data(
+        market_price_data: Any,
+    ) -> tuple[MarketPriceRecord, ...]:
+        payload = _json_safe(market_price_data)
+        if not isinstance(payload, Mapping):
+            return ()
+        status = payload.get("status")
+        ticker = payload.get("ticker")
+        price = payload.get("market_price", payload.get("price"))
+        price_timestamp = payload.get("price_timestamp")
+        currency = payload.get("currency")
+        source_reference = payload.get("source_reference")
+        if (
+            not status
+            or str(status).strip().casefold() != "ok"
+            or any(
+                value in (None, "")
+                for value in (
+                    ticker,
+                    price,
+                    price_timestamp,
+                    currency,
+                    source_reference,
+                )
+            )
+        ):
+            return ()
+        evidence_id = _market_price_evidence_id(
+            str(ticker).strip().upper(),
+            str(price),
+            str(price_timestamp),
+            str(currency),
+            str(source_reference),
+        )
+        if not evidence_id:
+            return ()
+        try:
+            record = MarketPriceRecord.model_validate(
+                {
+                    "evidence_id": evidence_id,
+                    "ticker": ticker,
+                    "price": price,
+                    "currency": currency,
+                    "price_timestamp": price_timestamp,
+                    "source_reference": source_reference,
+                    "adjustment_basis": "raw",
+                    "validation_status": "valid",
+                }
+            )
+        except (TypeError, ValueError, ValidationError):
+            return ()
+        return (record,)
+
+    def _refresh_reit_policy_context(self, market_price_data: Any) -> None:
+        if not self._is_reit_profile():
+            return
+        market_price_records = self._reit_market_price_records
+        if not market_price_records:
+            market_price_records = self._market_price_record_from_data(
+                market_price_data
+            )
+            self._reit_market_price_records = market_price_records
+        profile = (
+            self._reit_profile_input
+            if isinstance(self._reit_profile_input, Mapping)
+            and self._reit_profile_input
+            else self.state.profile
+        )
+        policy_context = pipeline_support.build_profile_policy_context(
+            profile=profile,
+            facts=self._pipeline_state.get("facts", {}),
+            calculations=self._pipeline_state.get("calculations", []),
+            evidence_records=self._reit_evidence_records,
+            market_price_records=market_price_records,
+        )
+        policy_context = _json_safe(policy_context)
+        if not isinstance(policy_context, dict):
+            raise TypeError("profile policy context 必须是 JSON-safe 映射")
+        current_context = self.state.policy_context
+        policy_context["policy_activation"] = (
+            current_context.get("policy_activation")
+            if isinstance(current_context, Mapping)
+            else None
+        ) or (
+            "explicit_profile"
+            if isinstance(self._reit_profile_input, Mapping)
+            else "sec_metadata"
+        )
+        self.state.profile = _json_safe(
+            policy_context.get("profile", self.state.profile)
+        )
+        self.state.policy_context = policy_context
+        self._pipeline_state["profile"] = self.state.profile
+        self._pipeline_state["policy_context"] = policy_context
 
     def _build_analysis_evidence_store(self) -> EvidenceStore:
         """为当前 Flow run 构造不进入 state 的只读 EvidenceStore。"""
@@ -790,10 +939,15 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self._validation_result = validation_result
         self._pipeline_state = _json_safe(pipeline_state)
         profile_payload = _json_safe(self.state.profile)
-        explicit_profile = (
+        state_profile = (
             profile_payload
             if isinstance(profile_payload, Mapping) and profile_payload
             else None
+        )
+        explicit_profile = (
+            self._reit_profile_input
+            if isinstance(self._reit_profile_input, Mapping)
+            else state_profile
         )
         profile_metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
         policy_context = pipeline_support.build_profile_policy_context(
@@ -801,6 +955,8 @@ class ResearchFlow(Flow[ResearchFlowState]):
             source_metadata=profile_metadata,
             facts=self._pipeline_state.get("facts", {}),
             calculations=self._pipeline_state.get("calculations", []),
+            evidence_records=self._reit_evidence_records,
+            market_price_records=self._reit_market_price_records,
         )
         policy_context = _json_safe(policy_context)
         if not isinstance(policy_context, dict):
@@ -1028,6 +1184,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self.state.historical_valuation = historical_valuation
         self.state.reverse_dcf = reverse_dcf
         self.state.stage = "analysis"
+        self._refresh_reit_policy_context(self._market_price_data)
         snapshot = self._stage_snapshot()
         self._emit_stage(
             RunStageEvent(
@@ -1575,7 +1732,20 @@ class ResearchFlow(Flow[ResearchFlowState]):
             }.items()
             if value is not None
         }
-        source_metadata["market_price"] = market_price_metadata
+        if self._is_reit_profile():
+            source_metadata["facts"].update(
+                {
+                    record.evidence_id: record.model_dump(mode="json")
+                    for record in self._reit_evidence_records
+                }
+            )
+            source_metadata["market_price"] = (
+                self._reit_market_price_records[0].model_dump(mode="json")
+                if self._reit_market_price_records
+                else {}
+            )
+        else:
+            source_metadata["market_price"] = market_price_metadata
         source_metadata["historical_prices"] = [
             {
                 key: value
