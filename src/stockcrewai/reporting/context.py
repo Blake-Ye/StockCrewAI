@@ -91,7 +91,9 @@ _REIT_FORMULA_TO_METRIC = {
     "reit-dividend-coverage-v1": "dividend_coverage",
     "reit-price-to-ffo-v1": "price_to_ffo",
 }
-_PROFILE_ISSUERS = frozenset({"bank", "insurance", "utility", "commodity_producer"})
+_PROFILE_ISSUERS = frozenset(
+    {"bank", "insurance", "utility", "commodity_producer", "holding_company"}
+)
 _FOREIGN_REPORTING_PROFILE = "foreign_private_issuer_ifrs"
 _FOREIGN_ADR_FORMULA_IDS = frozenset(
     {
@@ -722,6 +724,7 @@ def build_report_context(
     is_reit_profile = (
         profile_issuer == "reit"
     )
+    is_holding_profile = profile_issuer == "holding_company"
     is_financial_profile = (
         profile_issuer in _PROFILE_ISSUERS
         or profile_reporting == _FOREIGN_REPORTING_PROFILE
@@ -847,7 +850,9 @@ def build_report_context(
                 metrics.append(metric)
 
     valuation_calculations = (
-        [] if is_reit_profile else _calculation_items(valuation_payload)
+        []
+        if is_reit_profile or is_holding_profile
+        else _calculation_items(valuation_payload)
     )
     applicable_valuation_calculations = [
         calculation
@@ -868,7 +873,10 @@ def build_report_context(
             for item in applicable_valuation_calculations
         )
     )
-    if valuation_ready or (not_applicable_metrics and valuation_base_ready):
+    if (
+        not is_holding_profile
+        and (valuation_ready or (not_applicable_metrics and valuation_base_ready))
+    ):
         market_metric = _metric_from_payload(
             section="current_valuation",
             metric_id="market_price",
@@ -999,12 +1007,15 @@ def build_report_context(
 
     profile_metrics_payload: dict[str, Any] | None = None
     if is_financial_profile:
+        profile_metrics_profile_version = (
+            policy_profile.get("profile_version")
+            if isinstance(policy_profile, Mapping)
+            else None
+        )
+        if is_holding_profile and not _text(profile_metrics_profile_version):
+            profile_metrics_profile_version = policy_payload.get("profile_version")
         profile_metrics_payload = {
-            "profile_version": _json_safe_context(
-                policy_profile.get("profile_version")
-                if isinstance(policy_profile, Mapping)
-                else None
-            ),
+            "profile_version": _json_safe_context(profile_metrics_profile_version),
             "policy_version": _json_safe_context(policy_payload.get("policy_version")),
             "metric_ids": [
                 decision.get("metric_id")

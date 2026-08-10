@@ -42,6 +42,10 @@ _REPORT_METRIC_LABELS = {
     "debt_to_equity": "债务权益比",
     "share_dilution": "股份稀释率",
     "market_capitalization": "市值",
+    "attributable_holdings_value": "归属持仓价值",
+    "holding_company_nav": "控股公司 NAV（净资产价值）",
+    "holding_company_market_cap": "控股公司市值",
+    "holding_company_nav_discount": "NAV 折价/溢价",
     "adr_ratio": "ADR 换普通股比例",
     "adr_equivalent_shares": "ADR 等价股数",
     "adr_market_cap": "ADR 等价市值",
@@ -87,6 +91,8 @@ _REPORT_METRIC_LABELS = {
     "historical_pe_percentile_25": "历史 P/E 二十五分位",
     "historical_pe_percentile_75": "历史 P/E 七十五分位",
     "historical_percentile": "当前历史百分位",
+    "historical_valuation": "历史估值",
+    "reverse_dcf": "反向 DCF",
     "reverse_dcf_implied_growth": "反向 DCF 隐含增长",
 }
 _REPORT_PERCENT_METRIC_IDS = frozenset(
@@ -135,6 +141,17 @@ _COMMODITY_METRIC_IDS = frozenset(
 )
 _FOREIGN_METRIC_IDS = frozenset(
     {"adr_ratio", "adr_equivalent_shares", "adr_market_cap"}
+)
+_HOLDING_METRIC_IDS = frozenset(
+    {
+        "attributable_holdings_value",
+        "holding_company_nav",
+        "holding_company_market_cap",
+        "holding_company_nav_discount",
+    }
+)
+_HOLDING_NOT_APPLICABLE_METRIC_IDS = frozenset(
+    {"pe_ratio", "fcf_yield", "historical_valuation", "reverse_dcf"}
 )
 _REIT_METRIC_LABELS = {
     "ffo_total": "FFO 总额",
@@ -609,6 +626,7 @@ def _profile_metrics_markdown(
         "utility",
         "commodity_producer",
         "foreign_private_issuer_ifrs",
+        "holding_company",
     } or not isinstance(payload, Mapping):
         return ""
     metric_ids = payload.get("metric_ids", [])
@@ -618,6 +636,9 @@ def _profile_metrics_markdown(
         metric_ids = [metric_id for metric_id in metric_ids if metric_id in _COMMODITY_METRIC_IDS]
     if profile == "foreign_private_issuer_ifrs":
         metric_ids = [metric_id for metric_id in metric_ids if metric_id in _FOREIGN_METRIC_IDS]
+    if profile == "holding_company":
+        allowed_metric_ids = _HOLDING_METRIC_IDS | _HOLDING_NOT_APPLICABLE_METRIC_IDS
+        metric_ids = [metric_id for metric_id in metric_ids if metric_id in allowed_metric_ids]
     metric_map = {
         metric.get("metric_id"): metric
         for metric in metrics
@@ -630,6 +651,7 @@ def _profile_metrics_markdown(
         "utility": "### 公用事业专用指标",
         "commodity_producer": "### 商品生产商专用指标",
         "foreign_private_issuer_ifrs": "### 外国发行人/ADR 指标",
+        "holding_company": "### 控股公司专用指标",
     }[profile]
     lines = [heading]
     if profile == "foreign_private_issuer_ifrs":
@@ -666,12 +688,15 @@ def _profile_metrics_markdown(
         reason = _text(decision.get("reason_code")) or "reason_code_missing"
         label = _REPORT_METRIC_LABELS.get(metric_id, metric_id)
         if status == "not_applicable" and metric_id == "fcf_yield":
-            explanation = (
-                "银行不计算普通企业 FCF Yield。"
-                if profile == "bank"
-                else "保险不计算普通企业 FCF Yield。"
-            )
-            lines.append(f"- FCF Yield：not_applicable（{reason}）；{explanation}")
+            explanation = {
+                "bank": "银行不计算普通企业 FCF Yield。",
+                "insurance": "保险不计算普通企业 FCF Yield。",
+                "holding_company": "控股公司不计算普通企业 FCF Yield。",
+            }.get(profile)
+            if explanation:
+                lines.append(f"- FCF Yield：not_applicable（{reason}）；{explanation}")
+            else:
+                lines.append(f"- {label}：{status}（{reason}）")
         else:
             lines.append(f"- {label}：{status}（{reason}）")
     return "\n".join(lines)
