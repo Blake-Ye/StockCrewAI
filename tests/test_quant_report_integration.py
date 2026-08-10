@@ -169,6 +169,19 @@ def test_quant_packet_rendering_uses_fixture_literals(
         assert fragment in quant_section
 
 
+def test_quant_packet_rendering_embeds_exactly_three_quant_png_data_uris(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    context = build_report_context(**_context_inputs(), quant_packet=quant_packet)
+    report = render_validated_report(
+        report_context=context,
+        report_draft=build_deterministic_report_draft(),
+    )
+
+    quant_section = _quant_section(report)
+    assert quant_section.count("data:image/png;base64,") == 3
+
+
 @pytest.mark.parametrize(
     "forged_narrative",
     ("量化旁证为99%。", "伪造 strategy CAGR 为99.99%。"),
@@ -228,6 +241,26 @@ def test_explicit_missing_quant_packet_is_unavailable_without_fake_values() -> N
     assert BACKTEST_ARTIFACT_ID not in quant_section
     assert "artifact_ids=[]" not in quant_section
     assert "artifact_ids：[]" not in quant_section
+
+
+@pytest.mark.parametrize("quant_mode", ("explicit_missing", "omitted"))
+def test_missing_or_omitted_quant_has_no_quant_png_data_uris(
+    quant_mode: str,
+) -> None:
+    if quant_mode == "explicit_missing":
+        context = build_report_context(**_context_inputs(), quant_packet=None)
+    else:
+        context = build_report_context(**_context_inputs())
+
+    report = render_validated_report(
+        report_context=context,
+        report_draft=build_deterministic_report_draft(),
+    )
+
+    if quant_mode == "explicit_missing":
+        assert "data:image/png;base64," not in _quant_section(report)
+    else:
+        assert "## 量化旁证" not in report
 
 
 def test_partial_quant_packet_keeps_unavailable_cagr_state_without_zero_fill(

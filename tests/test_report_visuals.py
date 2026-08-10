@@ -1,9 +1,11 @@
 import base64
+from copy import deepcopy
 from datetime import date, timedelta
 import importlib
 from io import BytesIO
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -73,6 +75,62 @@ def _historical_payload():
     }
 
 
+_LEGACY_VISUAL_KEYS = {"financial_kpis", "ttm_scale", "historical_pe"}
+_QUANT_VISUAL_KEYS = {
+    "quant_factor_percentile",
+    "quant_cagr_comparison",
+    "quant_drawdown_comparison",
+}
+_PNG_PREFIX = "data:image/png;base64,"
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _quant_packet(
+    *,
+    percentile="0.8889",
+    strategy_cagr="0.1234",
+    spy_cagr="0.0800",
+    universe_cagr="0.1000",
+    strategy_drawdown="-0.2100",
+    spy_drawdown="-0.1800",
+    universe_drawdown="-0.2000",
+    target_ticker="AAPL",
+    peer_group="standard_operating:technology",
+):
+    return {
+        "ranking_summary": {
+            "target_ticker": target_ticker,
+            "peer_group": peer_group,
+            "industry_percentile": percentile,
+        },
+        "backtest_summary": {
+            "strategy_cagr": strategy_cagr,
+            "strategy_cagr_status": "available",
+            "strategy_max_drawdown": strategy_drawdown,
+            "strategy_max_drawdown_status": "available",
+        },
+        "benchmark_summary": {
+            "spy_cagr": spy_cagr,
+            "universe_cagr": universe_cagr,
+            "spy_max_drawdown": spy_drawdown,
+            "universe_max_drawdown": universe_drawdown,
+        },
+    }
+
+
+def _available_quant_context(**packet_kwargs):
+    return {
+        "metrics": _financial_metrics(),
+        "ttm": _ttm_metrics(),
+        "historical_valuation": _historical_payload(),
+        "quant": {
+            "status": "available",
+            "reason_code": "quant_packet_validated",
+            "packet": _quant_packet(**packet_kwargs),
+        },
+    }
+
+
 class ReportVisualsTests(unittest.TestCase):
     def _builder(self):
         try:
@@ -105,7 +163,7 @@ class ReportVisualsTests(unittest.TestCase):
         }
         rendered = {}
 
-        def inspect_png_uri(draw, *, size):
+        def inspect_png_uri(draw, *, size, **kwargs):
             figure, axes = module.plt.subplots(figsize=size, dpi=120)
             try:
                 draw(axes)
@@ -306,6 +364,250 @@ class ReportVisualsTests(unittest.TestCase):
                 historical_payload=_historical_payload(),
             ),
         )
+
+    def _assert_png_uris(self, visuals):
+        for key, uri in visuals.items():
+            with self.subTest(key=key):
+                self.assertTrue(uri.startswith(_PNG_PREFIX))
+                encoded = uri.split(",", 1)[1]
+                payload = base64.b64decode(encoded, validate=True)
+                self.assertTrue(payload.startswith(_PNG_SIGNATURE))
+                with Image.open(BytesIO(payload)) as image:
+                    image.load()
+                    self.assertGreaterEqual(image.width, 720)
+                    self.assertGreaterEqual(image.height, 360)
+                    ratio = image.width / image.height
+                    self.assertGreaterEqual(ratio, 1.2)
+                    self.assertLessEqual(ratio, 3.5)
+
+    def test_available_quant_adds_three_pngs_without_changing_legacy_uris(self):
+        builder = self._builder()
+        baseline = builder(
+            financial_metrics=_financial_metrics(),
+            ttm_metrics=_ttm_metrics(),
+            historical_payload=_historical_payload(),
+        )
+        visuals = builder(context=_available_quant_context())
+
+        self.assertEqual(set(baseline), _LEGACY_VISUAL_KEYS)
+        self.assertEqual(set(visuals), _LEGACY_VISUAL_KEYS | _QUANT_VISUAL_KEYS)
+        for key in _LEGACY_VISUAL_KEYS:
+            self.assertEqual(visuals[key], baseline[key])
+        self._assert_png_uris(visuals)
+
+    def test_unavailable_quant_inputs_preserve_legacy_visuals_without_zero_fill(self):
+        builder = self._builder()
+        baseline = builder(
+            financial_metrics=_financial_metrics(),
+            ttm_metrics=_ttm_metrics(),
+            historical_payload=_historical_payload(),
+        )
+        available_context = _available_quant_context()
+        contexts = {
+            "no_quant": {
+                key: value
+                for key, value in available_context.items()
+                if key != "quant"
+            },
+            "unavailable_status": {
+                **deepcopy(available_context),
+                "quant": {
+                    "status": "unavailable",
+                    "reason_code": "quant_packet_unavailable",
+                    "packet": deepcopy(available_context["quant"]["packet"]),
+                },
+            },
+            "packet_none": {
+                **deepcopy(available_context),
+                "quant": {"status": "available", "packet": None},
+            },
+            "packet_non_mapping": {
+                **deepcopy(available_context),
+                "quant": {"status": "available", "packet": ["invalid"]},
+            },
+        }
+
+        for name, context in contexts.items():
+            with self.subTest(name=name):
+                self.assertEqual(builder(context=context), baseline)
+
+        missing_metric_cases = (
+            ("quant_factor_percentile", ("ranking_summary", "industry_percentile")),
+            ("quant_cagr_comparison", ("backtest_summary", "strategy_cagr")),
+            (
+                "quant_drawdown_comparison",
+                ("backtest_summary", "strategy_max_drawdown"),
+            ),
+        )
+        for chart_key, (section, field) in missing_metric_cases:
+            context = _available_quant_context()
+            context["quant"]["packet"][section][field] = None
+            visuals = builder(context=context)
+            with self.subTest(chart_key=chart_key):
+                self.assertNotIn(chart_key, visuals)
+                self.assertEqual(
+                    set(visuals),
+                    _LEGACY_VISUAL_KEYS | (_QUANT_VISUAL_KEYS - {chart_key}),
+                )
+
+    def test_quant_png_output_dir_is_scoped_and_embedded_uris_survive_cleanup(self):
+        builder = self._builder()
+        project_pngs_before = {
+            path.resolve() for path in Path.cwd().rglob("*.png")
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            output_dir = tmp_path / "charts"
+            visuals = builder(
+                context=_available_quant_context(),
+                output_dir=output_dir,
+            )
+
+            generated_pngs = {
+                path.resolve() for path in output_dir.rglob("*.png")
+            }
+            self.assertEqual(len(visuals), 6)
+            self.assertTrue(generated_pngs)
+            self.assertTrue(
+                all(
+                    path.is_relative_to(output_dir.resolve())
+                    for path in generated_pngs
+                )
+            )
+            for path in generated_pngs:
+                self.assertTrue(path.read_bytes().startswith(_PNG_SIGNATURE))
+                with Image.open(path) as image:
+                    image.load()
+                    self.assertGreaterEqual(image.width, 720)
+                    self.assertGreaterEqual(image.height, 360)
+            self.assertEqual(
+                {path.resolve() for path in Path.cwd().rglob("*.png")},
+                project_pngs_before,
+            )
+
+            shutil.rmtree(output_dir)
+            self.assertFalse(output_dir.exists())
+            self._assert_png_uris(visuals)
+
+    def test_extreme_quant_values_use_agg_and_keep_zero_data_and_padding(self):
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        builder = self._builder()
+        self.assertEqual(module.plt.get_backend().lower(), "agg")
+        captured = []
+
+        def inspect_png_uri(draw, *, size, **kwargs):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                captured.append((axes.get_xlim(), axes.get_ylim()))
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        for percentile in ("0", "1"):
+            captured.clear()
+            context = _available_quant_context(
+                percentile=percentile,
+                strategy_cagr="-0.99",
+                spy_cagr="2.5",
+                universe_cagr="0.1",
+                strategy_drawdown="-0.001",
+                spy_drawdown="-0.5",
+                universe_drawdown="-0.99",
+            )
+            with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
+                visuals = builder(context={"quant": context["quant"]})
+
+            with self.subTest(percentile=percentile):
+                self.assertEqual(set(visuals), _QUANT_VISUAL_KEYS)
+                self.assertEqual(len(captured), 3)
+                expected_values = (
+                    (0.0, 1.0),
+                    (-0.99, 2.5, 0.1),
+                    (-0.001, -0.5, -0.99),
+                )
+                for (xlim, ylim), values in zip(captured, expected_values):
+                    matching_ranges = []
+                    for bounds in (xlim, ylim):
+                        low, high = sorted(bounds)
+                        if low <= min(values) and high >= max(values):
+                            matching_ranges.append((low, high))
+                    self.assertEqual(len(matching_ranges), 1)
+                    low, high = matching_ranges[0]
+                    self.assertLess(low, min(values))
+                    self.assertGreater(high, max(values))
+                    self.assertLess(low, 0)
+                    self.assertGreater(high, 0)
+
+    def test_long_quant_labels_fit_figure_bbox(self):
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        builder = self._builder()
+        captured = []
+
+        def inspect_png_uri(draw, *, size, **kwargs):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                renderer = figure.canvas.get_renderer()
+                figure_bbox = figure.get_window_extent(renderer)
+                axes_bbox = axes.get_window_extent(renderer)
+                artists = [
+                    *axes.texts,
+                    *axes.get_xticklabels(),
+                    *axes.get_yticklabels(),
+                    axes.title,
+                    axes.xaxis.label,
+                    axes.yaxis.label,
+                ]
+                legend = axes.get_legend()
+                if legend is not None:
+                    artists.extend(legend.get_texts())
+                extents = [
+                    artist.get_window_extent(renderer)
+                    for artist in artists
+                    if artist.get_visible() and artist.get_text()
+                ]
+                captured.append(
+                    (
+                        figure_bbox,
+                        axes_bbox,
+                        extents,
+                        [artist.get_text() for artist in artists if artist.get_text()],
+                    )
+                )
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        target_ticker = "超长中文股票代码-TICKER-ABCDEFGHIJKLMN"
+        peer_group = "标准经营企业-科技行业-超长同行分组标签-2026"
+        context = _available_quant_context(
+            target_ticker=target_ticker,
+            peer_group=peer_group,
+        )
+        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
+            visuals = builder(context={"quant": context["quant"]})
+
+        self.assertEqual(set(visuals), _QUANT_VISUAL_KEYS)
+        self.assertEqual(len(captured), 3)
+        rendered_text = "\n".join(
+            text for _, _, _, texts in captured for text in texts
+        )
+        self.assertIn(target_ticker, rendered_text)
+        self.assertIn(peer_group, rendered_text)
+        for figure_bbox, axes_bbox, extents, _ in captured:
+            with self.subTest(figure_bbox=figure_bbox):
+                self.assertGreaterEqual(axes_bbox.x0, figure_bbox.x0)
+                self.assertLessEqual(axes_bbox.x1, figure_bbox.x1)
+                self.assertGreaterEqual(axes_bbox.y0, figure_bbox.y0)
+                self.assertLessEqual(axes_bbox.y1, figure_bbox.y1)
+                for extent in extents:
+                    self.assertGreaterEqual(extent.x0, figure_bbox.x0 - 2)
+                    self.assertLessEqual(extent.x1, figure_bbox.x1 + 2)
+                    self.assertGreaterEqual(extent.y0, figure_bbox.y0 - 2)
+                    self.assertLessEqual(extent.y1, figure_bbox.y1 + 2)
 
     def test_missing_input_omits_only_the_corresponding_chart(self):
         builder = self._builder()
