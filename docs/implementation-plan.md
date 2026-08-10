@@ -984,12 +984,15 @@ UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/
 - `src/stockcrewai/quant/factors.py`；
 - `src/stockcrewai/quant/normalization.py`；
 - `src/stockcrewai/quant/ranking.py`；
+- `src/stockcrewai/quant/pipeline.py`；
 - `docs/numeric-conventions.md`（仅量化审查代理更新公式版本）；
 - `tests/fixtures/quant/factors/`；
 - `tests/test_quant_factors.py`；
 - `tests/test_quant_normalization.py`；
 - `tests/fixtures/quant/ranking/`；
-- `tests/test_quant_ranking.py`。
+- `tests/test_quant_ranking.py`；
+- `tests/fixtures/quant/integration/`；
+- `tests/test_quant_pipeline.py`。
 
 **第一版因子：**
 
@@ -1025,7 +1028,7 @@ def normalize_cross_section(
 | `WP07-S03` | Luna Coder A | 实现 `quant/factors.py`；pandas 仅组织 snapshot，NumPy `float64` 仅用于统计值；保存 provenance | 重复 S02 | raw factor 与手算一致；Evidence/Calculation ID 完整 |
 | `WP07-S04` | Luna Coder B | 创建 normalization fixture/测试；实现固定分位 winsorize、z-score/percentile、peer_count | 极端值、常数列、小样本测试 RED→GREEN | 小样本 typed unavailable；无除零/NaN 泄漏 |
 | `WP07-S05` | Luna Coder C | 创建 `quant/ranking.py`、ranking fixture 和 `tests/test_quant_ranking.py`；实现版本化 composite score/ranking；同分处理规则固定；输入顺序性质测试用 Hypothesis | 打乱输入和并列分数测试 | 排名对输入顺序不敏感；同分 ticker secondary key 固定 |
-| `WP07-S06` | 集成 Luna Coder | 串联 Snapshot→FactorObservation→Normalization→Ranking，写稳定 JSON/Parquet artifact | 10 股票离线 fixture 集成测试 | artifact 包含 raw/normalized/peer/formula version/hash |
+| `WP07-S06` | 集成 Luna Coder | 创建 `quant/pipeline.py`、integration fixture 和 `tests/test_quant_pipeline.py`；串联 Snapshot→FactorObservation→Normalization→Ranking，写稳定 JSON artifact；复用已有 `QuantSnapshotStorage` 的 snapshot Parquet | 10 股票离线 fixture 集成测试 | artifact 包含 raw/normalized/peer/formula/normalization/composite version/hash |
 | `WP07-S07` | 父代理 + 审查代理 | 第二实现或手算复核全部公式，运行目标/完整门禁 | pytest、mypy quant、Ruff quant | 容差内 100% 一致；提交并展示 10 股票表后停止 |
 
 **目标命令：**
