@@ -10,8 +10,17 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from stockcrewai.flow import ResearchFlow, _allow_empty_foreign_valuation_claims
+from stockcrewai.flow import (
+    ResearchFlow,
+    _allow_empty_foreign_valuation_claims,
+    _holding_nav_policy_ready,
+)
 from stockcrewai.models.evidence import EvidenceRecord, MarketPriceRecord
+from stockcrewai.profiles.holding_company import (
+    HOLDING_COMPANY_METRIC_IDS,
+    POLICY_VERSION as HOLDING_COMPANY_POLICY_VERSION,
+    PROFILE_VERSION as HOLDING_COMPANY_PROFILE_VERSION,
+)
 from stockcrewai.tools.calculator_tool import CalculationBatch, CalculationResult
 from stockcrewai.tools.edgar_tool import (
     EdgarFact,
@@ -180,6 +189,53 @@ def _holding_flow() -> tuple[ResearchFlow, dict[str, Mock]]:
         "ttm_builder_tool": ttm_builder_tool,
         **ordinary_tools,
     }
+
+
+def _foreign_holding_flow() -> tuple[ResearchFlow, dict[str, Mock]]:
+    flow, tools = _holding_flow()
+    base_edgar_result = _offline_edgar_result()
+    foreign_fact = base_edgar_result.facts["net_income"].model_copy(
+        update={"form": "20-F", "taxonomy": "ifrs-full"}
+    )
+    foreign_filing = base_edgar_result.filings[0].model_copy(
+        update={
+            "form": "20-F",
+            "risk_sections": [
+                EdgarRiskSection(
+                    section_type="20f_item_3d",
+                    section_title="Item 3.D. Risk Factors",
+                    text="Synthetic foreign filing risk.",
+                    complete=True,
+                )
+            ],
+            "risk_eligibility": EdgarRiskEligibility(
+                evidence_id="ev_flow_filing",
+                eligibility="eligible",
+                evidence_kind="item_3d",
+                reason_code="eligible_20f_item_3d",
+                section_title="Item 3.D. Risk Factors",
+                filed_at="2026-02-20",
+                source_reference="fixture:holding-company/flow/20-f",
+            ),
+        }
+    )
+    tools["edgar_tool"].run.return_value = base_edgar_result.model_copy(
+        update={
+            "sec_reporting_profile": "foreign_private_issuer_ifrs",
+            "facts": {"net_income": foreign_fact},
+            "filings": [foreign_filing],
+        }
+    )
+    foreign_profile = dict(flow._profile_input)
+    foreign_profile.update(
+        {
+            "profile_version": "foreign-issuer-profile:v1",
+            "policy_version": "metric-policy:foreign-issuer:v1",
+            "reporting_profile": "foreign_private_issuer_ifrs",
+        }
+    )
+    flow._profile_input = foreign_profile
+    return flow, tools
 
 
 def _prepare_holding_flow() -> tuple[ResearchFlow, dict[str, Mock], dict[str, Any]]:
@@ -407,6 +463,13 @@ def test_holding_claim_gate_merges_policy_context_allowlist_ids() -> None:
     risk_evidence_id = "ev_holding_policy_risk"
     financial_calculation_id = "calc_holding_policy_financial"
     policy_context = _holding_nav_policy_context()
+    nav_decision = next(
+        item
+        for item in policy_context["policy_decisions"]
+        if item["metric_id"] == "holding_company_nav"
+    )
+    nav_decision["evidence_ids"] = [financial_evidence_id]
+    nav_decision["calculation_ids"] = [financial_calculation_id]
     policy_context["evidence_records"] = [
         {"evidence_id": financial_evidence_id, "validation_status": "valid"},
         {"evidence_id": risk_evidence_id, "validation_status": "valid"},
@@ -447,6 +510,63 @@ def test_holding_claim_gate_merges_policy_context_allowlist_ids() -> None:
     assert flow.state.analysis_diagnostics == {}
 
 
+def test_holding_claim_gate_rejects_valid_unreferenced_policy_record() -> None:
+    flow, _ = _holding_flow()
+    referenced_evidence_id = "ev_holding_policy_referenced"
+    unreferenced_evidence_id = "ev_holding_policy_unreferenced"
+    referenced_calculation_id = "calc_holding_policy_referenced"
+    unreferenced_calculation_id = "calc_holding_policy_unreferenced"
+    policy_context = _holding_nav_policy_context()
+    nav_decision = next(
+        item
+        for item in policy_context["policy_decisions"]
+        if item["metric_id"] == "holding_company_nav"
+    )
+    nav_decision["evidence_ids"] = [referenced_evidence_id]
+    nav_decision["calculation_ids"] = [referenced_calculation_id]
+    policy_context["evidence_records"] = [
+        {"evidence_id": referenced_evidence_id, "validation_status": "valid"},
+        {"evidence_id": unreferenced_evidence_id, "validation_status": "valid"},
+    ]
+    policy_context["calculation_records"] = [
+        {
+            "calculation_id": referenced_calculation_id,
+            "validation_status": "valid",
+        },
+        {
+            "calculation_id": unreferenced_calculation_id,
+            "validation_status": "valid",
+        },
+    ]
+    flow.state.policy_context = policy_context
+    holding_nav_payload = _holding_nav_payload()
+    flow.state.valuation = dict(holding_nav_payload)
+    flow.state.historical_valuation = dict(holding_nav_payload)
+    flow.state.reverse_dcf = dict(holding_nav_payload)
+    flow._analysis_inputs = {
+        "financial_analysis_input": {
+            "validated_evidence_ids": [],
+            "validated_calculation_ids": [],
+        }
+    }
+    flow._valuation_analysis_input = {
+        "validated_evidence_ids": [],
+        "validated_calculation_ids": [],
+    }
+    flow._risk_input = {"validated_filing_ids": ["ev_flow_filing"]}
+
+    route = flow.route_claims(
+        _claim_gate_analysis_result(
+            unreferenced_evidence_id,
+            unreferenced_calculation_id,
+            "ev_flow_filing",
+        )
+    )
+
+    assert route == "claims_blocked"
+    assert flow.state.required_data == ["analysis_output_invalid"]
+
+
 def test_foreign_standard_operating_evidence_only_does_not_merge_holding_allowlist() -> None:
     flow = _foreign_evidence_only_flow()
 
@@ -459,6 +579,57 @@ def test_foreign_standard_operating_evidence_only_does_not_merge_holding_allowli
     assert route == "claims_blocked"
     assert flow.state.required_data == ["analysis_output_invalid"]
     assert flow.state.analysis_diagnostics["reason_code"] == "evidence_ids_invalid"
+
+
+def test_foreign_ifrs_holding_flow_prioritizes_evidence_only_across_stages() -> None:
+    flow, _ = _foreign_holding_flow()
+    evidence_state = flow.prepare_evidence(
+        {"company_name_guess": "Synthetic Holding Company", "ticker_guess": "HOLD"}
+    )
+    valuation_state = flow.prepare_valuation(evidence_state)
+
+    assert flow.state.policy_context["profile"]["issuer_profile"] == "holding_company"
+    assert flow.state.policy_context["profile"]["reporting_profile"] == (
+        "foreign_private_issuer_ifrs"
+    )
+    assert valuation_state["reason_code"] == "foreign_currency_fx_not_implemented"
+    flow.state.policy_context["gate"] = {"status": "evidence_only"}
+
+    flow._analysis_inputs = {
+        "financial_analysis_input": {
+            "validated_evidence_ids": ["ev_flow_financial"],
+            "validated_calculation_ids": ["calc_flow_net_margin"],
+        }
+    }
+    flow._valuation_analysis_input = {
+        "validated_evidence_ids": [],
+        "validated_calculation_ids": ["calc_flow_net_margin"],
+    }
+    flow._risk_input = {"validated_filing_ids": ["ev_flow_filing"]}
+    assert (
+        flow.route_claims(
+            _claim_gate_analysis_result(
+                "ev_flow_financial", "calc_flow_net_margin", "ev_flow_filing"
+            )
+        )
+        == "claims_ready"
+    )
+
+    flow_module = __import__("stockcrewai.flow", fromlist=["ReportCrew"])
+    report_crew = Mock(name="report_crew")
+    report_crew.kickoff.return_value = SimpleNamespace(raw="ignored by patched parser")
+    report_factory = Mock(name="ReportCrew")
+    report_factory.return_value.crew.return_value = report_crew
+    with (
+        patch.object(flow_module, "ReportCrew", report_factory),
+        patch.object(flow_module, "parse_report_draft", return_value=object()),
+        patch.object(flow_module, "render_validated_report", return_value="# report"),
+        patch.object(flow_module, "validate_rendered_report", return_value=(True, "")),
+    ):
+        result = flow.generate_report()
+
+    assert result["verdict"]["summary_code"] == "FOREIGN_PROFILE_EVIDENCE_ONLY"
+    assert result["verdict"]["reasons"] == ["foreign_profile_evidence_only"]
 
 
 def test_holding_generate_report_uses_nav_only_verdict_and_report_context() -> None:
@@ -538,8 +709,20 @@ def _holding_nav_policy_context() -> dict[str, Any]:
             "issuer_profile": "holding_company",
             "reporting_profile": "domestic_us_gaap",
         },
+        "profile_version": HOLDING_COMPANY_PROFILE_VERSION,
+        "policy_version": HOLDING_COMPANY_POLICY_VERSION,
+        "profile_envelope": {
+            "status": "valid",
+            "reason_code": "typed_profile_envelope_valid",
+        },
         "policy_decisions": [
-            {"metric_id": "holding_company_nav", "status": "available"}
+            {
+                "metric_id": metric_id,
+                "status": "available"
+                if metric_id == "holding_company_nav"
+                else "not_applicable",
+            }
+            for metric_id in HOLDING_COMPANY_METRIC_IDS
         ],
         "gate": {"status": "ready"},
     }
@@ -558,6 +741,11 @@ def _holding_nav_payload() -> dict[str, str]:
     ("target", "field", "value"),
     [
         ("profile", "issuer_profile", "standard_operating"),
+        ("profile", "reporting_profile", "foreign_private_issuer_ifrs"),
+        ("context", "profile_version", "wrong-profile-version"),
+        ("context", "policy_version", "wrong-policy-version"),
+        ("envelope", "status", "unavailable"),
+        ("envelope", "reason_code", "typed_profile_envelope_required"),
         ("gate", "status", "evidence_only"),
         ("decision", "status", "unavailable"),
         ("valuation", "status", "available"),
@@ -591,10 +779,18 @@ def test_holding_empty_valuation_claims_requires_complete_contract(
     }
     if target == "profile":
         policy_context["profile"][field] = value
+    elif target == "context":
+        policy_context[field] = value
+    elif target == "envelope":
+        policy_context["profile_envelope"][field] = value
     elif target == "gate":
         policy_context["gate"][field] = value
     elif target == "decision":
-        policy_context["policy_decisions"][0][field] = value
+        next(
+            item
+            for item in policy_context["policy_decisions"]
+            if item["metric_id"] == "holding_company_nav"
+        )[field] = value
     else:
         payloads[target][field] = value
 
@@ -606,23 +802,46 @@ def test_holding_empty_valuation_claims_requires_complete_contract(
     )
 
 
+def test_incomplete_holding_policy_context_blocks_claim_route() -> None:
+    flow, _ = _holding_flow()
+    policy_context = _holding_nav_policy_context()
+    policy_context.pop("profile_envelope")
+    flow.state.policy_context = policy_context
+    holding_nav_payload = _holding_nav_payload()
+    flow.state.valuation = dict(holding_nav_payload)
+    flow.state.historical_valuation = dict(holding_nav_payload)
+    flow.state.reverse_dcf = dict(holding_nav_payload)
+    flow._analysis_inputs = {
+        "financial_analysis_input": {
+            "validated_evidence_ids": ["ev_flow_financial"],
+            "validated_calculation_ids": ["calc_flow_net_margin"],
+        }
+    }
+    flow._valuation_analysis_input = {
+        "validated_evidence_ids": [],
+        "validated_calculation_ids": ["calc_flow_net_margin"],
+    }
+    flow._risk_input = {"validated_filing_ids": ["ev_flow_filing"]}
+
+    assert not _holding_nav_policy_ready(
+        policy_context,
+        flow.state.valuation,
+        flow.state.historical_valuation,
+        flow.state.reverse_dcf,
+    )
+    assert (
+        flow.route_claims(
+            _claim_gate_analysis_result(
+                "ev_flow_financial", "calc_flow_net_margin", "ev_flow_filing"
+            )
+        )
+        == "claims_blocked"
+    )
+
+
 def test_ready_holding_nav_allows_empty_valuation_claims() -> None:
-    valuation = {
-        "status": "not_applicable",
-        "readiness": "not_applicable",
-        "validation_status": "unvalidated",
-        "reason_code": "holding_company_nav_primary_valuation",
-    }
-    policy_context = {
-        "profile": {
-            "issuer_profile": "holding_company",
-            "reporting_profile": "domestic_us_gaap",
-        },
-        "policy_decisions": [
-            {"metric_id": "holding_company_nav", "status": "available"}
-        ],
-        "gate": {"status": "ready"},
-    }
+    valuation = _holding_nav_payload()
+    policy_context = _holding_nav_policy_context()
 
     assert _allow_empty_foreign_valuation_claims(
         policy_context,

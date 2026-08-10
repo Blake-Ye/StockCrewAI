@@ -88,6 +88,26 @@ class DeterministicVerdictTool(BaseTool):
             profile.get("issuer_profile") if isinstance(profile, dict) else None
         )
         issuer_profile = getattr(issuer_profile, "value", issuer_profile)
+        reporting_profile = (
+            profile.get("reporting_profile") if isinstance(profile, dict) else None
+        )
+        reporting_profile = getattr(reporting_profile, "value", reporting_profile)
+        gate = policy_context.get("gate")
+        if (
+            str(reporting_profile).strip().casefold()
+            == "foreign_private_issuer_ifrs"
+            and isinstance(gate, dict)
+            and gate.get("status") == "evidence_only"
+        ):
+            return VerdictResult(
+                status="insufficient_data",
+                policy_defined=False,
+                is_investment_rating=False,
+                overall_rating="insufficient_data",
+                summary_code="FOREIGN_PROFILE_EVIDENCE_ONLY",
+                triggered_rules=["foreign_profile_evidence_only"],
+                reasons=["foreign_profile_evidence_only"],
+            )
         if str(issuer_profile).strip().casefold() == "holding_company":
             return VerdictResult(
                 status="insufficient_data",
@@ -103,7 +123,6 @@ class DeterministicVerdictTool(BaseTool):
                 reasons=["holding_company_nav_primary_valuation"],
             )
         reasons: list[str] = []
-        gate = policy_context.get("gate")
         if isinstance(gate, dict) and gate.get("status") == "evidence_only":
             return VerdictResult(
                 status="insufficient_data",

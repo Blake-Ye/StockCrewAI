@@ -11,6 +11,7 @@ from decimal import (
     InvalidOperation,
     Overflow,
     ROUND_HALF_EVEN,
+    Underflow,
     localcontext,
 )
 from typing import Literal
@@ -47,7 +48,7 @@ _FIXED_DECIMAL_CONTEXT = Context(
     rounding=ROUND_HALF_EVEN,
     Emax=_DECIMAL_CONTEXT_EMAX,
     Emin=_DECIMAL_CONTEXT_EMIN,
-    traps=[InvalidOperation, DivisionByZero, Overflow],
+    traps=[InvalidOperation, DivisionByZero, Overflow, Underflow],
 )
 _INVALID_REASONS = frozenset(
     {

@@ -65,6 +65,11 @@ from stockcrewai.run_output import RunStageEvent, sanitize_text
 from stockcrewai.models.evidence import EvidenceRecord, MarketPriceRecord
 from stockcrewai.models.policy import PolicyDecision
 from stockcrewai.models.profile import ProfileResult
+from stockcrewai.profiles.holding_company import (
+    HOLDING_COMPANY_METRIC_IDS,
+    POLICY_VERSION as HOLDING_COMPANY_POLICY_VERSION,
+    PROFILE_VERSION as HOLDING_COMPANY_PROFILE_VERSION,
+)
 from stockcrewai.services.evidence_store import EvidenceStore
 from stockcrewai.services.runtime_metrics import RuntimeMetricsCollector
 from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
@@ -112,15 +117,45 @@ def _holding_nav_policy_ready(
     issuer_profile = getattr(issuer_profile, "value", issuer_profile)
     if str(issuer_profile).strip().casefold() != "holding_company":
         return False
+    reporting_profile = (
+        profile.get("reporting_profile") if isinstance(profile, Mapping) else None
+    )
+    reporting_profile = getattr(reporting_profile, "value", reporting_profile)
+    if str(reporting_profile).strip().casefold() != "domestic_us_gaap":
+        return False
+    if (
+        policy_context.get("profile_version") != HOLDING_COMPANY_PROFILE_VERSION
+        or policy_context.get("policy_version") != HOLDING_COMPANY_POLICY_VERSION
+    ):
+        return False
+    profile_envelope = policy_context.get("profile_envelope")
+    if not isinstance(profile_envelope, Mapping) or (
+        profile_envelope.get("status") != "valid"
+        or profile_envelope.get("reason_code") != "typed_profile_envelope_valid"
+    ):
+        return False
     gate = policy_context.get("gate")
     if not isinstance(gate, Mapping) or gate.get("status") != "ready":
         return False
     policy_decisions = policy_context.get("policy_decisions")
-    if not isinstance(policy_decisions, list) or not any(
-        isinstance(decision, Mapping)
-        and decision.get("metric_id") == "holding_company_nav"
-        and decision.get("status") == "available"
+    if not isinstance(policy_decisions, list):
+        return False
+    decision_ids = [
+        decision.get("metric_id")
         for decision in policy_decisions
+        if isinstance(decision, Mapping)
+    ]
+    if (
+        len(decision_ids) != len(policy_decisions)
+        or not all(isinstance(metric_id, str) for metric_id in decision_ids)
+        or len(decision_ids) != len(set(decision_ids))
+        or set(decision_ids) != set(HOLDING_COMPANY_METRIC_IDS)
+        or not any(
+            isinstance(decision, Mapping)
+            and decision.get("metric_id") == "holding_company_nav"
+            and decision.get("status") == "available"
+            for decision in policy_decisions
+        )
     ):
         return False
     return all(
@@ -1324,38 +1359,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 is_foreign_ifrs = True
                 break
 
-        if is_holding_company:
-            unavailable_valuation = {
-                "status": "not_applicable",
-                "readiness": "not_applicable",
-                "validation_status": "unvalidated",
-                "reason_code": "holding_company_nav_primary_valuation",
-                "calculations": [],
-            }
-            self._trusted_valuation_evidence_ids = set()
-            self.state.market_price_data = _json_safe(self._market_price_data)
-            self.state.valuation = dict(unavailable_valuation)
-            self.state.historical_valuation = dict(unavailable_valuation)
-            self.state.reverse_dcf = dict(unavailable_valuation)
-            self.state.stage = "analysis"
-            self._refresh_profile_policy_context(self._market_price_data)
-            snapshot = self._stage_snapshot()
-            self._emit_stage(
-                RunStageEvent(
-                    step=3,
-                    title="市场价格与估值",
-                    actor="确定性工具：Market Price + Holding Company Profile",
-                    status="completed",
-                    input_summary=snapshot["identity"],
-                    output_summary=(
-                        f"price={snapshot['price']}; timestamp={snapshot['timestamp']}; "
-                        "holding-company valuation=not_applicable"
-                    ),
-                    next_step="Analysis Gate",
-                )
-            )
-            return dict(unavailable_valuation)
-
         if is_foreign_ifrs:
             reason_code = "foreign_currency_fx_not_implemented"
             unavailable_valuation = {
@@ -1383,6 +1386,38 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     output_summary=(
                         f"price={snapshot['price']}; timestamp={snapshot['timestamp']}; "
                         "foreign valuation=not_applicable"
+                    ),
+                    next_step="Analysis Gate",
+                )
+            )
+            return dict(unavailable_valuation)
+
+        if is_holding_company:
+            unavailable_valuation = {
+                "status": "not_applicable",
+                "readiness": "not_applicable",
+                "validation_status": "unvalidated",
+                "reason_code": "holding_company_nav_primary_valuation",
+                "calculations": [],
+            }
+            self._trusted_valuation_evidence_ids = set()
+            self.state.market_price_data = _json_safe(self._market_price_data)
+            self.state.valuation = dict(unavailable_valuation)
+            self.state.historical_valuation = dict(unavailable_valuation)
+            self.state.reverse_dcf = dict(unavailable_valuation)
+            self.state.stage = "analysis"
+            self._refresh_profile_policy_context(self._market_price_data)
+            snapshot = self._stage_snapshot()
+            self._emit_stage(
+                RunStageEvent(
+                    step=3,
+                    title="市场价格与估值",
+                    actor="确定性工具：Market Price + Holding Company Profile",
+                    status="completed",
+                    input_summary=snapshot["identity"],
+                    output_summary=(
+                        f"price={snapshot['price']}; timestamp={snapshot['timestamp']}; "
+                        "holding-company valuation=not_applicable"
                     ),
                     next_step="Analysis Gate",
                 )
@@ -1898,21 +1933,39 @@ class ResearchFlow(Flow[ResearchFlowState]):
             self.state.historical_valuation,
             self.state.reverse_dcf,
         ):
+            policy_evidence_ids = {
+                evidence_id
+                for decision in self.state.policy_context["policy_decisions"]
+                if isinstance(decision, Mapping)
+                and decision.get("status") == "available"
+                for evidence_id in decision.get("evidence_ids", [])
+                if isinstance(evidence_id, str)
+            }
+            policy_calculation_ids = {
+                calculation_id
+                for decision in self.state.policy_context["policy_decisions"]
+                if isinstance(decision, Mapping)
+                and decision.get("status") == "available"
+                for calculation_id in decision.get("calculation_ids", [])
+                if isinstance(calculation_id, str)
+            }
             profile_evidence_ids = [
-                record.get("evidence_id")
+                record["evidence_id"]
                 for record in self.state.policy_context.get("evidence_records", [])
                 if isinstance(record, Mapping)
                 and record.get("validation_status") == "valid"
                 and isinstance(record.get("evidence_id"), str)
+                and record["evidence_id"] in policy_evidence_ids
             ]
             profile_calculation_ids = [
-                record.get("calculation_id")
+                record["calculation_id"]
                 for record in self.state.policy_context.get(
                     "calculation_records", []
                 )
                 if isinstance(record, Mapping)
                 and record.get("validation_status") == "valid"
                 and isinstance(record.get("calculation_id"), str)
+                and record["calculation_id"] in policy_calculation_ids
             ]
             financial_evidence_ids = list(
                 dict.fromkeys([*financial_evidence_ids, *profile_evidence_ids])

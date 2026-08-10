@@ -537,6 +537,33 @@ def test_finite_extreme_nav_inputs_fail_closed_without_raising() -> None:
     )
 
 
+def test_nonzero_tiny_holding_component_fails_closed_without_provenance() -> None:
+    fixture = _load_fixture("complete")
+    tiny_evidence_ids = {"ev_holding_a_fair_value", "ev_holding_a_ownership"}
+    for item in fixture["evidence_records"]:
+        if item["evidence_id"] in tiny_evidence_ids:
+            item["value"] = "1e-999999"
+
+    values, decisions, calculations = _evaluate(fixture)
+    decisions_by_metric = _decisions_by_metric(decisions)
+
+    for metric_id in ("attributable_holdings_value", "holding_company_nav"):
+        assert values[metric_id] is None
+        _assert_unavailable_without_provenance(
+            decisions_by_metric[metric_id],
+            "holding_decimal_arithmetic_failed",
+        )
+    assert all(
+        calculation.formula_id
+        not in {
+            "holding-attributable-component-value-v1",
+            "holding-attributable-holdings-value-v1",
+            "holding-company-nav-v1",
+        }
+        for calculation in calculations
+    )
+
+
 def test_finite_extreme_market_cap_inputs_fail_closed_without_raising() -> None:
     fixture = _load_fixture("complete")
     extreme_value = "1e999999"
