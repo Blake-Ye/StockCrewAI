@@ -17,6 +17,7 @@ from stockcrewai.quant import statistics
 from stockcrewai.quant.portfolio import (
     BASELINE_ROUND_TRIP_COST_BPS,
     CASH,
+    COMPOSITE_SCORE_VERSION,
     ROUND_TRIP_COST_SENSITIVITY_BPS,
     build_target_portfolio,
     calculate_cost_and_net_return,
@@ -114,7 +115,7 @@ class SnapshotScore:
     score: Decimal
     filing_cutoff: datetime | None = None
     price_cutoff: datetime | None = None
-    score_version: str = "composite-ranking-v1"
+    score_version: str = COMPOSITE_SCORE_VERSION
 
     def __post_init__(self) -> None:
         snapshot_id = _nonempty(self.snapshot_id, "snapshot_id")
@@ -136,7 +137,10 @@ class SnapshotScore:
         object.__setattr__(self, "filing_cutoff", filing_cutoff)
         object.__setattr__(self, "price_cutoff", price_cutoff)
         object.__setattr__(self, "score", _finite_decimal(self.score, "score"))
-        object.__setattr__(self, "score_version", _nonempty(self.score_version, "score_version"))
+        score_version = _nonempty(self.score_version, "score_version")
+        if score_version != COMPOSITE_SCORE_VERSION:
+            raise ValueError(f"score_version must be {COMPOSITE_SCORE_VERSION}")
+        object.__setattr__(self, "score_version", score_version)
 
 
 @dataclass(frozen=True)
@@ -277,6 +281,8 @@ class BacktestPeriod:
     forward_returns: Mapping[str, Decimal]
     turnover: TypedValue
     cost: TypedValue
+    round_trip_cost_bps: Decimal
+    cost_return: TypedValue
     gross_return: TypedValue
     net_return: TypedValue
     spy_return: TypedValue
@@ -308,6 +314,9 @@ class BacktestPeriod:
         object.__setattr__(self, "target_weights", None if self.target_weights is None else _freeze_decimal_mapping(self.target_weights, "target_weights"))
         object.__setattr__(self, "scores", _freeze_decimal_mapping(self.scores, "scores"))
         object.__setattr__(self, "forward_returns", _freeze_decimal_mapping(self.forward_returns, "forward_returns"))
+        object.__setattr__(self, "round_trip_cost_bps", _finite_decimal(self.round_trip_cost_bps, "round_trip_cost_bps"))
+        if self.cost_return.status != self.cost.status or self.cost_return.value != self.cost.value:
+            raise ValueError("cost_return must match cost")
         object.__setattr__(self, "reason_code", _nonempty(self.reason_code, "reason_code"))
         object.__setattr__(self, "coverage", MappingProxyType(dict(sorted(self.coverage.items()))))
         object.__setattr__(self, "missing_return_ids", tuple(sorted(set(self.missing_return_ids))))
@@ -334,6 +343,8 @@ class BacktestPeriod:
             "forward_returns": _json_value(self.forward_returns),
             "turnover": self.turnover.to_dict(),
             "cost": self.cost.to_dict(),
+            "round_trip_cost_bps": str(self.round_trip_cost_bps),
+            "cost_return": self.cost_return.to_dict(),
             "gross_return": self.gross_return.to_dict(),
             "net_return": self.net_return.to_dict(),
             "spy_return": self.spy_return.to_dict(),
@@ -388,6 +399,7 @@ class BaselineSummary:
     excess_cagrs: Mapping[str, statistics.StatisticResult]
     aggregate_spearman_ic: statistics.StatisticResult
     quintile_returns: Mapping[str, tuple[statistics.StatisticResult, ...]]
+    quintile_aggregates: Mapping[str, Mapping[str, statistics.StatisticResult]]
     average_turnover: statistics.StatisticResult
     annualized_turnover: statistics.StatisticResult
     status: _STATUS
@@ -399,6 +411,16 @@ class BaselineSummary:
         object.__setattr__(self, "benchmarks", MappingProxyType({key: MappingProxyType(dict(sorted(value.items()))) for key, value in sorted(self.benchmarks.items())}))
         object.__setattr__(self, "excess_cagrs", MappingProxyType(dict(sorted(self.excess_cagrs.items()))))
         object.__setattr__(self, "quintile_returns", MappingProxyType({key: tuple(value) for key, value in sorted(self.quintile_returns.items())}))
+        object.__setattr__(
+            self,
+            "quintile_aggregates",
+            MappingProxyType(
+                {
+                    key: MappingProxyType(dict(sorted(value.items())))
+                    for key, value in sorted(self.quintile_aggregates.items())
+                }
+            ),
+        )
         if self.status not in {"available", "unavailable", "invalid"}:
             raise ValueError("invalid baseline status")
         object.__setattr__(self, "reason_code", _nonempty(self.reason_code, "reason_code"))
@@ -417,6 +439,13 @@ class BaselineSummary:
             "quintile_returns": {
                 key: [value.to_dict() for value in values]
                 for key, values in sorted(self.quintile_returns.items())
+            },
+            "quintile_aggregates": {
+                key: {
+                    name: value.to_dict()
+                    for name, value in sorted(metrics.items())
+                }
+                for key, metrics in sorted(self.quintile_aggregates.items())
             },
             "average_turnover": self.average_turnover.to_dict(),
             "annualized_turnover": self.annualized_turnover.to_dict(),
@@ -526,6 +555,8 @@ def _snapshot_groups(scores: Iterable[SnapshotScore], universe: tuple[str, ...])
             raise ValueError("snapshot_scores must contain SnapshotScore values")
         if record.ticker not in required:
             raise ValueError("snapshot score ticker is outside the fixed universe")
+        if record.score_version != COMPOSITE_SCORE_VERSION:
+            raise ValueError(f"score_version must be {COMPOSITE_SCORE_VERSION}")
         previous = metadata.get(record.snapshot_id)
         current = (record.as_of, record.filing_cutoff, record.price_cutoff, record.score_version)
         if previous is not None and previous != current:
@@ -550,9 +581,8 @@ def _snapshot_groups(scores: Iterable[SnapshotScore], universe: tuple[str, ...])
 def _select_snapshot(
     groups: Mapping[datetime, tuple[SnapshotScore, ...]], anchor: date
 ) -> tuple[datetime, tuple[SnapshotScore, ...]] | None:
-    # A session date is an anchor, not a timestamp.  Require a snapshot strictly
-    # before its midnight so a same-day record cannot be mistaken for prior data.
-    candidates = [as_of for as_of in groups if as_of < _midnight(anchor)]
+    # A session date is an anchor, so snapshots through its midnight are eligible.
+    candidates = [as_of for as_of in groups if as_of <= _midnight(anchor)]
     if not candidates:
         return None
     selected = max(candidates)
@@ -613,6 +643,27 @@ def _metric_stats(values: tuple[Decimal, ...]) -> dict[str, statistics.Statistic
         "annualized_volatility": statistics.annualized_volatility(values),
         "sharpe_ratio": statistics.sharpe_ratio(values),
         "max_drawdown": statistics.max_drawdown(values),
+    }
+
+
+def _quintile_aggregate(
+    values: tuple[statistics.StatisticResult, ...],
+) -> dict[str, statistics.StatisticResult]:
+    if not values:
+        unavailable = statistics.StatisticResult(None, "unavailable", "no_complete_periods")
+        return {"average_return": unavailable, "cagr": unavailable}
+    first_unavailable = next((item for item in values if item.status != "available"), None)
+    if first_unavailable is not None:
+        unavailable = statistics.StatisticResult(
+            None,
+            first_unavailable.status,
+            first_unavailable.reason_code,
+        )
+        return {"average_return": unavailable, "cagr": unavailable}
+    returns = _decimal_values(item.value for item in values)
+    return {
+        "average_return": statistics.average_turnover(returns),
+        "cagr": statistics.cagr(returns),
     }
 
 
@@ -686,6 +737,7 @@ def _baseline_summary(
         )
         for name in quintiles:
             quintiles[name].append(result[name])
+    quintile_returns = {name: tuple(values) for name, values in quintiles.items()}
     return BaselineSummary(
         net_cost_bps=BASELINE_ROUND_TRIP_COST_BPS,
         complete_period_count=len(complete),
@@ -693,7 +745,10 @@ def _baseline_summary(
         benchmarks=benchmarks,
         excess_cagrs=excess,
         aggregate_spearman_ic=aggregate_ic,
-        quintile_returns={name: tuple(values) for name, values in quintiles.items()},
+        quintile_returns=quintile_returns,
+        quintile_aggregates={
+            name: _quintile_aggregate(values) for name, values in quintile_returns.items()
+        },
         average_turnover=statistics.average_turnover(
             _decimal_values(item.turnover.value for item in complete)
         ),
@@ -824,7 +879,15 @@ def run_walk_forward(inputs: WalkForwardInput) -> WalkForwardResult:
                 complete_period = not missing and len(forward) == len(selected_tickers) and len(benchmark_returns) == 1 and len(universe_returns) == len(universe)
                 if complete_period:
                     forward = {**universe_returns, **benchmark_returns}
-                    gross_value = _mean(forward[ticker] for ticker in selected_tickers)
+                    with localcontext() as context:
+                        context.prec = 28
+                        gross_value = sum(
+                            (
+                                target_weights[ticker] * forward[ticker]
+                                for ticker in selected_tickers
+                            ),
+                            _ZERO,
+                        )
                     spy_value = forward[_SPY]
                     universe_value = _mean(forward[ticker] for ticker in universe)
                     cost_value, net_value = calculate_cost_and_net_return(gross_value, portfolio.turnover, BASELINE_ROUND_TRIP_COST_BPS)
@@ -837,14 +900,15 @@ def run_walk_forward(inputs: WalkForwardInput) -> WalkForwardResult:
                     reason = "complete_period"
                 else:
                     cost_value, _ = calculate_cost_and_net_return(_ZERO, portfolio.turnover, BASELINE_ROUND_TRIP_COST_BPS)
-                    gross = _unavailable("missing_return_data")
+                    gross = _unavailable("missing_next_period_return")
                     cost = TypedValue.available(cost_value)
-                    net = _unavailable("missing_return_data")
-                    spy = _unavailable("missing_return_data")
-                    universe_return = _unavailable("missing_return_data")
+                    net = _unavailable("missing_next_period_return")
+                    spy = _unavailable("missing_next_period_return")
+                    universe_return = _unavailable("missing_next_period_return")
                     status = "unavailable"
-                    reason = "missing_return_data"
+                    reason = "missing_next_period_return"
 
+        cost_return = cost
         period = BacktestPeriod(
             period_id=spec.period_id or "",
             rebalance_anchor=spec.rebalance_anchor,
@@ -861,6 +925,8 @@ def run_walk_forward(inputs: WalkForwardInput) -> WalkForwardResult:
             forward_returns=forward,
             turnover=turnover,
             cost=cost,
+            round_trip_cost_bps=BASELINE_ROUND_TRIP_COST_BPS,
+            cost_return=cost_return,
             gross_return=gross,
             net_return=net,
             spy_return=spy,
