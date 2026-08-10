@@ -40,7 +40,6 @@ _OPERATING_PROFILES = frozenset(
         IssuerProfile.STANDARD_OPERATING,
         IssuerProfile.UTILITY,
         IssuerProfile.COMMODITY_PRODUCER,
-        IssuerProfile.HOLDING_COMPANY,
     }
 )
 _PRICE_TO_BOOK_PROFILES = _OPERATING_PROFILES | frozenset(
@@ -49,7 +48,12 @@ _PRICE_TO_BOOK_PROFILES = _OPERATING_PROFILES | frozenset(
 _ROE_PROFILES = _PRICE_TO_BOOK_PROFILES
 _DEBT_TO_EQUITY_PROFILES = _OPERATING_PROFILES | frozenset({IssuerProfile.REIT})
 _MARKET_PROFILES = _OPERATING_PROFILES | frozenset(
-    {IssuerProfile.BANK, IssuerProfile.INSURANCE, IssuerProfile.REIT}
+    {
+        IssuerProfile.BANK,
+        IssuerProfile.INSURANCE,
+        IssuerProfile.REIT,
+        IssuerProfile.HOLDING_COMPANY,
+    }
 )
 
 _APPLICABLE_PROFILES: dict[str, frozenset[IssuerProfile]] = {

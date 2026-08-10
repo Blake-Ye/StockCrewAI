@@ -92,6 +92,7 @@ _RUNTIME_METRICS_STAGE_LABELS: dict[int, tuple[str, str, str]] = {
     7: ("research_flow", "report", "generate_report"),
 }
 _FOREIGN_FX_NOT_IMPLEMENTED_REASON = "foreign_currency_fx_not_implemented"
+_HOLDING_COMPANY_NAV_PRIMARY_REASON = "holding_company_nav_primary_valuation"
 
 
 def _allow_empty_foreign_valuation_claims(
@@ -100,26 +101,46 @@ def _allow_empty_foreign_valuation_claims(
     historical_valuation: Any,
     reverse_dcf: Any,
 ) -> bool:
-    """仅为明确 foreign evidence-only 的 FX 缺失估值跳过估值 Claim。"""
+    """仅为明确 foreign evidence-only 或完整 holding NAV 跳过估值 Claim。"""
     if not isinstance(policy_context, Mapping):
         return False
     profile = policy_context.get("profile")
+    issuer_profile = (
+        profile.get("issuer_profile", profile.get("issuer_type"))
+        if isinstance(profile, Mapping)
+        else None
+    )
+    issuer_profile = getattr(issuer_profile, "value", issuer_profile)
     reporting_profile = (
         profile.get("reporting_profile") if isinstance(profile, Mapping) else None
     )
     reporting_profile = getattr(reporting_profile, "value", reporting_profile)
     gate = policy_context.get("gate")
-    if (
-        str(reporting_profile).strip().casefold()
-        != "foreign_private_issuer_ifrs"
-        or not isinstance(gate, Mapping)
-        or gate.get("status") != "evidence_only"
+    if not isinstance(gate, Mapping):
+        return False
+    if str(issuer_profile).strip().casefold() == "holding_company":
+        if gate.get("status") != "ready":
+            return False
+        policy_decisions = policy_context.get("policy_decisions")
+        if not isinstance(policy_decisions, list) or not any(
+            isinstance(decision, Mapping)
+            and decision.get("metric_id") == "holding_company_nav"
+            and decision.get("status") == "available"
+            for decision in policy_decisions
+        ):
+            return False
+        expected_reason = _HOLDING_COMPANY_NAV_PRIMARY_REASON
+    elif (
+        str(reporting_profile).strip().casefold() == "foreign_private_issuer_ifrs"
+        and gate.get("status") == "evidence_only"
     ):
+        expected_reason = _FOREIGN_FX_NOT_IMPLEMENTED_REASON
+    else:
         return False
     return all(
         isinstance(result, Mapping)
         and result.get("status") == "not_applicable"
-        and result.get("reason_code") == _FOREIGN_FX_NOT_IMPLEMENTED_REASON
+        and result.get("reason_code") == expected_reason
         for result in (valuation, historical_valuation, reverse_dcf)
     )
 
@@ -537,6 +558,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             "insurance",
             "utility",
             "commodity_producer",
+            "holding_company",
             }
             and not is_foreign_ifrs
         ):
@@ -1261,9 +1283,14 @@ class ResearchFlow(Flow[ResearchFlowState]):
             self._profile_input,
         ]
         is_foreign_ifrs = False
+        is_holding_company = False
         for candidate in profile_candidates:
             if not isinstance(candidate, Mapping):
                 continue
+            issuer_profile = candidate.get("issuer_profile", candidate.get("issuer_type"))
+            issuer_profile = getattr(issuer_profile, "value", issuer_profile)
+            if str(issuer_profile).strip().casefold() == "holding_company":
+                is_holding_company = True
             reporting_profile = candidate.get("reporting_profile")
             reporting_profile = getattr(reporting_profile, "value", reporting_profile)
             if (
@@ -1272,6 +1299,38 @@ class ResearchFlow(Flow[ResearchFlowState]):
             ):
                 is_foreign_ifrs = True
                 break
+
+        if is_holding_company:
+            unavailable_valuation = {
+                "status": "not_applicable",
+                "readiness": "not_applicable",
+                "validation_status": "unvalidated",
+                "reason_code": "holding_company_nav_primary_valuation",
+                "calculations": [],
+            }
+            self._trusted_valuation_evidence_ids = set()
+            self.state.market_price_data = _json_safe(self._market_price_data)
+            self.state.valuation = dict(unavailable_valuation)
+            self.state.historical_valuation = dict(unavailable_valuation)
+            self.state.reverse_dcf = dict(unavailable_valuation)
+            self.state.stage = "analysis"
+            self._refresh_profile_policy_context(self._market_price_data)
+            snapshot = self._stage_snapshot()
+            self._emit_stage(
+                RunStageEvent(
+                    step=3,
+                    title="市场价格与估值",
+                    actor="确定性工具：Market Price + Holding Company Profile",
+                    status="completed",
+                    input_summary=snapshot["identity"],
+                    output_summary=(
+                        f"price={snapshot['price']}; timestamp={snapshot['timestamp']}; "
+                        "holding-company valuation=not_applicable"
+                    ),
+                    next_step="Analysis Gate",
+                )
+            )
+            return dict(unavailable_valuation)
 
         if is_foreign_ifrs:
             reason_code = "foreign_currency_fx_not_implemented"

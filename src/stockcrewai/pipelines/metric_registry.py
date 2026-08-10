@@ -23,6 +23,9 @@ from stockcrewai.models.profile import (
 )
 from stockcrewai.profiles.commodity_producer import POLICY_VERSION as COMMODITY_POLICY_VERSION
 from stockcrewai.profiles.foreign_issuer import POLICY_VERSION as FOREIGN_POLICY_VERSION
+from stockcrewai.profiles.holding_company import (
+    POLICY_VERSION as HOLDING_COMPANY_POLICY_VERSION,
+)
 
 
 POLICY_VERSION = "metric-policy:v1"
@@ -647,11 +650,92 @@ _POLICY_TABLE: dict[IssuerProfile, tuple[_MetricSpec, ...]] = {
     ),
     IssuerProfile.HOLDING_COMPANY: (
         _spec(
+            "attributable_holdings_value",
+            _REQUIRED,
+            ("holdings",),
+            gate_effect=_BLOCKING,
+            reason_code="holding_components_missing",
+            formula_id="holding-attributable-holdings-value-v1",
+            period_basis="same_point_in_time",
+            unit_policy="currency_amount",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
+        ),
+        _spec(
             "holding_company_nav",
             _REQUIRED,
-            ("asset_fair_value", "liabilities"),
+            ("holdings", "parent_net_debt", "other_adjustments"),
             gate_effect=_BLOCKING,
-            reason_code="required_holding_company_nav",
+            reason_code="holding_parent_net_debt_missing",
+            formula_id="holding-company-nav-v1",
+            period_basis="same_point_in_time",
+            unit_policy="currency_amount",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
+        ),
+        _spec(
+            "holding_company_market_cap",
+            _OPTIONAL,
+            ("market_price", "parent_shares_outstanding"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="market_price_missing",
+            formula_id="holding-company-market-cap-v1",
+            period_basis="market_price_same_point_in_time",
+            unit_policy="currency_amount",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
+        ),
+        _spec(
+            "holding_company_nav_discount",
+            _OPTIONAL,
+            ("holding_company_nav", "holding_company_market_cap"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="holding_market_cap_unavailable",
+            formula_id="holding-company-nav-discount-v1",
+            period_basis="market_price_same_point_in_time",
+            unit_policy="ratio",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
+        ),
+        _spec(
+            "pe_ratio",
+            _NOT_APPLICABLE,
+            (),
+            gate_effect=_NON_BLOCKING,
+            reason_code="holding_company_pe_not_applicable",
+            formula_id="holding-company-pe-not-applicable-v1",
+            period_basis="not_applicable",
+            unit_policy="not_applicable",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
+        ),
+        _spec(
+            "fcf_yield",
+            _NOT_APPLICABLE,
+            (),
+            gate_effect=_NON_BLOCKING,
+            reason_code="holding_company_fcf_not_applicable",
+            formula_id="holding-company-fcf-yield-not-applicable-v1",
+            period_basis="not_applicable",
+            unit_policy="not_applicable",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
+        ),
+        _spec(
+            "historical_valuation",
+            _NOT_APPLICABLE,
+            (),
+            gate_effect=_NON_BLOCKING,
+            reason_code="holding_company_historical_valuation_not_applicable",
+            formula_id="holding-company-historical-valuation-not-applicable-v1",
+            period_basis="not_applicable",
+            unit_policy="not_applicable",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
+        ),
+        _spec(
+            "reverse_dcf",
+            _NOT_APPLICABLE,
+            (),
+            gate_effect=_NON_BLOCKING,
+            reason_code="holding_company_reverse_dcf_not_applicable",
+            formula_id="holding-company-reverse-dcf-not-applicable-v1",
+            period_basis="not_applicable",
+            unit_policy="not_applicable",
+            policy_version=HOLDING_COMPANY_POLICY_VERSION,
         ),
     ),
     IssuerProfile.PRE_REVENUE: (
@@ -788,6 +872,11 @@ def policy_version_for_profile(profile: ProfileResult | IssuerProfile) -> str:
         or issuer_profile == IssuerProfile.COMMODITY_PRODUCER.value
     ):
         return COMMODITY_POLICY_VERSION
+    if (
+        issuer_profile is IssuerProfile.HOLDING_COMPANY
+        or issuer_profile == IssuerProfile.HOLDING_COMPANY.value
+    ):
+        return HOLDING_COMPANY_POLICY_VERSION
     return POLICY_VERSION
 
 
@@ -967,6 +1056,7 @@ __all__ = [
     "BANK_POLICY_VERSION",
     "COMMODITY_POLICY_VERSION",
     "FOREIGN_POLICY_VERSION",
+    "HOLDING_COMPANY_POLICY_VERSION",
     "INSURANCE_POLICY_VERSION",
     "POLICY_VERSION",
     "UTILITY_POLICY_VERSION",

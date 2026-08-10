@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from stockcrewai.models.profile import IssuerProfile
 from stockcrewai.models.quant import FactorObservation, PointInTimeSnapshot
 
 
@@ -175,6 +176,32 @@ def test_bank_and_insurance_profiles_mark_only_applicable_factors_available() ->
                 assert observation.raw_value is None
                 assert observation.evidence_ids == []
                 assert observation.calculation_ids == []
+
+
+def test_holding_company_profile_only_applies_market_and_risk_factors() -> None:
+    _, compute_factor_observations = _factor_api()
+    snapshot = _snapshot("standard_operating").model_copy(
+        update={"issuer_profile": IssuerProfile.HOLDING_COMPANY}
+    )
+    applicable = {
+        "market.momentum_12_1",
+        "risk.volatility_12m",
+        "risk.beta_12m",
+        "risk.max_drawdown_12m",
+    }
+
+    observations = compute_factor_observations([snapshot], FORMULA_VERSION)
+
+    for observation in observations:
+        if observation.factor_id in applicable:
+            assert observation.status == "available"
+            assert observation.reason_code == "validated_inputs"
+        else:
+            assert observation.status == "not_applicable"
+            assert observation.reason_code == "profile_not_applicable"
+            assert observation.raw_value is None
+            assert observation.evidence_ids == []
+            assert observation.calculation_ids == []
 
 
 def test_snapshot_input_order_does_not_change_observation_json_or_hash() -> None:

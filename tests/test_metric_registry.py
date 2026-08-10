@@ -240,8 +240,26 @@ def _calculation(
         ),
         (
             IssuerProfile.HOLDING_COMPANY,
-            ("holding_company_nav",),
-            {"holding_company_nav": Applicability.REQUIRED},
+            (
+                "attributable_holdings_value",
+                "holding_company_nav",
+                "holding_company_market_cap",
+                "holding_company_nav_discount",
+                "pe_ratio",
+                "fcf_yield",
+                "historical_valuation",
+                "reverse_dcf",
+            ),
+            {
+                "attributable_holdings_value": Applicability.REQUIRED,
+                "holding_company_nav": Applicability.REQUIRED,
+                "holding_company_market_cap": Applicability.OPTIONAL,
+                "holding_company_nav_discount": Applicability.OPTIONAL,
+                "pe_ratio": Applicability.NOT_APPLICABLE,
+                "fcf_yield": Applicability.NOT_APPLICABLE,
+                "historical_valuation": Applicability.NOT_APPLICABLE,
+                "reverse_dcf": Applicability.NOT_APPLICABLE,
+            },
         ),
     ],
 )

@@ -83,6 +83,25 @@ class DeterministicVerdictTool(BaseTool):
         reverse_dcf = reverse_dcf or {}
         risk_input = risk_input or {}
         policy_context = policy_context or {}
+        profile = policy_context.get("profile")
+        issuer_profile = (
+            profile.get("issuer_profile") if isinstance(profile, dict) else None
+        )
+        issuer_profile = getattr(issuer_profile, "value", issuer_profile)
+        if str(issuer_profile).strip().casefold() == "holding_company":
+            return VerdictResult(
+                status="insufficient_data",
+                policy_defined=False,
+                is_investment_rating=False,
+                business_quality="insufficient_data",
+                financial_trend="insufficient_data",
+                valuation="insufficient_data",
+                risk_level="insufficient_data",
+                overall_rating="insufficient_data",
+                summary_code="HOLDING_COMPANY_NAV_ONLY",
+                triggered_rules=["holding_company_nav_only"],
+                reasons=["holding_company_nav_primary_valuation"],
+            )
         reasons: list[str] = []
         gate = policy_context.get("gate")
         if isinstance(gate, dict) and gate.get("status") == "evidence_only":
