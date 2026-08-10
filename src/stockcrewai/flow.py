@@ -1862,12 +1862,47 @@ class ResearchFlow(Flow[ResearchFlowState]):
             self.state.historical_valuation,
             self.state.reverse_dcf,
         )
+        financial_evidence_ids = list(
+            financial_input.get("validated_evidence_ids", [])
+        )
+        claim_calculation_ids = list(
+            valuation_input.get("validated_calculation_ids", [])
+        )
+        if allow_empty_valuation_claims:
+            profile_evidence_ids = [
+                record.get("evidence_id")
+                for record in self.state.policy_context.get("evidence_records", [])
+                if isinstance(record, Mapping)
+                and record.get("validation_status") == "valid"
+                and isinstance(record.get("evidence_id"), str)
+            ]
+            profile_calculation_ids = [
+                record.get("calculation_id")
+                for record in self.state.policy_context.get(
+                    "calculation_records", []
+                )
+                if isinstance(record, Mapping)
+                and record.get("validation_status") == "valid"
+                and isinstance(record.get("calculation_id"), str)
+            ]
+            financial_evidence_ids = list(
+                dict.fromkeys([*financial_evidence_ids, *profile_evidence_ids])
+            )
+            claim_calculation_ids = list(
+                dict.fromkeys(
+                    [
+                        *financial_input.get("validated_calculation_ids", []),
+                        *claim_calculation_ids,
+                        *profile_calculation_ids,
+                    ]
+                )
+            )
         claims, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
             analysis_result,
-            list(financial_input.get("validated_evidence_ids", [])),
+            financial_evidence_ids,
             list(self._risk_input.get("validated_filing_ids", [])),
             list(valuation_input.get("validated_evidence_ids", [])),
-            list(valuation_input.get("validated_calculation_ids", [])),
+            claim_calculation_ids,
             allow_empty_valuation_claims=allow_empty_valuation_claims,
         )
         self.state.required_data = list(required_data)
