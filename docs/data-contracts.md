@@ -444,3 +444,15 @@ def evaluate_utility_profile(
 行情只接受一条唯一、`validation_status=valid` 且 `price_timestamp <= profile as_of` 的 `MarketPriceRecord`；不在多条价格中择优或选择最近值。缺少 `market_cap` 时，`fcf_yield` 为 typed `unavailable`，不得用普通 `price * shares` 推测市值。
 
 通用失败 reason code 优先使用 `missing_input`、`unvalidated_evidence_id`、`duplicate_evidence_id`、`filed_after_as_of`、`market_price_missing`、`zero_denominator` 和 `non-positive-eps`，并保留上表的 utility 专属缺失码。负的 capex 或 net income 是合法经济值，保留原符号，不 clipping。
+
+## 10. WP12-S02 Commodity Producer Profile（`commodity-profile:v1`）
+
+商品生产商只分析一个明确声明的主商品。`profile_input` 必须包含 `primary_commodity` 和商品专用 `metric_inputs`；行情记录只用于 P/E，不能把股票价格当作商品实现价格。固定 Policy 版本为 `metric-policy:commodity:v1`，指标顺序为：
+
+`realized_price`、`production`、`realized_price_change`、`production_change`、`proved_reserves`、`reserve_life_years`、`impairment_charge`、`impairment_to_commodity_revenue`、`pe_ratio`。
+
+只有 `realized_price` 和 `production` 是 `required/blocking`。其余指标均为 `optional/non_blocking`；缺失时返回 typed `unavailable`，不阻断完整分析。`pe_ratio` 在 EPS 非正时返回 `not_applicable/non-positive-eps`。
+
+适配器只接受明确的 realized price、production、proved reserves、annual production、impairment charge、commodity revenue 和 diluted EPS Evidence，以及一条唯一有效的 MarketPriceRecord。资源量、probable/total reserves、普通 revenue、operating loss 和 restructuring charge 不得替代商品专用字段。商品输入必须能够映射到 `primary_commodity`；商品范围不明、重复/未验证/未来证据、单位/币种/期间不一致时 fail closed。
+
+直接指标只保留 Evidence ID；派生指标必须携带全部输入 Evidence ID 和有效 `CalculationRecord`。LLM 不选择商品指标、不把普通收入增长当作商品价格/产量变化，也不补造储量和减值数据。

@@ -294,3 +294,17 @@ Utility 复用现有 quant operating profile，不新增因子。输入和结果
 CapEx 输入采用正数现金流出约定；如果来源值为负，`capex_intensity` 直接保留负结果，不能 clipping、取绝对值或补成零。负 `net_income` 同样保留负的 `utility_roe`。任一公式分母为零统一返回 `unavailable/zero_denominator`，不创建 CalculationRecord。P/E 的 EPS 小于或等于零返回 `unavailable/non-positive-eps`，不产生负或零 P/E。
 
 P/B 和 P/E 的市场价格只能来自一条 `MarketPriceRecord`，该记录必须 valid、唯一且 `price_timestamp <= profile as_of`；多条价格不得选择其中一条。FCF yield 不从价格与股数推测市值；缺少直接 `market_cap` Evidence 时返回 typed `unavailable/fcf_yield_missing`（或相应通用证据 reason），不创建派生记录。`rate_base` 只接受公司或监管直接披露值，普通资产、负债或固定资产字段不能替代它。
+
+## 10. WP12-S02 Commodity Producer 数值约定
+
+商品生产商所有内部结果使用有限 `Decimal`，比例保留小数形式（例如 `0.25`），显示层再格式化为百分比。同比期间必须长度相同（允许闰年造成的一天差异），参与同一比率的证据必须单位、币种和期间一致。
+
+| `metric_id` | 固定公式 | `formula_id` | 结果单位 |
+| --- | --- | --- | --- |
+| `realized_price_change` | `current / prior - 1`，`prior > 0` | `commodity-realized-price-change-v1` | `ratio` |
+| `production_change` | `current / prior - 1`，`prior > 0` | `commodity-production-change-v1` | `ratio` |
+| `reserve_life_years` | `proved_reserves / annual_production`，分母大于 0 | `commodity-reserve-life-years-v1` | `years` |
+| `impairment_to_commodity_revenue` | `impairment_charge / commodity_revenue`，收入大于 0 | `commodity-impairment-to-commodity-revenue-v1` | `ratio` |
+| `pe_ratio` | `MarketPriceRecord.price / diluted_eps`，EPS 大于 0 | `commodity-pe-ratio-v1` | `multiple` |
+
+`realized_price`、`production`、`proved_reserves` 和 `impairment_charge` 是直接 Evidence，不创建 CalculationRecord。负值只在来源本身具有明确经济含义时保留；不对结果 clipping、取绝对值或补零。市场价格只能进入 P/E，不能替代 realized price；缺少 proved reserves、annual production、commodity revenue 或 impairment 时对应可选指标不可用，不把普通收入、资源量或经营亏损当作替代输入。

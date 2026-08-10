@@ -498,6 +498,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             "bank",
             "insurance",
             "utility",
+            "commodity_producer",
         }:
             return
         policy_context = pipeline_support.build_profile_policy_context(
@@ -1883,6 +1884,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             "bank",
             "insurance",
             "utility",
+            "commodity_producer",
         }:
             source_metadata["facts"].update(
                 {

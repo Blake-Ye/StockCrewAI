@@ -62,6 +62,14 @@ _REPORT_METRIC_LABELS = {
     "capex_intensity": "CapEx 强度",
     "interest_coverage": "利息保障倍数",
     "utility_roe": "公用事业 ROE",
+    "realized_price": "商品实现价格",
+    "production": "商品产量",
+    "realized_price_change": "商品实现价格变化率",
+    "production_change": "商品产量变化率",
+    "proved_reserves": "探明储量",
+    "reserve_life_years": "储量寿命",
+    "impairment_charge": "商品资产减值损失",
+    "impairment_to_commodity_revenue": "减值/商品收入",
     "price_to_book": "P/B",
     "pe_ratio": "P/E",
     "fcf_yield": "FCF Yield",
@@ -89,6 +97,9 @@ _REPORT_PERCENT_METRIC_IDS = frozenset(
         "free_cash_flow_margin",
         "cash_conversion",
         "share_dilution",
+        "realized_price_change",
+        "production_change",
+        "impairment_to_commodity_revenue",
         "historical_percentile",
         "reverse_dcf_implied_growth",
     }
@@ -103,6 +114,19 @@ _REPORT_MULTIPLE_METRIC_IDS = frozenset(
         "price_to_ffo",
         "price_to_book",
         "interest_coverage",
+    }
+)
+_COMMODITY_METRIC_IDS = frozenset(
+    {
+        "realized_price",
+        "production",
+        "realized_price_change",
+        "production_change",
+        "proved_reserves",
+        "reserve_life_years",
+        "impairment_charge",
+        "impairment_to_commodity_revenue",
+        "pe_ratio",
     }
 )
 _REIT_METRIC_LABELS = {
@@ -241,7 +265,7 @@ def build_narrative_context(
     profile_metrics = report_context.get("profile_metrics")
     if isinstance(profile_metrics, Mapping):
         profile_issuer = _text((report_context.get("profile") or {}).get("issuer_profile"))
-        if profile_issuer in {"bank", "insurance", "utility"}:
+        if profile_issuer in {"bank", "insurance", "utility", "commodity_producer"}:
             metric_sections.add("company_quality")
     source_metadata = report_context.get("source_metadata", {})
     source_metadata = source_metadata if isinstance(source_metadata, Mapping) else {}
@@ -385,6 +409,14 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
         return f"{decimal_value:.2f}x"
     if metric_id == "rate_base":
         return f"{decimal_value:.2f} {unit}".strip()
+    if metric_id in {
+        "realized_price",
+        "production",
+        "proved_reserves",
+        "reserve_life_years",
+        "impairment_charge",
+    }:
+        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in _REPORT_MULTIPLE_METRIC_IDS:
         return f"{decimal_value:.2f}x"
     if metric_id in {"ffo_total", "ffo_per_share", "affo"}:
@@ -518,6 +550,16 @@ def _term_definitions(
                 "- FCF Yield（自由现金流收益率）：公用事业自由现金流相对于直接披露市值的收益率，不由价格与股数推算。",
             )
         )
+    if profile == "commodity_producer":
+        definitions.extend(
+            (
+                "- 商品实现价格：公司按主商品披露的单位实现价格，不用股票市场价格替代。",
+                "- 商品产量：主商品的公司披露产量，变化率只比较可比期间。",
+                "- 探明储量：已证明可采的储量，不用资源量或 probable/total reserves 替代。",
+                "- 储量寿命：探明储量除以年度产量，表示按该产量水平的理论年数。",
+                "- 商品资产减值损失：公司明确披露的商品相关减值，不能用经营亏损或重组费用替代。",
+            )
+        )
     return tuple(definitions)
 
 
@@ -537,11 +579,13 @@ def _profile_metrics_markdown(
     payload: Mapping[str, Any] | None,
     metrics: Sequence[Mapping[str, Any]],
 ) -> str:
-    if profile not in {"bank", "insurance", "utility"} or not isinstance(payload, Mapping):
+    if profile not in {"bank", "insurance", "utility", "commodity_producer"} or not isinstance(payload, Mapping):
         return ""
     metric_ids = payload.get("metric_ids", [])
     if not isinstance(metric_ids, Sequence) or isinstance(metric_ids, (str, bytes)):
         metric_ids = []
+    if profile == "commodity_producer":
+        metric_ids = [metric_id for metric_id in metric_ids if metric_id in _COMMODITY_METRIC_IDS]
     metric_map = {
         metric.get("metric_id"): metric
         for metric in metrics
@@ -552,6 +596,7 @@ def _profile_metrics_markdown(
         "bank": "### 银行专用指标",
         "insurance": "### 保险专用指标",
         "utility": "### 公用事业专用指标",
+        "commodity_producer": "### 商品生产商专用指标",
     }[profile]
     lines = [heading]
     for metric_id in metric_ids:

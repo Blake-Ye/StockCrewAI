@@ -21,6 +21,7 @@ from stockcrewai.models.profile import (
     ReportingProfile,
     SecurityProfile,
 )
+from stockcrewai.profiles.commodity_producer import POLICY_VERSION as COMMODITY_POLICY_VERSION
 
 
 POLICY_VERSION = "metric-policy:v1"
@@ -544,11 +545,103 @@ _POLICY_TABLE: dict[IssuerProfile, tuple[_MetricSpec, ...]] = {
     ),
     IssuerProfile.COMMODITY_PRODUCER: (
         _spec(
-            "commodity_cash_flow",
+            "realized_price",
             _REQUIRED,
-            ("operating_cash_flow", "commodity_revenue"),
+            ("realized_price",),
             gate_effect=_BLOCKING,
-            reason_code="required_commodity_cash_flow",
+            reason_code="realized_price_missing",
+            formula_id="commodity-realized-price-direct-v1",
+            period_basis="company_disclosed_period",
+            unit_policy="currency_per_production_unit",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "production",
+            _REQUIRED,
+            ("production",),
+            gate_effect=_BLOCKING,
+            reason_code="production_missing",
+            formula_id="commodity-production-direct-v1",
+            period_basis="company_disclosed_period",
+            unit_policy="production_quantity",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "realized_price_change",
+            _OPTIONAL,
+            ("realized_price", "realized_price_prior"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="realized_price_change_missing",
+            formula_id="commodity-realized-price-change-v1",
+            period_basis="comparable_fiscal_periods",
+            unit_policy="ratio",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "production_change",
+            _OPTIONAL,
+            ("production", "production_prior"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="production_change_missing",
+            formula_id="commodity-production-change-v1",
+            period_basis="comparable_fiscal_periods",
+            unit_policy="ratio",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "proved_reserves",
+            _OPTIONAL,
+            ("proved_reserves",),
+            gate_effect=_NON_BLOCKING,
+            reason_code="proved_reserves_missing",
+            formula_id="commodity-proved-reserves-direct-v1",
+            period_basis="company_disclosed_period",
+            unit_policy="reserve_quantity",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "reserve_life_years",
+            _OPTIONAL,
+            ("proved_reserves", "annual_production"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="reserve_life_years_missing",
+            formula_id="commodity-reserve-life-years-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="years",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "impairment_charge",
+            _OPTIONAL,
+            ("impairment_charge",),
+            gate_effect=_NON_BLOCKING,
+            reason_code="impairment_charge_missing",
+            formula_id="commodity-impairment-charge-direct-v1",
+            period_basis="company_disclosed_period",
+            unit_policy="currency_amount",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "impairment_to_commodity_revenue",
+            _OPTIONAL,
+            ("impairment_charge", "commodity_revenue"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="impairment_to_commodity_revenue_missing",
+            formula_id="commodity-impairment-to-commodity-revenue-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="ratio",
+            policy_version=COMMODITY_POLICY_VERSION,
+        ),
+        _spec(
+            "pe_ratio",
+            _OPTIONAL,
+            ("market_price", "diluted_eps"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="pe_ratio_missing",
+            formula_id="commodity-pe-ratio-v1",
+            period_basis="market_price_same_point_in_time",
+            unit_policy="multiple",
+            policy_version=COMMODITY_POLICY_VERSION,
         ),
     ),
     IssuerProfile.HOLDING_COMPANY: (
@@ -647,6 +740,11 @@ def policy_version_for_profile(profile: ProfileResult | IssuerProfile) -> str:
         return INSURANCE_POLICY_VERSION
     if issuer_profile is IssuerProfile.UTILITY or issuer_profile == IssuerProfile.UTILITY.value:
         return UTILITY_POLICY_VERSION
+    if (
+        issuer_profile is IssuerProfile.COMMODITY_PRODUCER
+        or issuer_profile == IssuerProfile.COMMODITY_PRODUCER.value
+    ):
+        return COMMODITY_POLICY_VERSION
     return POLICY_VERSION
 
 
@@ -787,6 +885,7 @@ def evaluate_policy_decisions(
 
 __all__ = [
     "BANK_POLICY_VERSION",
+    "COMMODITY_POLICY_VERSION",
     "INSURANCE_POLICY_VERSION",
     "POLICY_VERSION",
     "UTILITY_POLICY_VERSION",

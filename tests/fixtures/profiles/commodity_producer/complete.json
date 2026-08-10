@@ -1,0 +1,66 @@
+{
+  "fixture_version": "wp12-s02-commodity-profile-v1-complete",
+  "synthetic": true,
+  "offline": true,
+  "no_network": true,
+  "source_note": "Synthetic offline commodity producer data; no network access.",
+  "profile_input": {
+    "profile_version": "commodity-profile:v1",
+    "policy_version": "metric-policy:commodity:v1",
+    "issuer_profile": "commodity_producer",
+    "security_profile": "common_stock",
+    "reporting_profile": "domestic_us_gaap",
+    "coverage_level": "full",
+    "primary_commodity": "copper",
+    "as_of": "2026-03-02T21:00:00Z",
+    "metric_inputs": {
+      "realized_price": {"evidence_id": "ev_com_realized_price_current", "commodity": "copper"},
+      "production": {"evidence_id": "ev_com_production_current", "commodity": "copper"},
+      "realized_price_prior": {"evidence_id": "ev_com_realized_price_prior", "commodity": "copper"},
+      "production_prior": {"evidence_id": "ev_com_production_prior", "commodity": "copper"},
+      "proved_reserves": {"evidence_id": "ev_com_proved_reserves", "commodity": "copper"},
+      "annual_production": {"evidence_id": "ev_com_annual_production", "commodity": "copper"},
+      "impairment_charge": {"evidence_id": "ev_com_impairment_charge", "commodity": "copper"},
+      "commodity_revenue": {"evidence_id": "ev_com_commodity_revenue", "commodity": "copper"},
+      "diluted_eps": {"evidence_id": "ev_com_diluted_eps", "commodity": "copper"}
+    }
+  },
+  "evidence_records": [
+    {"evidence_id": "ev_com_realized_price_current", "source_reference": "fixture:commodity/realized-price/current", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2026-02-20", "period_start": "2025-01-01", "period_end": "2025-12-31", "unit": "USD/lb", "currency": "USD", "value": "100", "validation_status": "valid"},
+    {"evidence_id": "ev_com_realized_price_prior", "source_reference": "fixture:commodity/realized-price/prior", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2025-02-20", "period_start": "2024-01-01", "period_end": "2024-12-31", "unit": "USD/lb", "currency": "USD", "value": "80", "validation_status": "valid"},
+    {"evidence_id": "ev_com_production_current", "source_reference": "fixture:commodity/production/current", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2026-02-20", "period_start": "2025-01-01", "period_end": "2025-12-31", "unit": "kt", "currency": "N/A", "value": "120", "validation_status": "valid"},
+    {"evidence_id": "ev_com_production_prior", "source_reference": "fixture:commodity/production/prior", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2025-02-20", "period_start": "2024-01-01", "period_end": "2024-12-31", "unit": "kt", "currency": "N/A", "value": "130", "validation_status": "valid"},
+    {"evidence_id": "ev_com_proved_reserves", "source_reference": "fixture:commodity/reserves/proved", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2026-02-20", "period_start": "2025-01-01", "period_end": "2025-12-31", "unit": "kt", "currency": "N/A", "value": "1200", "validation_status": "valid"},
+    {"evidence_id": "ev_com_annual_production", "source_reference": "fixture:commodity/production/annual", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2026-02-20", "period_start": "2025-01-01", "period_end": "2025-12-31", "unit": "kt", "currency": "N/A", "value": "120", "validation_status": "valid"},
+    {"evidence_id": "ev_com_impairment_charge", "source_reference": "fixture:commodity/impairment/charge", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2026-02-20", "period_start": "2025-01-01", "period_end": "2025-12-31", "unit": "USD millions", "currency": "USD", "value": "50", "validation_status": "valid"},
+    {"evidence_id": "ev_com_commodity_revenue", "source_reference": "fixture:commodity/revenue", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2026-02-20", "period_start": "2025-01-01", "period_end": "2025-12-31", "unit": "USD millions", "currency": "USD", "value": "1000", "validation_status": "valid"},
+    {"evidence_id": "ev_com_diluted_eps", "source_reference": "fixture:commodity/eps", "as_of": "2026-03-02T21:00:00Z", "filed_at": "2026-02-20", "period_start": "2025-01-01", "period_end": "2025-12-31", "unit": "USD/share", "currency": "USD", "value": "4", "validation_status": "valid"}
+  ],
+  "market_price_records": [
+    {"evidence_id": "ev_com_market_price", "ticker": "COPR", "price": "100", "currency": "USD", "price_timestamp": "2026-03-02T20:00:00Z", "source_reference": "fixture:market-price/COPR", "adjustment_basis": "raw", "validation_status": "valid"}
+  ],
+  "expected": {
+    "profile_version": "commodity-profile:v1",
+    "policy_version": "metric-policy:commodity:v1",
+    "metric_ids": ["realized_price", "production", "realized_price_change", "production_change", "proved_reserves", "reserve_life_years", "impairment_charge", "impairment_to_commodity_revenue", "pe_ratio"],
+    "values": {"realized_price": "100", "production": "120", "realized_price_change": "0.25", "production_change": "-0.0769230769230769230769230769", "proved_reserves": "1200", "reserve_life_years": "10", "impairment_charge": "50", "impairment_to_commodity_revenue": "0.05", "pe_ratio": "25"},
+    "decisions": {
+      "realized_price": {"status": "available", "blocking": true, "reason_code": "validated_evidence", "evidence_ids": ["ev_com_realized_price_current"], "calculation_ids": []},
+      "production": {"status": "available", "blocking": true, "reason_code": "validated_evidence", "evidence_ids": ["ev_com_production_current"], "calculation_ids": []},
+      "realized_price_change": {"status": "available", "blocking": false, "reason_code": "calculated", "evidence_ids": ["ev_com_realized_price_current", "ev_com_realized_price_prior"], "calculation_ids": ["calc_commodity_realized_price_change_v1"]},
+      "production_change": {"status": "available", "blocking": false, "reason_code": "calculated", "evidence_ids": ["ev_com_production_current", "ev_com_production_prior"], "calculation_ids": ["calc_commodity_production_change_v1"]},
+      "proved_reserves": {"status": "available", "blocking": false, "reason_code": "validated_evidence", "evidence_ids": ["ev_com_proved_reserves"], "calculation_ids": []},
+      "reserve_life_years": {"status": "available", "blocking": false, "reason_code": "calculated", "evidence_ids": ["ev_com_proved_reserves", "ev_com_annual_production"], "calculation_ids": ["calc_commodity_reserve_life_years_v1"]},
+      "impairment_charge": {"status": "available", "blocking": false, "reason_code": "validated_evidence", "evidence_ids": ["ev_com_impairment_charge"], "calculation_ids": []},
+      "impairment_to_commodity_revenue": {"status": "available", "blocking": false, "reason_code": "calculated", "evidence_ids": ["ev_com_impairment_charge", "ev_com_commodity_revenue"], "calculation_ids": ["calc_commodity_impairment_to_commodity_revenue_v1"]},
+      "pe_ratio": {"status": "available", "blocking": false, "reason_code": "calculated", "evidence_ids": ["ev_com_market_price", "ev_com_diluted_eps"], "calculation_ids": ["calc_commodity_pe_ratio_v1"]}
+    },
+    "calculations": {
+      "calc_commodity_realized_price_change_v1": {"formula_id": "commodity-realized-price-change-v1", "input_evidence_ids": ["ev_com_realized_price_current", "ev_com_realized_price_prior"], "result": "0.25", "unit": "ratio"},
+      "calc_commodity_production_change_v1": {"formula_id": "commodity-production-change-v1", "input_evidence_ids": ["ev_com_production_current", "ev_com_production_prior"], "result": "-0.0769230769230769230769230769", "unit": "ratio"},
+      "calc_commodity_reserve_life_years_v1": {"formula_id": "commodity-reserve-life-years-v1", "input_evidence_ids": ["ev_com_proved_reserves", "ev_com_annual_production"], "result": "10", "unit": "years"},
+      "calc_commodity_impairment_to_commodity_revenue_v1": {"formula_id": "commodity-impairment-to-commodity-revenue-v1", "input_evidence_ids": ["ev_com_impairment_charge", "ev_com_commodity_revenue"], "result": "0.05", "unit": "ratio"},
+      "calc_commodity_pe_ratio_v1": {"formula_id": "commodity-pe-ratio-v1", "input_evidence_ids": ["ev_com_market_price", "ev_com_diluted_eps"], "result": "25", "unit": "multiple"}
+    }
+  }
+}
