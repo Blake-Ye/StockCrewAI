@@ -74,6 +74,7 @@ DEFAULT_THRESHOLDS = {
     "schema_pass_rate": 0.95,
     "evidence_coverage": 1.0,
 }
+DEFAULT_REPETITIONS = 5
 ZERO_TOLERANCE_METRICS = (
     "rejected_claim_in_report",
     "new_claim_in_report",
@@ -159,6 +160,12 @@ def _score(numerator: int, denominator: int) -> dict[str, int | float]:
         "denominator": denominator,
         "rate": numerator / denominator if denominator else 0.0,
     }
+
+
+def _validate_repetitions(repetitions: int) -> int:
+    if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions < 1:
+        raise ValueError("repetitions must be an integer greater than or equal to 1")
+    return repetitions
 
 
 def _add_failure(failures: set[str], code: str) -> None:
@@ -538,42 +545,56 @@ def _safe_fixture_id(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", basename)
 
 
-def _gate_failures(
+def _gate_results(
     metrics: Mapping[str, Mapping[str, int | float]],
     thresholds: Mapping[str, float],
     has_positive_fixtures: bool,
     evidence_applicable: bool,
-) -> list[str]:
-    failures: list[str] = []
-    if not has_positive_fixtures:
-        failures.append("no_positive_fixtures")
+) -> dict[str, dict[str, Any]]:
     schema = metrics.get("schema_pass_rate", _score(0, 0))
-    if schema["denominator"] == 0 or schema["rate"] < thresholds["schema_pass_rate"]:
-        failures.append("schema_pass_rate")
     evidence = metrics.get("evidence_coverage", _score(0, 0))
-    if evidence_applicable and (
-        evidence["denominator"] == 0 or evidence["rate"] < thresholds["evidence_coverage"]
-    ):
-        failures.append("evidence_coverage")
+    gates: dict[str, dict[str, Any]] = {
+        "no_positive_fixtures": {
+            "passed": has_positive_fixtures,
+            "score": _score(1 if has_positive_fixtures else 0, 1),
+        },
+        "schema_pass_rate": {
+            "passed": schema["denominator"] > 0
+            and schema["rate"] >= thresholds["schema_pass_rate"],
+            "score": schema,
+            "threshold": thresholds["schema_pass_rate"],
+        },
+        "evidence_coverage": {
+            "passed": not evidence_applicable
+            or (
+                evidence["denominator"] > 0
+                and evidence["rate"] >= thresholds["evidence_coverage"]
+            ),
+            "score": evidence,
+            "threshold": thresholds["evidence_coverage"],
+            "applicable": evidence_applicable,
+        },
+    }
     for metric in ZERO_TOLERANCE_METRICS:
-        score = metrics.get(metric)
-        if score is not None and score["numerator"] > 0:
-            failures.append(metric)
-    return failures
+        score = metrics.get(metric, _score(0, 0))
+        gates[metric] = {
+            "passed": score["numerator"] == 0,
+            "score": score,
+            "applicable": score["denominator"] > 0,
+        }
+    return gates
 
 
-def evaluate_fixtures(
-    fixtures_dir: str | Path,
-    *,
-    thresholds: Mapping[str, float] | None = None,
+def _gate_failures(gates: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    return [name for name, result in gates.items() if not result["passed"]]
+
+
+def _evaluate_fixtures_once(
+    fixtures: Sequence[Mapping[str, Any]],
+    threshold_values: Mapping[str, float],
 ) -> dict[str, Any]:
-    """评测目录；negative fixture 保留诊断但不降低正向发布门禁。"""
-    fixtures = load_fixtures(fixtures_dir)
     fixture_reports = [evaluate_fixture(fixture) for fixture in fixtures]
     positive = [item for item in fixture_reports if item["fixture_kind"] != "negative"]
-    threshold_values = dict(DEFAULT_THRESHOLDS)
-    if thresholds:
-        threshold_values.update({key: float(value) for key, value in thresholds.items()})
 
     all_metrics: set[str] = set()
     for item in positive:
@@ -588,12 +609,13 @@ def evaluate_fixtures(
             "metrics": {metric: _aggregate(agent_scores, metric) for metric in metrics},
         }
 
-    gate_failures = _gate_failures(
+    gates = _gate_results(
         aggregate_metrics,
         threshold_values,
         bool(positive),
         any(item["agent_id"] in {"FinancialQualityAgent", "RiskAnalysisAgent"} for item in positive),
     )
+    gate_failures = _gate_failures(gates)
     report: dict[str, Any] = {
         "schema_version": "agent_eval_report_v1",
         "fixture_count": len(fixtures),
@@ -603,10 +625,41 @@ def evaluate_fixtures(
         "schema_pass_rate": aggregate_metrics.get("schema_pass_rate", _score(0, 0)),
         "metrics": aggregate_metrics,
         "thresholds": threshold_values,
+        "gates": gates,
         "gate_failures": gate_failures,
         "passed": not gate_failures,
         "fixture_reports": fixture_reports,
     }
+    return report
+
+
+def evaluate_fixtures(
+    fixtures_dir: str | Path,
+    *,
+    thresholds: Mapping[str, float] | None = None,
+    repetitions: int = DEFAULT_REPETITIONS,
+) -> dict[str, Any]:
+    """评测目录；negative fixture 保留诊断但不降低正向发布门禁。"""
+    repetition_count = _validate_repetitions(repetitions)
+    fixtures = load_fixtures(fixtures_dir)
+    threshold_values = dict(DEFAULT_THRESHOLDS)
+    if thresholds:
+        threshold_values.update({key: float(value) for key, value in thresholds.items()})
+
+    runs = [
+        _evaluate_fixtures_once(fixtures, threshold_values)
+        for _ in range(repetition_count)
+    ]
+    hashes = [artifact_hash(run) for run in runs]
+    report = dict(runs[0])
+    report.update(
+        {
+            "repetitions": repetition_count,
+            "hashes": hashes,
+            "unique_hash_count": len(set(hashes)),
+            "consistent": len(set(hashes)) == 1,
+        }
+    )
     report["artifact_hash"] = artifact_hash(report)
     return report
 
@@ -633,11 +686,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=DEFAULT_THRESHOLDS["schema_pass_rate"],
     )
+    parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     args = parser.parse_args(argv)
     try:
         report = evaluate_fixtures(
             args.fixtures,
             thresholds={"schema_pass_rate": args.schema_threshold},
+            repetitions=args.repetitions,
         )
         serialized = serialize_report(report)
         if args.output:

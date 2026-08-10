@@ -213,3 +213,157 @@ def test_default_report_includes_negative_fixture_diagnostics_but_passes_positiv
     assert len(negative) >= 4
     assert report["negative_fixture_count"] == len(negative)
     assert report["passed"] is True
+
+
+def test_default_evaluation_repeats_five_times_with_stable_hashes_and_gates() -> None:
+    api = _api()
+    report = api.evaluate_fixtures(FIXTURE_DIR)
+
+    assert report["repetitions"] == 5
+    assert len(report["hashes"]) == 5
+    assert len(set(report["hashes"])) == 1
+    assert report["unique_hash_count"] == 1
+    assert report["consistent"] is True
+    assert report["gate_failures"] == []
+    for gate_name in (
+        "evidence_coverage",
+        "rejected_claim_in_report",
+        "numeric_mismatch",
+        "injection_bypass",
+        "new_claim_in_report",
+    ):
+        assert report["gates"][gate_name]["passed"] is True
+
+
+def test_repetitions_accepts_one_and_rejects_values_below_one() -> None:
+    api = _api()
+    report = api.evaluate_fixtures(FIXTURE_DIR, repetitions=1)
+    assert report["repetitions"] == 1
+    assert len(report["hashes"]) == 1
+
+    with pytest.raises(ValueError, match="repetitions"):
+        api.evaluate_fixtures(FIXTURE_DIR, repetitions=0)
+
+
+def test_fixture_file_creation_order_does_not_change_scorecard_or_hashes(tmp_path: Path) -> None:
+    api = _api()
+    names = [path.name for path in sorted(FIXTURE_DIR.glob("*.json"))]
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    for name in names:
+        content = (FIXTURE_DIR / name).read_text(encoding="utf-8")
+        (first_dir / name).write_text(content, encoding="utf-8")
+    for name in reversed(names):
+        content = (FIXTURE_DIR / name).read_text(encoding="utf-8")
+        (second_dir / name).write_text(content, encoding="utf-8")
+
+    first = api.evaluate_fixtures(first_dir)
+    second = api.evaluate_fixtures(second_dir)
+    assert first["fixture_reports"] == second["fixture_reports"]
+    assert first["agents"] == second["agents"]
+    assert first["metrics"] == second["metrics"]
+    assert first["hashes"] == second["hashes"]
+    assert first["artifact_hash"] == second["artifact_hash"]
+
+
+def test_positive_numeric_change_changes_artifact_and_repeated_hash(tmp_path: Path) -> None:
+    api = _api()
+    fixture = _fixture("02_financial_quality_ok.json")
+    directory = tmp_path / "numeric"
+    directory.mkdir()
+    path = directory / "fixture.json"
+    path.write_text(json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
+    before = api.evaluate_fixtures(directory, repetitions=1)
+
+    fixture["actual"]["numeric_values"]["operating_margin"] = "0.337"
+    path.write_text(json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
+    after = api.evaluate_fixtures(directory, repetitions=1)
+
+    assert before["artifact_hash"] != after["artifact_hash"]
+    assert before["hashes"] != after["hashes"]
+    assert after["gates"]["numeric_mismatch"]["passed"] is False
+
+
+def test_bad_fixtures_expose_structured_failures_and_metric_fields() -> None:
+    api = _api()
+    cases = {
+        "90_financial_unknown_evidence.json": {"unknown_evidence_id"},
+        "91_financial_missing_evidence.json": {"missing_evidence_id"},
+        "92_financial_numeric_mismatch.json": {"numeric_mismatch"},
+        "93_risk_event_state_bad.json": {
+            "risk_source_coverage",
+            "risk_event_state_mismatch",
+        },
+        "94_report_policy_violations.json": {
+            "injection_bypass",
+            "new_claim_in_report",
+            "rejected_claim_in_report",
+            "investment_advice",
+        },
+    }
+    for name, expected_failures in cases.items():
+        result = api.evaluate_fixture(_fixture(name))
+        assert expected_failures <= set(result["failures"])
+        for metric_name in (
+            "numeric_mismatch",
+            "injection_bypass",
+            "new_claim_in_report",
+            "rejected_claim_in_report",
+        ):
+            if metric_name in result["metrics"]:
+                _metric_fields(result["metrics"][metric_name])
+
+
+def test_zero_denominator_rates_are_zero_for_report_claim_metrics() -> None:
+    api = _api()
+    fixture = _fixture("94_report_policy_violations.json")
+    fixture["actual"]["report_claim_ids"] = []
+    fixture["actual"]["policy_violations"] = {
+        "investment_advice": False,
+        "injection_bypass": False,
+    }
+    result = api.evaluate_fixture(fixture)
+    for metric_name in ("new_claim_in_report", "rejected_claim_in_report"):
+        score = result["metrics"][metric_name]
+        _metric_fields(score)
+        assert score["denominator"] == 0
+        assert score["rate"] == 0.0
+
+
+def test_bad_positive_fixtures_fail_each_relevant_hard_gate(tmp_path: Path) -> None:
+    api = _api()
+    directory = tmp_path / "bad-positive"
+    directory.mkdir()
+    for index, name in enumerate(
+        (
+            "90_financial_unknown_evidence.json",
+            "92_financial_numeric_mismatch.json",
+            "94_report_policy_violations.json",
+        )
+    ):
+        fixture = _fixture(name)
+        fixture["fixture_kind"] = "positive"
+        (directory / f"{index}-{name}").write_text(
+            json.dumps(fixture, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    report = api.evaluate_fixtures(directory)
+    assert report["passed"] is False
+    assert {
+        "evidence_coverage",
+        "numeric_mismatch",
+        "injection_bypass",
+        "new_claim_in_report",
+        "rejected_claim_in_report",
+    } <= set(report["gate_failures"])
+    for gate_name in (
+        "evidence_coverage",
+        "numeric_mismatch",
+        "injection_bypass",
+        "new_claim_in_report",
+        "rejected_claim_in_report",
+    ):
+        assert report["gates"][gate_name]["passed"] is False
