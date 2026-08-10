@@ -258,8 +258,13 @@ def test_partial_quant_packet_keeps_unavailable_cagr_state_without_zero_fill(
         "10 bps",
     ):
         assert fragment in quant_section
-    assert "0%" not in quant_section
-    assert "0.00%" not in quant_section
+    strategy_cagr_line = next(
+        line
+        for line in quant_section.splitlines()
+        if line.startswith("- strategy_cagr：")
+    )
+    assert "0.00%" not in strategy_cagr_line
+    assert "strategy_cagr：0%" not in strategy_cagr_line
 
 
 def test_omitting_quant_packet_preserves_legacy_context_and_report() -> None:

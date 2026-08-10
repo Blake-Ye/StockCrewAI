@@ -444,6 +444,201 @@ def _reverse_dcf_markdown(payload: Mapping[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def _quant_decimal(value: Any) -> Decimal | None:
+    """只把量化 JSON 数字字符串解析为有限 Decimal。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, Decimal):
+        result = value
+    elif isinstance(value, int):
+        result = Decimal(value)
+    elif isinstance(value, str):
+        try:
+            result = Decimal(value.strip())
+        except (ArithmeticError, ValueError):
+            return None
+    else:
+        return None
+    return result if result.is_finite() else None
+
+
+def _quant_number(value: Any) -> str | None:
+    decimal_value = _quant_decimal(value)
+    if decimal_value is None:
+        return None
+    return format(decimal_value, "f")
+
+
+def _quant_integer(value: Any) -> str | None:
+    decimal_value = _quant_decimal(value)
+    if decimal_value is None or decimal_value != decimal_value.to_integral_value():
+        return None
+    return format(decimal_value.to_integral_value(), "f")
+
+
+def _quant_percent(value: Any) -> str | None:
+    decimal_value = _quant_decimal(value)
+    if decimal_value is None:
+        return None
+    return f"{decimal_value * Decimal('100'):.2f}%"
+
+
+def _quant_bps(value: Any) -> str | None:
+    number = _quant_number(value)
+    return f"{number} bps" if number is not None else None
+
+
+def _quant_status_line(
+    payload: Mapping[str, Any], prefix: str, *, typed: bool
+) -> str | None:
+    status = _text(payload.get(f"{prefix}_status"))
+    if status is None:
+        return f"- {prefix}：unavailable（missing_status）" if typed else None
+    if status == "available":
+        return None
+    reason_code = _text(payload.get(f"{prefix}_reason_code")) or "reason_code_missing"
+    return f"- {prefix}：{status}（{reason_code}）"
+
+
+def _quant_metric_line(
+    payload: Mapping[str, Any],
+    prefix: str,
+    *,
+    value: Any,
+    formatter: Any,
+    typed: bool = False,
+    label: str | None = None,
+) -> str:
+    if status_line := _quant_status_line(payload, prefix, typed=typed):
+        return status_line
+    formatted = formatter(value)
+    if formatted is None:
+        reason_code = _text(payload.get(f"{prefix}_reason_code")) or (
+            "missing_value" if typed else f"missing_{prefix}"
+        )
+        return f"- {prefix}：unavailable（{reason_code}）"
+    return f"- {label or prefix}：{formatted}"
+
+
+def _quant_pair_line(
+    payload: Mapping[str, Any],
+    prefix: str,
+    left_key: str,
+    right_key: str,
+    status_prefix: str | None = None,
+) -> str:
+    if status_prefix:
+        status = _text(payload.get(f"{status_prefix}_status"))
+        if status is not None and status != "available":
+            reason_code = _text(payload.get(f"{status_prefix}_reason_code")) or "reason_code_missing"
+            return f"- {prefix}：{status}（{reason_code}）"
+    left = _quant_integer(payload.get(left_key))
+    right = _quant_integer(payload.get(right_key))
+    if left is None or right is None:
+        return f"- {prefix}：unavailable（missing_{prefix}）"
+    return f"- {prefix}：{left}/{right}"
+
+
+def _quant_unavailable_markdown(status: str, reason_code: str) -> str:
+    return "\n".join(
+        (
+            f"status={status}",
+            f"reason_code={reason_code}",
+            "不可用",
+        )
+    )
+
+
+def _quant_evidence_markdown(quant: Mapping[str, Any] | None) -> str:
+    """只从已验证 QuantResearchPacket 渲染确定性量化旁证。"""
+    if not isinstance(quant, Mapping):
+        return _quant_unavailable_markdown("unavailable", "quant_packet_missing")
+    status = _text(quant.get("status"))
+    reason_code = _text(quant.get("reason_code"))
+    if status != "available":
+        return _quant_unavailable_markdown(
+            status or "unavailable", reason_code or "quant_packet_invalid"
+        )
+    packet = quant.get("packet")
+    if not isinstance(packet, Mapping):
+        return _quant_unavailable_markdown("unavailable", "quant_packet_invalid")
+
+    ranking = packet.get("ranking_summary")
+    ranking = ranking if isinstance(ranking, Mapping) else {}
+    backtest = packet.get("backtest_summary")
+    backtest = backtest if isinstance(backtest, Mapping) else {}
+    benchmark = packet.get("benchmark_summary")
+    benchmark = benchmark if isinstance(benchmark, Mapping) else {}
+    quality = packet.get("data_quality")
+    quality = quality if isinstance(quality, Mapping) else {}
+    target_ticker = _text(ranking.get("target_ticker"))
+    lines = [
+        f"- target_ticker：{target_ticker}"
+        if target_ticker
+        else "- target_ticker：unavailable（missing_target_ticker）",
+        _quant_pair_line(
+            ranking,
+            "rank/peer_count",
+            "rank",
+            "peer_count",
+            "target_rank",
+        ),
+    ]
+    for payload, prefix, formatter, typed, label in (
+        (ranking, "industry_percentile", _quant_percent, False, None),
+        (ranking, "score", _quant_number, False, None),
+        (backtest, "strategy_cagr", _quant_percent, True, None),
+        (backtest, "strategy_max_drawdown", _quant_percent, True, None),
+        (benchmark, "spy_cagr", _quant_percent, False, "SPY CAGR"),
+        (benchmark, "spy_max_drawdown", _quant_percent, False, "SPY max drawdown"),
+        (benchmark, "universe_cagr", _quant_percent, False, "Universe CAGR"),
+        (benchmark, "universe_max_drawdown", _quant_percent, False, "Universe max drawdown"),
+        (backtest, "average_turnover", _quant_percent, True, None),
+        (backtest, "annualized_turnover", _quant_percent, True, None),
+        (backtest, "net_cost_bps", _quant_bps, False, None),
+    ):
+        lines.append(
+            _quant_metric_line(
+                payload,
+                prefix,
+                value=payload.get(prefix),
+                formatter=formatter,
+                typed=typed,
+                label=label,
+            )
+        )
+    coverage = _text(packet.get("coverage"))
+    lines.extend(
+        (
+            f"- coverage={coverage}" if coverage else "- coverage=unavailable（missing_coverage）",
+            _quant_pair_line(
+                quality,
+                "complete_period_count/period_count",
+                "complete_period_count",
+                "period_count",
+            ),
+            f"- survivorship_bias_known={str(quality['survivorship_bias_known']).lower()}"
+            if isinstance(quality.get("survivorship_bias_known"), bool)
+            else "- survivorship_bias_known：unavailable（missing_survivorship_bias_known）",
+        )
+    )
+    limitations = packet.get("limitations")
+    if isinstance(limitations, list) and all(
+        isinstance(item, str) and item.strip() for item in limitations
+    ) and limitations:
+        lines.append(f"- limitations：{'、'.join(item.strip() for item in limitations)}")
+    else:
+        lines.append("- limitations：unavailable（missing_limitations）")
+    artifact_ids = packet.get("artifact_ids")
+    if isinstance(artifact_ids, list) and all(
+        isinstance(item, str) and item.strip() for item in artifact_ids
+    ) and artifact_ids:
+        lines.extend(f"- artifact_id：{item.strip()}" for item in artifact_ids)
+    else:
+        lines.append("- artifact_ids：unavailable（missing_artifact_ids）")
+    return "\n".join(lines)
+
+
 def _render_report_from_context(
     context: Mapping[str, Any], report_draft: ReportDraft
 ) -> str:
@@ -452,7 +647,10 @@ def _render_report_from_context(
         validated_context = ReportContext.model_validate(_json_safe_context(context))
     except Exception as exc:
         raise ValueError("ReportContext 未通过本地来源和结构校验。") from exc
+    quant_present = "quant" in context
     context_payload = validated_context.model_dump(mode="json")
+    if not quant_present and context_payload.get("quant") is None:
+        context_payload.pop("quant", None)
     claims = _validated_claims(context_payload["claims"])
     status = context_payload["verdict_status"]
     metrics = context_payload["metrics"]
@@ -464,6 +662,8 @@ def _render_report_from_context(
 
     sections: list[str] = ["# 投资研究报告", ""]
     for field, heading in _REPORT_SECTIONS:
+        if field == "key_risks" and quant_present:
+            sections.extend(("## 量化旁证", "", _quant_evidence_markdown(context_payload.get("quant")), ""))
         sections.extend((f"## {heading}", ""))
         if field == "execution_summary":
             sections.extend(

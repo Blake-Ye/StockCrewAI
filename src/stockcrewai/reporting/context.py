@@ -16,6 +16,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from stockcrewai.models.quant import QuantResearchPacket
 
 
 _REPORT_NARRATIVE_CATEGORIES = (
@@ -75,6 +76,7 @@ _REPORT_QUALITY_METRIC_IDS = frozenset(
 _REPORT_TREND_METRIC_IDS = frozenset(
     {"revenue_growth", "free_cash_flow", "share_dilution"}
 )
+_QUANT_PACKET_UNSET = object()
 
 
 class ReportMetric(BaseModel):
@@ -139,6 +141,7 @@ class ReportContext(BaseModel):
     ttm: dict[str, Any] = Field(default_factory=dict)
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
+    quant: dict[str, Any] | None = None
 
     @field_validator("verdict_status")
     @classmethod
@@ -522,6 +525,7 @@ def build_report_context(
     ticker: Any = None,
     financial_calculations: Any = None,
     ttm: Any = None,
+    quant_packet: Any = _QUANT_PACKET_UNSET,
 ) -> dict[str, Any]:
     """构造 Report Crew 与 Renderer 共享的唯一 JSON-safe 输入。"""
     company_payload = dict(company or {})
@@ -549,6 +553,29 @@ def build_report_context(
     }
     calculation_payload = calculations if calculations is not None else financial_calculations
     ttm_payload = ttm if ttm is not None else source_payload.get("ttm")
+    quant_payload: dict[str, Any] | None = None
+    if quant_packet is not _QUANT_PACKET_UNSET:
+        if quant_packet is None:
+            quant_payload = {
+                "status": "unavailable",
+                "reason_code": "quant_packet_missing",
+                "packet": None,
+            }
+        else:
+            try:
+                validated_quant_packet = QuantResearchPacket.model_validate(quant_packet)
+            except (TypeError, ValueError, ValidationError):
+                quant_payload = {
+                    "status": "unavailable",
+                    "reason_code": "quant_packet_invalid",
+                    "packet": None,
+                }
+            else:
+                quant_payload = {
+                    "status": "available",
+                    "reason_code": "quant_packet_validated",
+                    "packet": validated_quant_packet.model_dump(mode="json"),
+                }
 
     claims = _validated_claims(validated_claims or [])
     verdict_status = _text(verdict_payload.get("status"))
@@ -737,11 +764,14 @@ def build_report_context(
             if "reverse_dcf" in not_applicable_metrics
             else _verified_reverse_dcf_context(reverse_payload)
         ),
+        quant=quant_payload,
     )
     context_payload = context.model_dump(mode="json")
     if not policy_payload:
         for key in ("profile", "coverage_level", "policy_version"):
             context_payload.pop(key, None)
+    if quant_packet is _QUANT_PACKET_UNSET:
+        context_payload.pop("quant", None)
     return context_payload
 
 
