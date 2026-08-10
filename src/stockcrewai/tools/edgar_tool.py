@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, Type
@@ -162,6 +163,10 @@ class EdgarResult(BaseModel):
     ticker: str | None = None
     exchange: list[str] = Field(default_factory=list)
     cik: str | None = None
+    sic: str | None = None
+    sec_registrant_profile: str | None = None
+    sec_security_profile: str | None = None
+    sec_reporting_profile: str | None = None
     facts: dict[str, EdgarFact] = Field(default_factory=dict)
     ttm_inputs: dict[str, dict[str, EdgarFact]] = Field(default_factory=dict)
     filings: list[EdgarFilingEvidence] = Field(default_factory=list)
@@ -200,6 +205,78 @@ def _read_attr(value: Any, *names: str) -> Any:
         except AttributeError:
             continue
     return None
+
+
+def _format_sic(value: Any) -> str | None:
+    """将 SEC SIC 保留为规范化四位数字字符串。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return f"{value:04d}" if 0 <= value <= 9999 else None
+    text = str(value).strip()
+    if not re.fullmatch(r"\d{1,4}", text):
+        return None
+    return f"{int(text):04d}"
+
+
+def _metadata_value(source: Any, *names: str) -> Any:
+    if isinstance(source, Mapping):
+        for name in names:
+            if name in source:
+                return source[name]
+        return None
+    try:
+        return _read_attr(source, *names)
+    except Exception:
+        return None
+
+
+def _company_sec_metadata(company: Any) -> dict[str, Any]:
+    """读取当前 Company 已解析的 SEC metadata，不主动加载新资源。"""
+    sources = [company]
+    try:
+        cached_data = vars(company).get("_data")
+    except TypeError:
+        cached_data = None
+    if cached_data is not None:
+        sources.append(cached_data)
+    try:
+        company_dict = vars(company)
+    except TypeError:
+        company_dict = {}
+    for key in ("data", "submissions"):
+        value = company_dict.get(key)
+        if value is not None:
+            sources.append(value)
+
+    metadata: dict[str, Any] = {}
+    for source in sources:
+        for key, aliases in {
+            "sic": ("sic", "sic_code"),
+            "sec_registrant_profile": (
+                "sec_registrant_profile",
+                "registrant_profile",
+            ),
+            "sec_security_profile": ("sec_security_profile", "security_profile"),
+            "sec_reporting_profile": (
+                "sec_reporting_profile",
+                "reporting_profile",
+            ),
+        }.items():
+            if metadata.get(key) not in (None, ""):
+                continue
+            value = _metadata_value(source, *aliases)
+            if value not in (None, ""):
+                metadata[key] = value
+    return metadata
+
+
+def _safe_metadata_string(value: Any) -> str | None:
+    value = getattr(value, "value", value)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
 
 
 def _call_if_needed(value: Any) -> Any:
@@ -1169,6 +1246,9 @@ class EdgarTool(BaseTool):
                 tickers = _read_attr(company, "tickers") or []
                 official_ticker = tickers[0] if tickers else input_ticker
             official_ticker = str(official_ticker).upper() if official_ticker else None
+            exchanges = _call_if_needed(_read_attr(company, "get_exchanges")) or []
+            sec_metadata = _company_sec_metadata(company)
+            sic = _format_sic(sec_metadata.get("sic"))
 
             facts: dict[str, EdgarFact] = {}
             filings: list[EdgarFilingEvidence] = []
@@ -1215,11 +1295,18 @@ class EdgarTool(BaseTool):
                 input_ticker=input_ticker,
                 company_name=str(_read_attr(company, "name") or input_company_name),
                 ticker=official_ticker,
-                exchange=[
-                    str(exchange)
-                    for exchange in (_call_if_needed(_read_attr(company, "get_exchanges")) or [])
-                ],
+                exchange=[str(exchange) for exchange in exchanges],
                 cik=company_cik,
+                sic=sic,
+                sec_registrant_profile=_safe_metadata_string(
+                    sec_metadata.get("sec_registrant_profile")
+                ),
+                sec_security_profile=_safe_metadata_string(
+                    sec_metadata.get("sec_security_profile")
+                ),
+                sec_reporting_profile=_safe_metadata_string(
+                    sec_metadata.get("sec_reporting_profile")
+                ),
                 facts=facts,
                 ttm_inputs=ttm_inputs,
                 filings=filings,

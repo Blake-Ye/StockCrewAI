@@ -11,6 +11,7 @@ from stockcrewai.crews.report.crew import (
     render_validated_report,
 )
 from stockcrewai.main import ResearchFlow
+from stockcrewai.models.evidence import MarketPriceRecord
 from stockcrewai.models.policy import PolicyDecision
 from stockcrewai.models.profile import (
     CoverageLevel,
@@ -24,6 +25,7 @@ from stockcrewai.pipelines.metric_registry import (
     evaluate_policy_decisions,
     resolve_metric_policies,
 )
+from stockcrewai.tools.edgar_tool import EdgarFact, EdgarResult
 from stockcrewai.tools.verdict_tool import DeterministicVerdictTool
 
 
@@ -50,6 +52,26 @@ def _bank_policy_context() -> dict[str, Any]:
         "policy_version": BANK_POLICY_VERSION,
         "gate": gate.model_dump(mode="json"),
     }
+
+
+def _sec_fact(metric_id: str, evidence_id: str, value: str) -> EdgarFact:
+    return EdgarFact(
+        metric_id=metric_id,
+        evidence_id=evidence_id,
+        value=value,
+        unit="USD",
+        period_type="duration",
+        period="2025-FY",
+        period_start="2025-01-01",
+        period_end="2025-12-31",
+        fiscal_year=2025,
+        fiscal_period="FY",
+        filed_at="2026-02-20",
+        form="10-K",
+        accession_number=f"acc-{evidence_id}",
+        source_reference=f"sec:test/{evidence_id}",
+        validation_status="valid",
+    )
 
 
 def _valuation_policy_context() -> dict[str, Any]:
@@ -203,6 +225,112 @@ def test_legacy_profile_is_adapted_to_shared_profile_policy_gate() -> None:
     blocking = context["gate"]["blocking_decisions"]
     assert blocking
     assert all(item["metric_id"] and item["reason_code"] for item in blocking)
+
+
+def test_sec_sic_auto_profile_uses_bank_policy_gate_without_reverse_dcf_block() -> None:
+    edgar_result = EdgarResult(status="ok", sic="6020")
+    metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
+    context = pipeline_support.build_profile_policy_context(
+        source_metadata=metadata,
+        facts=edgar_result.facts,
+        calculations=[],
+    )
+    context["policy_activation"] = "sec_metadata"
+
+    flow = ResearchFlow()
+    flow.state.profile = context["profile"]
+    flow.state.policy_context = context
+    flow._pipeline_state = {
+        "profile": context["profile"],
+        "policy_context": context,
+        "facts": {},
+        "calculations": [],
+    }
+    flow.state.reverse_dcf = {
+        "status": "unavailable",
+        "reason_code": "ttm_fcf_required",
+    }
+
+    assert context["profile"]["issuer_profile"] == "bank"
+    assert context["policy_version"] == "metric-policy:bank:v1"
+    assert context["gate"]["status"] == "blocked"
+    assert any(
+        item["reason_code"] == "bank_roa_missing"
+        for item in context["gate"]["blocking_decisions"]
+    )
+    assert "reverse_dcf_required" not in {
+        item["reason_code"] for item in context["gate"]["blocking_decisions"]
+    }
+
+    assert flow.route_analysis() == "analysis_blocked"
+    assert "reverse_dcf_required" not in flow.state.required_data
+
+
+def test_sec_sic_auto_utility_profile_keeps_reverse_dcf_unavailable_non_blocking() -> None:
+    edgar_result = EdgarResult(
+        status="ok",
+        ticker="NEE",
+        sic="4911",
+        facts={
+            "revenue": _sec_fact("revenue", "ev_nee_revenue", "1000"),
+            "operating_income": _sec_fact(
+                "operating_income", "ev_nee_operating_income", "200"
+            ),
+        },
+    )
+    market_price = MarketPriceRecord(
+        evidence_id="ev_nee_market_price",
+        ticker="NEE",
+        price="70",
+        currency="USD",
+        price_timestamp="2026-03-02T20:00:00Z",
+        source_reference="yahoo:test/NEE",
+        adjustment_basis="raw",
+        validation_status="valid",
+    )
+    context = pipeline_support.build_profile_policy_context(
+        source_metadata=pipeline_support.profile_metadata_from_edgar(edgar_result),
+        facts=edgar_result.facts,
+        calculations=[],
+        market_price_records=(market_price,),
+    )
+    context["policy_activation"] = "sec_metadata"
+    decisions = {
+        item["metric_id"]: item for item in context["policy_decisions"]
+    }
+
+    flow = ResearchFlow()
+    flow.state.profile = context["profile"]
+    flow.state.policy_context = context
+    flow._pipeline_state = {
+        "profile": context["profile"],
+        "policy_context": context,
+        "facts": edgar_result.facts,
+        "calculations": [],
+    }
+    flow.state.reverse_dcf = {
+        "status": "unavailable",
+        "reason_code": "ttm_fcf_required",
+    }
+
+    assert context["profile"]["issuer_profile"] == "utility"
+    assert context["policy_version"] == "metric-policy:utility:v1"
+    assert context["profile_version"] == "utility-profile:v1"
+    assert context["profile_envelope"] == {
+        "status": "valid",
+        "reason_code": "typed_profile_envelope_valid",
+    }
+    assert {
+        item["evidence_id"] for item in context["evidence_records"]
+    } == {"ev_nee_revenue", "ev_nee_operating_income"}
+    assert decisions["utility_operating_margin"]["status"] == "available"
+    assert decisions["fcf_yield"]["status"] == "unavailable"
+    assert decisions["fcf_yield"]["blocking"] is False
+    assert context["gate"]["status"] == "ready"
+    assert flow.route_analysis() == "analysis_ready"
+    assert flow.state.required_data == []
+    assert "reverse_dcf_required" not in flow.state.required_data
+    assert flow.state.reverse_dcf["reason_code"] == "ttm_fcf_required"
 
 
 def test_flow_routes_from_profile_gate_and_exposes_one_json_safe_context() -> None:

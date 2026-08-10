@@ -750,18 +750,29 @@ def policy_version_for_profile(profile: ProfileResult | IssuerProfile) -> str:
 
 def resolve_metric_policies(profile: ProfileResult) -> tuple[MetricPolicy, ...]:
     """Return the fixed metric policy rows applicable to one resolved profile."""
+    issuer_specific_partial_profiles = {
+        IssuerProfile.BANK,
+        IssuerProfile.INSURANCE,
+        IssuerProfile.UTILITY,
+    }
     if (
         profile.coverage_level
         in {CoverageLevel.EVIDENCE_ONLY, CoverageLevel.UNSUPPORTED_SECURITY}
         or profile.issuer_profile is IssuerProfile.UNKNOWN
         or profile.security_profile
         in {
-            SecurityProfile.UNKNOWN,
             SecurityProfile.UNSUPPORTED_FUND_SECURITY,
             SecurityProfile.ADR,
             SecurityProfile.SPAC,
         }
-        or profile.reporting_profile is ReportingProfile.UNKNOWN
+        or (
+            profile.security_profile is SecurityProfile.UNKNOWN
+            and profile.issuer_profile not in issuer_specific_partial_profiles
+        )
+        or (
+            profile.reporting_profile is ReportingProfile.UNKNOWN
+            and profile.issuer_profile not in issuer_specific_partial_profiles
+        )
     ):
         return ()
 

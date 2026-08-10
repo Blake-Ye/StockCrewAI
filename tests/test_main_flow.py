@@ -752,6 +752,8 @@ class MainFlowExecutionTests(unittest.TestCase):
                 "historical_valuation",
                 "reverse_dcf",
                 "ttm",
+                "profile",
+                "policy_context",
                 "status",
                 "stage",
                 "analysis",

@@ -184,11 +184,10 @@ def run_research(
         "ttm",
     )
     deterministic_outputs = {key: result.get(key) for key in deterministic_keys}
-    if profile_payload:
-        if result.get("profile"):
-            deterministic_outputs["profile"] = result["profile"]
-        if result.get("policy_context"):
-            deterministic_outputs["policy_context"] = result["policy_context"]
+    if result.get("profile"):
+        deterministic_outputs["profile"] = result["profile"]
+    if result.get("policy_context"):
+        deterministic_outputs["policy_context"] = result["policy_context"]
 
     if result.get("required_data") == ["invalid_parser_output"]:
         parsed_request = result.get("parsed_request")

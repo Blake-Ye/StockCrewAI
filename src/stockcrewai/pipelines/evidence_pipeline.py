@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,10 @@ from stockcrewai.pipelines.metric_registry import (
     resolve_metric_policies,
 )
 from stockcrewai.pipelines.profile_registry import classify_profiles
-from stockcrewai.profiles.bank import evaluate_bank_profile
+from stockcrewai.profiles.bank import (
+    PROFILE_VERSION as BANK_PROFILE_VERSION,
+    evaluate_bank_profile,
+)
 from stockcrewai.profiles.commodity_producer import (
     POLICY_VERSION as COMMODITY_POLICY_VERSION,
     PROFILE_VERSION as COMMODITY_PROFILE_VERSION,
@@ -480,7 +484,7 @@ def _typed_profile_unavailable_decisions(
                 PolicyDecision(
                     metric_id=policy.metric_id,
                     status="unavailable",
-                    reason_code="typed_profile_envelope_required",
+                    reason_code=policy.reason_code,
                     blocking=policy.gate_effect.value == "blocking",
                 )
             )
@@ -507,6 +511,203 @@ def _typed_profile_input_valid(
     except (TypeError, ValueError):
         return False
     return parsed_as_of.tzinfo is not None and parsed_as_of.utcoffset() is not None
+
+
+def _record_payload(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        payload = value.model_dump(mode="json")
+        return dict(payload) if isinstance(payload, Mapping) else {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
+def _record_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if value in (None, ""):
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _record_as_of(value: Any, filed_at: date) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None and value.utcoffset() is not None else None
+    if isinstance(value, date):
+        return datetime.combine(value, time.min, tzinfo=UTC)
+    if value not in (None, ""):
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+    return datetime.combine(filed_at, time.min, tzinfo=UTC)
+
+
+def _fact_currency(payload: Mapping[str, Any]) -> str | None:
+    currency = payload.get("currency")
+    if isinstance(currency, str) and currency.strip():
+        return currency.strip()
+    unit = payload.get("unit")
+    if isinstance(unit, str):
+        unit = unit.strip()
+        if re.fullmatch(r"[A-Z]{3}", unit):
+            return unit
+    return None
+
+
+def _evidence_record_from_fact(raw_fact: Any) -> EvidenceRecord | None:
+    payload = _record_payload(raw_fact)
+    required = (
+        "evidence_id",
+        "source_reference",
+        "filed_at",
+        "period_start",
+        "period_end",
+        "unit",
+        "value",
+    )
+    if any(payload.get(key) in (None, "") for key in required):
+        return None
+    if payload.get("validation_status") != ValidationStatus.VALID.value:
+        return None
+    filed_at = _record_date(payload.get("filed_at"))
+    period_start = _record_date(payload.get("period_start"))
+    period_end = _record_date(payload.get("period_end"))
+    currency = _fact_currency(payload)
+    as_of = _record_as_of(payload.get("as_of"), filed_at) if filed_at else None
+    if (
+        filed_at is None
+        or period_start is None
+        or period_end is None
+        or period_start > period_end
+        or currency is None
+        or as_of is None
+    ):
+        return None
+    try:
+        return EvidenceRecord(
+            evidence_id=payload["evidence_id"],
+            source_reference=payload["source_reference"],
+            as_of=as_of,
+            filed_at=filed_at,
+            period_start=period_start,
+            period_end=period_end,
+            unit=payload["unit"],
+            currency=currency,
+            value=payload["value"],
+            validation_status=ValidationStatus.VALID,
+        )
+    except (TypeError, ValueError, ValidationError):
+        return None
+
+
+def _typed_profile_facts(
+    facts: Mapping[str, Any] | None,
+) -> tuple[dict[str, EvidenceRecord], tuple[EvidenceRecord, ...]]:
+    records_by_metric: dict[str, EvidenceRecord] = {}
+    records: list[EvidenceRecord] = []
+    seen_evidence_ids: set[str] = set()
+    for metric_id, raw_fact in (facts or {}).items():
+        record = _evidence_record_from_fact(raw_fact)
+        if record is None or record.evidence_id in seen_evidence_ids:
+            continue
+        records_by_metric[str(metric_id)] = record
+        records.append(record)
+        seen_evidence_ids.add(record.evidence_id)
+    return records_by_metric, tuple(records)
+
+
+def _automatic_profile_input(
+    profile_result: ProfileResult,
+    records_by_metric: Mapping[str, EvidenceRecord],
+    market_price_records: Sequence[MarketPriceRecord],
+) -> dict[str, Any] | None:
+    if profile_result.issuer_profile is IssuerProfile.BANK:
+        profile_version = BANK_PROFILE_VERSION
+    elif profile_result.issuer_profile is IssuerProfile.UTILITY:
+        profile_version = UTILITY_PROFILE_VERSION
+    else:
+        return None
+    timestamps = [record.as_of for record in records_by_metric.values()]
+    timestamps.extend(record.price_timestamp for record in market_price_records)
+    if not timestamps:
+        return None
+    return {
+        "profile_version": profile_version,
+        "issuer_profile": profile_result.issuer_profile.value,
+        "security_profile": profile_result.security_profile.value,
+        "reporting_profile": profile_result.reporting_profile.value,
+        "coverage_level": profile_result.coverage_level.value,
+        "policy_version": policy_version_for_profile(profile_result),
+        "as_of": max(timestamps).isoformat(),
+        "metric_inputs": {
+            metric_id: record.evidence_id
+            for metric_id, record in records_by_metric.items()
+        },
+    }
+
+
+def _typed_profile_envelope_sources(
+    *,
+    profile_result: ProfileResult,
+    profile: Mapping[str, Any] | ProfileResult | None,
+    facts: Mapping[str, Any] | None,
+    evidence_records: Sequence[EvidenceRecord],
+    market_price_records: Sequence[MarketPriceRecord],
+    expected_profile_version: str,
+) -> tuple[
+    Mapping[str, Any] | None,
+    tuple[EvidenceRecord, ...],
+    tuple[MarketPriceRecord, ...],
+    bool,
+    bool,
+    bool,
+]:
+    """保留显式 typed sources，并为 SEC profile metadata 建立最小 envelope。"""
+    typed_evidence_records, evidence_types_valid = _typed_records(
+        evidence_records, EvidenceRecord
+    )
+    typed_market_price_records, market_types_valid = _typed_records(
+        market_price_records, MarketPriceRecord
+    )
+    if isinstance(profile, Mapping) and "profile_version" in profile:
+        return (
+            profile,
+            typed_evidence_records,
+            typed_market_price_records,
+            _typed_profile_input_valid(profile, expected_profile_version),
+            evidence_types_valid,
+            market_types_valid,
+        )
+
+    records_by_metric, fact_records = _typed_profile_facts(facts)
+    merged_records: list[EvidenceRecord] = []
+    seen_evidence_ids: set[str] = set()
+    for record in (*typed_evidence_records, *fact_records):
+        if record.evidence_id in seen_evidence_ids:
+            continue
+        merged_records.append(record)
+        seen_evidence_ids.add(record.evidence_id)
+    automatic_profile = _automatic_profile_input(
+        profile_result,
+        records_by_metric,
+        typed_market_price_records,
+    )
+    return (
+        automatic_profile,
+        tuple(merged_records),
+        typed_market_price_records,
+        automatic_profile is not None
+        and _typed_profile_input_valid(automatic_profile, expected_profile_version),
+        evidence_types_valid,
+        market_types_valid,
+    )
 
 
 def build_profile_policy_context(
@@ -634,15 +835,20 @@ def build_profile_policy_context(
         )
 
     if profile_result.issuer_profile is IssuerProfile.UTILITY:
-        typed_evidence_records, evidence_types_valid = _typed_records(
-            evidence_records, EvidenceRecord
-        )
-        typed_market_price_records, market_types_valid = _typed_records(
-            market_price_records, MarketPriceRecord
-        )
-        profile_input_valid = _typed_profile_input_valid(
-            profile,
-            UTILITY_PROFILE_VERSION,
+        (
+            profile_input,
+            typed_evidence_records,
+            typed_market_price_records,
+            profile_input_valid,
+            evidence_types_valid,
+            market_types_valid,
+        ) = _typed_profile_envelope_sources(
+            profile_result=profile_result,
+            profile=profile,
+            facts=facts,
+            evidence_records=evidence_records,
+            market_price_records=market_price_records,
+            expected_profile_version=UTILITY_PROFILE_VERSION,
         )
         envelope_valid = (
             profile_input_valid
@@ -651,7 +857,7 @@ def build_profile_policy_context(
             and bool(typed_evidence_records or typed_market_price_records)
         )
         if envelope_valid:
-            adapter_input: Mapping[str, object] = profile  # type: ignore[assignment]
+            adapter_input: Mapping[str, object] = profile_input  # type: ignore[assignment]
             values, decisions, calculation_records = evaluate_utility_profile(
                 adapter_input,
                 typed_evidence_records,
@@ -676,6 +882,7 @@ def build_profile_policy_context(
                     decision.model_dump(mode="json") for decision in decisions
                 ],
                 "policy_version": policy_version_for_profile(profile_result),
+                "profile_version": UTILITY_PROFILE_VERSION,
                 "gate": gate.model_dump(mode="json"),
                 "values": values,
                 "calculation_records": calculation_records,
@@ -697,20 +904,37 @@ def build_profile_policy_context(
             else evaluate_insurance_profile
         )
         expected_profile_version = (
-            "bank-profile:v1"
+            BANK_PROFILE_VERSION
             if profile_result.issuer_profile is IssuerProfile.BANK
             else "insurance-profile:v1"
         )
-        typed_evidence_records, evidence_types_valid = _typed_records(
-            evidence_records, EvidenceRecord
-        )
-        typed_market_price_records, market_types_valid = _typed_records(
-            market_price_records, MarketPriceRecord
-        )
-        profile_input_valid = _typed_profile_input_valid(
-            profile,
-            expected_profile_version,
-        )
+        if profile_result.issuer_profile is IssuerProfile.BANK:
+            (
+                profile_input,
+                typed_evidence_records,
+                typed_market_price_records,
+                profile_input_valid,
+                evidence_types_valid,
+                market_types_valid,
+            ) = _typed_profile_envelope_sources(
+                profile_result=profile_result,
+                profile=profile,
+                facts=facts,
+                evidence_records=evidence_records,
+                market_price_records=market_price_records,
+                expected_profile_version=expected_profile_version,
+            )
+        else:
+            profile_input = profile
+            typed_evidence_records, evidence_types_valid = _typed_records(
+                evidence_records, EvidenceRecord
+            )
+            typed_market_price_records, market_types_valid = _typed_records(
+                market_price_records, MarketPriceRecord
+            )
+            profile_input_valid = _typed_profile_input_valid(
+                profile, expected_profile_version
+            )
         envelope_valid = (
             profile_input_valid
             and evidence_types_valid
@@ -718,7 +942,7 @@ def build_profile_policy_context(
             and bool(typed_evidence_records or typed_market_price_records)
         )
         if envelope_valid:
-            adapter_input: Mapping[str, object] = profile  # type: ignore[assignment]
+            adapter_input: Mapping[str, object] = profile_input  # type: ignore[assignment]
             adapter_values, adapter_decisions, calculation_records = adapter(
                 adapter_input,
                 typed_evidence_records,
@@ -745,6 +969,7 @@ def build_profile_policy_context(
                     decision.model_dump(mode="json") for decision in decisions
                 ],
                 "policy_version": policy_version_for_profile(profile_result),
+                "profile_version": expected_profile_version,
                 "gate": gate.model_dump(mode="json"),
                 "values": values,
                 "calculation_records": calculation_records,

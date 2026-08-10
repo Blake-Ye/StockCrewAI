@@ -188,7 +188,42 @@ class OfflineEdgar:
         return OfflineCompany(self.facts)
 
 
+class MetadataCompany(OfflineCompany):
+    def __init__(self, facts, sic):
+        super().__init__(facts)
+        self.sic = sic
+
+
+class MetadataEdgar(OfflineEdgar):
+    def __init__(self, facts, sic):
+        super().__init__(facts)
+        self.sic = sic
+        self.company_calls = 0
+
+    def Company(self, identifier):
+        self.company_calls += 1
+        return MetadataCompany(self.facts, self.sic)
+
+
 class EdgarToolTTMTests(unittest.TestCase):
+    def test_preserves_sec_sic_metadata_without_extra_company_lookup(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        for raw_sic, expected_sic in ((6020, "6020"), ("4911", "4911"), (None, None)):
+            with self.subTest(raw_sic=raw_sic):
+                module = MetadataEdgar(OfflineEPSFacts(), raw_sic)
+                with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+                    result = EdgarTool(
+                        edgar_module=module,
+                        as_of=date(2026, 8, 8),
+                    ).run(ticker="AAPL")
+
+                self.assertEqual(result.sic, expected_sic)
+                self.assertIsNone(result.sec_registrant_profile)
+                self.assertIsNone(result.sec_security_profile)
+                self.assertIsNone(result.sec_reporting_profile)
+                self.assertEqual(module.company_calls, 1)
+
     def test_diluted_eps_falls_back_to_sec_concept_name(self):
         from stockcrewai.tools.edgar_tool import EdgarTool
 
