@@ -153,3 +153,63 @@ net_return = gross_return - cost_return
 - 只有进入统计库（NumPy/pandas 等）的序列才允许显式转换为 `float64`；转换协议固定为 `conversion_version="decimal-to-float64-v1"`、`tolerance=Decimal("1e-12")`。转换前保留 Decimal；统计结果立即恢复为有限 Decimal/typed outcome，误差超过 `1e-12` 必须失败而不是放宽容差。
 - 默认运行只读本地 fixture/artifact，不联网；不做参数搜索、自动调参或结果导向的 Universe/成本选择。Agent 只能解释已验证结果，不能选择 source、修改 score、权重、收益、成本、统计值或 reason code。
 - 每个 backtest period 必须保存：`signal_as_of`、`trade_date`、`next_trade_date`、`snapshot_ids`（ticker→snapshot ID）、`score_version`、`eligible_count`、`selected_tickers`、`previous_weights`、`target_weights`、`gross_return`、`net_return`、两条 `benchmark_return` 及其 status/reason_code、`turnover`、`round_trip_cost_bps`、`cost_return`、`coverage`、`missing_return_ids`。所有 ID、ticker、列表和映射使用稳定排序；不可用数值使用 `value=None`，不得用 0 代替。
+
+## 7. WP10 REIT 专用数值口径（`reit-profile:v1`）
+
+本节只覆盖 `issuer_profile=reit`，不改动 WP00 普通企业、WP07 因子或 WP08 回测的历史公式。REIT Profile 版本固定为 `reit-profile:v1`；REIT Metric Policy 版本固定为 `metric-policy:v2`。
+
+### 7.1 FFO 与 FFO/share
+
+- FFO 的审计身份只用于核对完整披露：`disclosed_ffo_total = gaap_net_income + Σ(signed_adjustment_i)`。`gaap_net_income`、每个实际调整项和 `disclosed_ffo_total` 都必须来自同一 NAREIT/公司 reconciliation，具有各自已验证 Evidence ID、来源 URL、期间、单位和币种；调整项按来源实际正负号进入求和。
+- 缺少某个调整行时不回填 `0`；只有来源明确披露该项为零时才允许记录带 Evidence 的零值。不能从 US-GAAP tag、普通企业 FCF 或 Agent 文本补齐，也不能为不完整输入创建 reconciliation `CalculationRecord`。
+- `ffo_per_share` 只能按 `ffo_total / diluted_weighted_average_shares` 计算。FFO 总额和稀释加权平均股数必须是同一 `period_start`、`period_end`、`fiscal_year`、`fiscal_period` 和明确 basis；金额与股数单位必须匹配，币种必须能得到明确的货币/股结果。期间或单位不匹配时返回 `unavailable`，不能使用公司单独披露的 FFO/share 替代计算值；该披露最多作为交叉核对 Evidence。
+- FFO 总额和稀释股数均使用有限 `Decimal`。除非输入事实和计算记录完整且通过验证，不产生任何 `CalculationRecord`；不得用零、最近期间或年化股数让 FFO/share 看起来可用。
+
+NAREIT 对 FFO 的行业定义和 SEC 对其 per-share 展示的适用说明见 [NAREIT FFO](https://www.reit.com/glossary/funds-operation-ffo)；FFO 仍是 GAAP 信息的补充，不替代 GAAP。
+
+### 7.2 AFFO
+
+AFFO 没有统一公式。只在公司明确命名、解释并披露 AFFO reconciliation 及其来源时使用公司披露值；必须保留公司实际调整项、期间、单位、币种、Evidence ID 和来源 URL。不能把 maintenance capex、straight-line rent、租赁成本或其他字段机械拼成通用 AFFO，也不能用普通 `free_cash_flow` 近似 AFFO。缺失或未披露时返回 `value=null`、`status=unavailable`、`reason_code=affo_reconciliation_not_disclosed`，不得把缺失变成零。规则依据 [NAREIT AFFO](https://www.reit.com/glossary/adjusted-funds-operations-affo)。
+
+### 7.3 可选 REIT 指标
+
+下列指标即使缺失也不阻断；但一旦为 `available`，必须有相应 Evidence/Calculation provenance，且保留来源定义和完整期间。
+
+| 指标 | 固定口径 |
+| --- | --- |
+| `same_store_noi` | 只接受公司明确披露的 same-store NOI，保留物业池、same-store 定义、期间和来源；不能从收入/费用字段猜算。 |
+| `occupancy` | 只接受公司明确披露的 occupancy，保留 physical/economic、期末/平均等定义；不同定义不可混比。 |
+| `net_debt_to_ebitda` | `net_debt / EBITDA`。net debt、EBITDA 的观察时点、流量期间、LTM/季度/年度 basis 必须明确并可追溯；没有证据时禁止自动年化、把季度乘四或把其他期间拼接。 |
+| `dividend_coverage` | `FFO attributable to common / common dividends`。分子和分母必须同期间、同币种并有来源；FFO 为负时保留负覆盖率，不能截断为零；共同股息为零时返回 `zero_common_dividends`。 |
+| `price_to_ffo` | `market price / FFO per share`。价格须有已验证的行情 Evidence、时间戳和币种；FFO/share 必须是本节 7.1 的同期间计算结果。FFO/share `<= 0` 时返回 `unavailable/non_positive_ffo_per_share`，不得除零或人为改成正数。 |
+
+`net_debt_to_ebitda` 的期间不明确或只有不具备年化依据的短期数据时，分别返回 `net_debt_to_ebitda_period_ambiguous` 或 `net_debt_to_ebitda_no_annualization_basis`；不输出无期间的比率。
+
+### 7.4 REIT status、provenance 与 reason codes
+
+每个 REIT metric 的 `PolicyDecision` 必须包含 `metric_id`、`status`、`evidence_ids`、`calculation_ids`、`reason_code` 和 `blocking`。`available` 的值必须为有限 Decimal，直接披露值至少有已验证 Evidence，派生值必须有全部输入 Evidence 和有效 Calculation；`unavailable` 和 `not_applicable` 的值必须为 `null`。未验证的 Evidence ID 不能作为有效 provenance 写出，只能由 PolicyDecision 以 reason code 表示。
+
+REIT 采用以下稳定 reason code；缺失、无来源或未验证 Evidence 不得改写成数值：
+
+| reason code | 适用情形 |
+| --- | --- |
+| `missing_required_field` | 必要字段缺失 |
+| `missing_source_url` | 事实没有来源 URL |
+| `unvalidated_evidence_id` | 引用的 Evidence ID 未通过验证 |
+| `ffo_reconciliation_not_disclosed` | 没有完整 NAREIT/公司 FFO reconciliation |
+| `ffo_adjustment_missing` | reconciliation 缺少实际调整行，不能默认为零 |
+| `ffo_total_missing` | 没有披露的 FFO 总额 |
+| `ffo_period_mismatch` / `ffo_unit_mismatch` / `ffo_currency_mismatch` | FFO reconciliation 行之间不一致 |
+| `diluted_weighted_average_shares_missing` | 缺少稀释加权平均股数 |
+| `ffo_per_share_period_mismatch` / `ffo_per_share_unit_mismatch` | FFO/share 输入期间或单位不一致 |
+| `affo_reconciliation_not_disclosed` | 没有公司明确披露且可追溯的 AFFO reconciliation |
+| `same_store_noi_not_disclosed` / `occupancy_not_disclosed` | 可选运营指标未披露 |
+| `net_debt_to_ebitda_not_disclosed` | 可选杠杆指标未披露 |
+| `net_debt_to_ebitda_period_ambiguous` / `net_debt_to_ebitda_no_annualization_basis` | 杠杆指标期间不明或不能合法年化 |
+| `dividend_coverage_not_disclosed` / `zero_common_dividends` | 股息覆盖缺披露或分母为零 |
+| `market_price_missing` / `price_to_ffo_currency_mismatch` | P/FFO 缺价格或币种不匹配 |
+| `non_positive_ffo_per_share` | FFO/share 小于或等于零，P/FFO 不可用 |
+| `reit_primary_valuation_not_pe` | REIT 不采用普通 P/E 作为主估值 |
+| `reit_primary_cash_metric_not_fcf` | REIT 不采用普通 FCF yield 作为主现金指标 |
+
+`pe` 和 `fcf_yield` 固定为 `status=not_applicable`、`blocking=false`，而不是 `unavailable`；报告必须用解释性文本把分析引导至 FFO/AFFO 和 `price_to_ffo`。普通企业的 P/E/FCF 规则不应被复制为 REIT 的无条件阻断条件。SEC 关于非 GAAP 指标应清晰标注、与最直接可比 GAAP 指标对照并避免误导性调整的要求见 [SEC Non-GAAP Financial Measures](https://www.sec.gov/rules-regulations/staff-guidance/corporation-finance-interpretations/non-gaap-financial-measures)。

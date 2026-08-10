@@ -212,3 +212,94 @@ Profile 和 Policy 模型只表达适用性、覆盖范围、策略决定及 Gat
 - 所有 `datetime` 字段必须是 timezone-aware；无时区时间戳被拒绝。
 
 WP01 本阶段只建立和公开共享数据契约，不接入 Flow/Crew，不新增 resolver/store/gate 行为，也不改变当前运行行为。
+
+## 6. WP10 REIT 专用数据契约（`reit-profile:v1`）
+
+本节只适用于 `issuer_profile=reit`，是 REIT 数据映射、Metric Policy、Gate 和报告的唯一输入契约。REIT Profile 的 `profile_version` 固定为 `reit-profile:v1`；本节定义的 REIT `MetricPolicy.policy_version` 固定为 `metric-policy:v2`，不改写前文共享模型或其他历史版本字段。
+
+### 6.1 Profile envelope 与来源事实
+
+REIT envelope 的最小字段形状如下。`ReitLine`、`Period`、`CalculationRecord` 和 `PolicyDecision` 均为下方定义的字段形状；尖括号是类型标记，不是可输出的数值。
+
+```json
+{
+  "profile_version": "reit-profile:v1",
+  "issuer_profile": "reit",
+  "security_profile": "common_stock|multi_class|adr",
+  "reporting_profile": "domestic_us_gaap|foreign_private_issuer_ifrs|unknown",
+  "coverage_level": "full|partial|evidence_only|unsupported_security",
+  "classification_evidence_ids": ["<validated evidence_id>"],
+  "us_gaap_tags": ["<observed tag>"],
+  "policy_version": "metric-policy:v2",
+  "ffo_reconciliation": {
+    "gaap_net_income": "<ReitLine>",
+    "adjustments": ["<ReitLine with signed_amount>"],
+    "disclosed_ffo_total": "<ReitLine>"
+  },
+  "metric_values": {
+    "<metric_id>": {
+      "value": "<decimal string>|null",
+      "unit": "<unit>",
+      "currency": "<currency>",
+      "period": "<Period>|null",
+      "policy_decision": "<PolicyDecision>"
+    }
+  },
+  "calculation_records": ["<CalculationRecord>"]
+}
+```
+
+`ReitLine` 是直接来源事实或 reconciliation 行，必须包含：
+
+| 字段 | 约束 |
+| --- | --- |
+| `line_type` | `gaap_net_income`、`ffo_adjustment` 或 `disclosed_ffo_total` |
+| `label` | 来源中的原始行名；不得由 Agent 改写成未披露的调整项 |
+| `signed_amount` | 有限 Decimal 的 JSON 字符串，保留来源实际正负号；来源明确披露为零时才可为 `"0"` |
+| `evidence_id` | 稳定 ID，必须已验证；未验证 ID 不得写入有效 provenance 列表 |
+| `unit` | 来源声明的金额单位；无单位不可用 |
+| `currency` | 来源声明的币种；货币事实不得与其他币种混算 |
+| `period` | `period_start`、`period_end`、`fiscal_year`、`fiscal_period`、`audited` 和明确的 `basis` |
+| `filed_at` / `as_of` | 分别为 filing 日期和带时区的观察时间，遵守 point-in-time 约束 |
+| `source_reference` | 可访问的来源 URL；缺失或非来源 URL 时不可用 |
+| `validation_status` | 只有 `valid` 的来源事实可以进入可用 FFO 或其计算 |
+
+分类证据必须进入已有 `classification_evidence_ids`；`us_gaap_tags` 只记录实际观察到的 tag，不能因为 tag 缺失而伪造 FFO reconciliation，也不能用 tag 代替公司披露的调整行。FFO/AFFO 的来源规则引用 [NAREIT FFO](https://www.reit.com/glossary/funds-operation-ffo)、[NAREIT AFFO](https://www.reit.com/glossary/adjusted-funds-operations-affo) 和 [SEC Non-GAAP Financial Measures](https://www.sec.gov/rules-regulations/staff-guidance/corporation-finance-interpretations/non-gaap-financial-measures)。
+
+### 6.2 FFO reconciliation 与记录关系
+
+核心 FFO 只有在完整、可审计的 NAREIT 或公司明确标注的 FFO reconciliation 存在时才可用，且必须同时包含：
+
+- GAAP 净利润基数 `gaap_net_income`；
+- 来源实际列出的每一个调整项 `adjustments`，每项保留实际带符号的 `signed_amount`；
+- 来源披露的 FFO 总额 `disclosed_ffo_total`；
+- 上述每一行自己的 `evidence_id`、期间、单位、币种、`filed_at`、验证状态和来源 URL。
+
+调整项缺失不是零：不能把缺少的行补为 `0`，不能从 US-GAAP tag、普通企业字段或自然语言推断调整项，也不能为不完整 reconciliation 伪造 `CalculationRecord`。来源明确写出某一调整项为零时，该零值必须仍有自己的有效 `EvidenceRecord`。FFO 总额以披露事实为准；只有所有实际输入 Evidence 均有效、期间/单位/币种一致且算术身份得到验证时，才可创建 reconciliation `CalculationRecord`，该记录不能替代披露总额的 Evidence。
+
+三类记录的关系固定为：
+
+1. `EvidenceRecord` 保存 filing/公司披露的原始事实（包括每个 FFO reconciliation 行、稀释加权平均股数、股息和市场价格）。
+2. `CalculationRecord` 只保存 Python 对已验证 Evidence 的确定性推导；`input_evidence_ids` 必须是真实输入，期间、单位和币种必须可复核。缺输入时不创建记录。
+3. `PolicyDecision` 是唯一向 Gate 和报告暴露的指标结论，携带 `status`、`reason_code`、`blocking` 以及已验证的 `evidence_ids`/`calculation_ids`。LLM 不得创建、补全或替换上述 ID。
+
+### 6.3 REIT Metric Policy 矩阵
+
+所有可用数值都必须能沿 `PolicyDecision -> CalculationRecord（如有） -> EvidenceRecord` 回溯；直接披露指标至少带 Evidence，派生指标必须同时带输入 Evidence 和 Calculation。`ffo_total` 与 `ffo_per_share` 是核心 FFO 所需指标；其缺失可以阻断完整 REIT coverage，但任何缺失都必须保持 `value=null`。AFFO 和下表中的可选指标均为 non-blocking。
+
+| `metric_id` | `applicability` | 固定 `formula_id` / 来源规则 | `gate_effect` | 不可用或不适用原因 |
+| --- | --- | --- | --- | --- |
+| `ffo_total` | `required` | `reit-ffo-reconciliation-v1`；完整 NAREIT/公司 reconciliation | `blocking` | `ffo_reconciliation_not_disclosed`、`ffo_adjustment_missing`、`ffo_period_mismatch`、`ffo_unit_mismatch`、`ffo_currency_mismatch` |
+| `ffo_per_share` | `required` | `reit-ffo-per-share-v1`；同期间 FFO 总额 / 稀释加权平均股数 | `blocking` | `ffo_total_missing`、`diluted_weighted_average_shares_missing`、`ffo_per_share_period_mismatch`、`ffo_per_share_unit_mismatch` |
+| `affo` | `optional` | `company-disclosed-affo-reconciliation-v1`；只接受公司明确披露且带 reconciliation/source 的 AFFO | `non_blocking` | `affo_reconciliation_not_disclosed` |
+| `same_store_noi` | `optional` | `company-disclosed-same-store-noi-v1`；保留公司 same-store 定义和期间 | `non_blocking` | `same_store_noi_not_disclosed` |
+| `occupancy` | `optional` | `company-disclosed-occupancy-v1`；保留 physical/economic 等原始定义 | `non_blocking` | `occupancy_not_disclosed` |
+| `net_debt_to_ebitda` | `optional` | `reit-net-debt-to-ebitda-v1`；明确期间的 net debt / EBITDA，不自动年化 | `non_blocking` | `net_debt_to_ebitda_not_disclosed`、`net_debt_to_ebitda_period_ambiguous`、`net_debt_to_ebitda_no_annualization_basis` |
+| `dividend_coverage` | `optional` | `reit-dividend-coverage-v1`；FFO attributable to common / common dividends | `non_blocking` | `dividend_coverage_not_disclosed`、`zero_common_dividends` |
+| `price_to_ffo` | `optional` | `reit-price-to-ffo-v1`；market price / FFO per share | `non_blocking` | `market_price_missing`、`non_positive_ffo_per_share`、`price_to_ffo_currency_mismatch` |
+| `pe` | `not_applicable` | 无 REIT 普通 P/E 计算 | `non_blocking` | `reit_primary_valuation_not_pe` |
+| `fcf_yield` | `not_applicable` | 无 REIT 普通 FCF yield 计算 | `non_blocking` | `reit_primary_cash_metric_not_fcf` |
+
+`available` 表示值非空、必要的 Evidence/Calculation 已验证且期间/单位/币种一致；`unavailable` 表示指标适用但字段、来源、验证、期间或分母条件不足，值必须为 `null`；`not_applicable` 表示 Policy 明确不适用，值同样为 `null`，不能用它掩盖缺失。REIT 的普通 P/E 和 FCF yield 应在报告中解释为不适用，并引导读者查看 FFO、公司披露的 AFFO 和 `price_to_ffo`；它们不得成为无条件阻断项。
+
+REIT Policy 不把缺失、无来源、未验证或期间/单位不匹配标为 `invalid`；这些情况按上表使用 `unavailable`。`invalid` 仅保留给共享模型或有限 Decimal 结构校验失败。
