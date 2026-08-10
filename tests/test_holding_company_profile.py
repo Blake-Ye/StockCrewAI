@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_EVEN, localcontext
+from decimal import Decimal, Overflow, ROUND_DOWN, ROUND_HALF_EVEN, ROUND_UP, localcontext
 import json
 from pathlib import Path
 from typing import Any
@@ -607,3 +607,28 @@ def test_parent_shares_evidence_conflict_blocks_market_cap(
         calculation.formula_id != "holding-company-market-cap-v1"
         for calculation in calculations
     )
+
+
+def test_holding_arithmetic_ignores_caller_decimal_bounds_and_traps() -> None:
+    fixture = _load_fixture("complete")
+
+    with localcontext() as context:
+        context.prec = 6
+        context.rounding = ROUND_UP
+        context.Emax = 1
+        context.Emin = -1
+        context.traps[Overflow] = False
+        values, decisions, calculations = _evaluate(fixture)
+
+    decisions_by_metric = _decisions_by_metric(decisions)
+    assert values["attributable_holdings_value"] == Decimal("800")
+    assert values["holding_company_nav"] == Decimal("680")
+    assert values["holding_company_market_cap"] == Decimal("500")
+    assert values["holding_company_nav_discount"] == Decimal("180") / Decimal("680")
+    assert decisions_by_metric["attributable_holdings_value"].status == "available"
+    component_calculation = next(
+        calculation
+        for calculation in calculations
+        if calculation.formula_id == "holding-attributable-component-value-v1"
+    )
+    assert component_calculation.result == Decimal("600")
