@@ -8,8 +8,12 @@ CrewAI 的官方 Flow 装饰器、稳定路由标签以及 PrivateAttr 运行时
 from __future__ import annotations
 
 import json
+import logging
+import os
+import time
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -61,6 +65,7 @@ from stockcrewai.run_output import RunStageEvent, sanitize_text
 from stockcrewai.models.policy import PolicyDecision
 from stockcrewai.models.profile import ProfileResult
 from stockcrewai.services.evidence_store import EvidenceStore
+from stockcrewai.services.runtime_metrics import RuntimeMetricsCollector
 from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
 from stockcrewai.tools.edgar_tool import EdgarTool
 from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
@@ -68,6 +73,34 @@ from stockcrewai.tools.market_price_tool import MarketPriceTool
 from stockcrewai.tools.reverse_dcf_tool import ReverseDCFTool
 from stockcrewai.tools.validation_tool import FinancialValidationTool
 from stockcrewai.tools.valuation_tool import ValuationTool, _market_price_evidence_id
+
+
+_RUNTIME_METRICS_LOGGER = logging.getLogger(__name__)
+_RUNTIME_METRICS_DISABLED_VALUES = frozenset({"", "0", "false", "off", "no"})
+_RUNTIME_METRICS_OUTPUT_ENV = "STOCKCREWAI_RUNTIME_METRICS_OUTPUT"
+_RUNTIME_METRICS_ENABLED_ENV = "STOCKCREWAI_RUNTIME_METRICS"
+_RUNTIME_METRICS_DEFAULT_OUTPUT = Path("run-artifacts/runtime-metrics.json")
+_RUNTIME_METRICS_RESERVED_OUTPUTS = frozenset({"run-result.json", "run-output.md"})
+_RUNTIME_METRICS_STAGE_LABELS: dict[int, tuple[str, str, str]] = {
+    1: ("research_flow", "request_parser", "parse_request"),
+    2: ("research_flow", "deterministic_tools", "prepare_evidence"),
+    3: ("research_flow", "valuation_tools", "prepare_valuation"),
+    4: ("research_flow", "analysis_gate", "route_analysis"),
+    5: ("research_flow", "analysis_crew", "run_analysis"),
+    6: ("research_flow", "claim_gate", "route_claims"),
+    7: ("research_flow", "report", "generate_report"),
+}
+
+
+def _runtime_metrics_enabled() -> bool:
+    value = os.getenv(_RUNTIME_METRICS_ENABLED_ENV, "")
+    return value.strip().casefold() not in _RUNTIME_METRICS_DISABLED_VALUES
+
+
+def _runtime_metrics_output_path() -> Path:
+    value = os.getenv(_RUNTIME_METRICS_OUTPUT_ENV, "").strip()
+    return Path(value).expanduser() if value else _RUNTIME_METRICS_DEFAULT_OUTPUT
+
 
 def _summary_value(
     *mappings: Any,
@@ -254,6 +287,13 @@ class ResearchFlow(Flow[ResearchFlowState]):
         default_factory=list
     )
     _progress_callback: Any = PrivateAttr(default=None)
+    _runtime_metrics_collector: RuntimeMetricsCollector | None = PrivateAttr(
+        default=None
+    )
+    _runtime_metrics_enabled: bool = PrivateAttr(default=False)
+    _runtime_metrics_output: Path = PrivateAttr(default=_RUNTIME_METRICS_DEFAULT_OUTPUT)
+    _runtime_metrics_stage_started_at: float | None = PrivateAttr(default=None)
+    _runtime_metrics_finalized: bool = PrivateAttr(default=False)
 
     def __init__(self, **data: Any) -> None:
         """提取运行时依赖并初始化不含私有对象的 Flow state。
@@ -270,6 +310,13 @@ class ResearchFlow(Flow[ResearchFlowState]):
         super().__init__(**data)
         for name, dependency in dependencies.items():
             setattr(self, f"_{name}", dependency)
+        self._runtime_metrics_enabled = _runtime_metrics_enabled()
+        self._runtime_metrics_output = _runtime_metrics_output_path()
+        if self._runtime_metrics_enabled:
+            self._runtime_metrics_collector = RuntimeMetricsCollector(
+                run_id=str(self.state.id)
+            )
+            self._runtime_metrics_stage_started_at = time.monotonic()
 
     def _build_analysis_evidence_store(self) -> EvidenceStore:
         """为当前 Flow run 构造不进入 state 的只读 EvidenceStore。"""
@@ -320,11 +367,97 @@ class ResearchFlow(Flow[ResearchFlowState]):
 
     def _emit_stage(self, event: RunStageEvent) -> None:
         """向可选进度回调发送一个不可变的阶段摘要事件。"""
+        self._record_runtime_metrics(event)
         if callable(self._progress_callback):
             try:
                 self._progress_callback(event)
             except Exception:
                 self._progress_callback = None
+
+    def _record_runtime_metrics(self, event: RunStageEvent) -> None:
+        """把阶段事件压缩为白名单运行观测字段。"""
+        collector = self._runtime_metrics_collector
+        if not self._runtime_metrics_enabled or collector is None:
+            return
+
+        status = str(getattr(event, "status", "") or "").strip().casefold()
+        if status == "blocked":
+            event_type = "stage_failed"
+            failure_category = "gate"
+        elif status in {"error", "failed", "failure", "exception"}:
+            event_type = "stage_failed"
+            failure_category = "runtime"
+        elif status in {"completed", "success", "succeeded", "ok"}:
+            event_type = "stage_completed"
+            failure_category = None
+        elif status in {"started", "start", "running"}:
+            event_type = "stage_started"
+            failure_category = None
+        else:
+            event_type = "stage_observed"
+            failure_category = None
+
+        now = time.monotonic()
+        started_at = self._runtime_metrics_stage_started_at
+        self._runtime_metrics_stage_started_at = now
+        elapsed = now - started_at if started_at is not None else None
+        labels = _RUNTIME_METRICS_STAGE_LABELS.get(
+            int(getattr(event, "step", 0) or 0),
+            ("research_flow", "flow", "stage"),
+        )
+        metric_event: dict[str, Any] = {
+            "event_type": event_type,
+            "run_id": str(self.state.id),
+            "crew": labels[0],
+            "agent": labels[1],
+            "task": labels[2],
+            "status": status,
+        }
+        if elapsed is not None and elapsed >= 0:
+            metric_event["elapsed_seconds"] = elapsed
+        if failure_category is not None:
+            metric_event["failure_category"] = failure_category
+        try:
+            collector.record(metric_event)
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            _RUNTIME_METRICS_LOGGER.warning(
+                "runtime metrics event rejected path=%s error_type=%s",
+                self._runtime_metrics_output,
+                type(exc).__name__,
+            )
+
+    def _write_runtime_metrics(self) -> None:
+        """一次性写出独立、JSON-safe 的运行观测 artifact。"""
+        if (
+            not self._runtime_metrics_enabled
+            or self._runtime_metrics_finalized
+            or self._runtime_metrics_collector is None
+        ):
+            return
+        self._runtime_metrics_finalized = True
+        output = self._runtime_metrics_output
+        if output.name in _RUNTIME_METRICS_RESERVED_OUTPUTS:
+            _RUNTIME_METRICS_LOGGER.warning(
+                "runtime metrics artifact skipped for reserved output path=%s",
+                output,
+            )
+            return
+        try:
+            report = self._runtime_metrics_collector.report()
+            payload = report.to_dict()
+            payload["stable_hash"] = report.stable_hash
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            _RUNTIME_METRICS_LOGGER.warning(
+                "runtime metrics artifact write failed path=%s error_type=%s",
+                output,
+                type(exc).__name__,
+            )
 
     def _stage_snapshot(self) -> dict[str, Any]:
         """从当前 state 生成不含原始对象和 ID 列表的阶段摘要字段。"""
@@ -1628,4 +1761,5 @@ class ResearchFlow(Flow[ResearchFlowState]):
         result = _json_safe(self.state.model_dump(mode="json"))
         if self._analysis_diagnostics and isinstance(result, dict):
             result["analysis_diagnostics"] = _json_safe(self._analysis_diagnostics)
+        self._write_runtime_metrics()
         return result
