@@ -549,6 +549,12 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 return []
             return _json_safe(value)
 
+        def text_value(value: Any) -> str | None:
+            if not isinstance(value, str):
+                return None
+            value = value.strip()
+            return value or None
+
         def validated_ids(key: str) -> list[str]:
             for source in (validation, state_payload):
                 value = source.get(key)
@@ -558,18 +564,82 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     return [item for item in value if isinstance(item, str) and item]
             return []
 
+        facts = records_for("facts", {})
+        calculations = records_for("calculations", [])
+        facts_by_evidence_id = {
+            evidence_id: record
+            for key, record in facts.items()
+            if isinstance(record, Mapping)
+            for evidence_id in [
+                text_value(record.get("evidence_id")) or text_value(key)
+            ]
+            if evidence_id
+        }
+        time_keys = (
+            "as_of",
+            "filed_at",
+            "period",
+            "period_start",
+            "period_end",
+            "date",
+            "price_timestamp",
+        )
+        normalized_calculations: list[dict[str, Any]] = []
+        for raw_calculation in calculations:
+            if not isinstance(raw_calculation, Mapping):
+                continue
+            calculation = dict(raw_calculation)
+            calculation_id = text_value(calculation.get("calculation_id"))
+            formula_id = text_value(calculation.get("formula_id"))
+            if (
+                not calculation_id
+                or not formula_id
+                or not text_value(calculation.get("validation_status"))
+            ):
+                continue
+            calculation["calculation_id"] = calculation_id
+            if not text_value(calculation.get("source_reference")):
+                calculation["source_reference"] = f"derived:{formula_id}"
+
+            input_evidence_ids = calculation.get("input_evidence_ids", [])
+            if isinstance(input_evidence_ids, str):
+                input_evidence_ids = [input_evidence_ids]
+            if not isinstance(input_evidence_ids, Sequence):
+                input_evidence_ids = []
+            for evidence_id in input_evidence_ids:
+                evidence_record = facts_by_evidence_id.get(
+                    text_value(evidence_id) or ""
+                )
+                if evidence_record is None:
+                    continue
+                for key in time_keys:
+                    if not text_value(calculation.get(key)) and text_value(
+                        evidence_record.get(key)
+                    ):
+                        calculation[key] = evidence_record[key]
+            if not any(text_value(calculation.get(key)) for key in time_keys):
+                continue
+            normalized_calculations.append(calculation)
+
+        normalized_calculation_ids = {
+            calculation["calculation_id"]
+            for calculation in normalized_calculations
+        }
+        validated_calculation_ids = [
+            calculation_id
+            for calculation_id in validated_ids("validated_calculation_ids")
+            if calculation_id in normalized_calculation_ids
+        ]
         return EvidenceStore(
             {
-                "evidence": records_for("facts", {}),
-                "calculations": records_for("calculations", []),
+                "evidence": facts,
+                "calculations": normalized_calculations,
                 "filings": records_for("filings", []),
             },
             run_id=str(self.state.id),
             allowlist={
                 "validated_evidence_ids": validated_ids("validated_evidence_ids"),
-                "validated_calculation_ids": validated_ids(
-                    "validated_calculation_ids"
-                ),
+                "validated_calculation_ids": validated_calculation_ids,
                 "validated_filing_ids": validated_ids("validated_filing_ids"),
             },
         )
