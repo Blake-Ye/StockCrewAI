@@ -487,6 +487,20 @@ class EdgarToolTests(unittest.TestCase):
         # 该旧 fixture 只有单期 EPS，因此必须 fail-closed。
         self.assertEqual(result.historical_financial_snapshots, [])
 
+    def test_non_bank_duration_net_income_does_not_trigger_bank_fact_warnings(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "Test User test@example.com"}):
+            result = EdgarTool(
+                edgar_module=HistoricalEdgar(),
+                as_of=date(2026, 8, 5),
+            ).run(ticker="AAPL")
+
+        self.assertEqual(result.status, "ok")
+        self.assertFalse(
+            any("银行 Company Fact" in warning for warning in result.warnings)
+        )
+
     def test_historical_fact_parse_failure_does_not_change_primary_result(self):
         from stockcrewai.tools.edgar_tool import EdgarTool
 

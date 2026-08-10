@@ -43,6 +43,40 @@ from stockcrewai.tools.validation_tool import sync_validation_status
 from stockcrewai.validators.analysis_gate import evaluate_analysis_gate
 
 
+_BANK_DIRECT_PROFILE_FACTS = (
+    "net_income",
+    "net_interest_income",
+    "noninterest_income",
+    "noninterest_expense",
+    "cet1_ratio",
+    "total_loans",
+    "total_deposits",
+    "nonperforming_loans",
+    "allowance_for_credit_losses",
+    "book_value_per_share",
+    "diluted_eps",
+)
+_BANK_AVERAGE_PROFILE_FACTS = (
+    ("average_assets", "total_assets_beginning", "total_assets_ending"),
+    ("average_equity", "stockholders_equity_beginning", "stockholders_equity_ending"),
+    (
+        "average_earning_assets",
+        "interest_earning_assets_beginning",
+        "interest_earning_assets_ending",
+    ),
+)
+_BANK_PROFILE_FACT_ALLOWLIST = frozenset(
+    {
+        *_BANK_DIRECT_PROFILE_FACTS,
+        *(
+            key
+            for _, beginning_key, ending_key in _BANK_AVERAGE_PROFILE_FACTS
+            for key in (beginning_key, ending_key)
+        ),
+    }
+)
+
+
 def _calculation_facts(edgar_result: EdgarResult) -> dict[str, Any]:
     """为计算器补充稳定别名，但保留原始 Evidence。"""
     facts: dict[str, Any] = dict(edgar_result.facts)
@@ -634,7 +668,32 @@ def _automatic_profile_input(
         profile_version = UTILITY_PROFILE_VERSION
     else:
         return None
-    timestamps = [record.as_of for record in records_by_metric.values()]
+    if profile_result.issuer_profile is IssuerProfile.BANK:
+        metric_inputs: dict[str, Any] = {}
+        for metric_id in _BANK_DIRECT_PROFILE_FACTS:
+            record = records_by_metric.get(metric_id)
+            if record is not None:
+                metric_inputs[metric_id] = record.evidence_id
+        for average_id, beginning_key, ending_key in _BANK_AVERAGE_PROFILE_FACTS:
+            beginning = records_by_metric.get(beginning_key)
+            ending = records_by_metric.get(ending_key)
+            if beginning is not None and ending is not None:
+                metric_inputs[average_id] = {
+                    "beginning": beginning.evidence_id,
+                    "ending": ending.evidence_id,
+                }
+        profile_records = [
+            record
+            for metric_id, record in records_by_metric.items()
+            if metric_id in _BANK_PROFILE_FACT_ALLOWLIST
+        ]
+    else:
+        metric_inputs = {
+            metric_id: record.evidence_id
+            for metric_id, record in records_by_metric.items()
+        }
+        profile_records = list(records_by_metric.values())
+    timestamps = [record.as_of for record in profile_records]
     timestamps.extend(record.price_timestamp for record in market_price_records)
     if not timestamps:
         return None
@@ -646,10 +705,7 @@ def _automatic_profile_input(
         "coverage_level": profile_result.coverage_level.value,
         "policy_version": policy_version_for_profile(profile_result),
         "as_of": max(timestamps).isoformat(),
-        "metric_inputs": {
-            metric_id: record.evidence_id
-            for metric_id, record in records_by_metric.items()
-        },
+        "metric_inputs": metric_inputs,
     }
 
 

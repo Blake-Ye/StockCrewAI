@@ -2,6 +2,7 @@ from datetime import date
 from types import SimpleNamespace
 import os
 import unittest
+import warnings
 from unittest.mock import patch
 
 
@@ -154,6 +155,145 @@ class SecConceptOnlyFacts(OfflineEPSFacts):
         if concept == "diluted_eps":
             return None
         return super().get_concept(concept, period, return_metadata)
+
+
+def _bank_metadata(
+    concept_name,
+    tag,
+    period,
+    value,
+    period_start,
+    period_end,
+    accession,
+    period_type,
+):
+    return {
+        "concept_name": concept_name,
+        "tag_used": tag,
+        "value": value,
+        "unit": "USD",
+        "currency": "USD",
+        "period": period,
+        "period_type": period_type,
+        "period_start": period_start,
+        "period_end": period_end,
+        "filing_date": date(2026, 2, 1),
+        "form_type": "10-K",
+        "accession": accession,
+        "fiscal_year": int(period[:4]),
+        "fiscal_period": period[5:],
+    }
+
+
+class BankFacts:
+    def __init__(self):
+        self.records = [
+            _bank_metadata(
+                "net_income",
+                "us-gaap:NetIncomeLoss",
+                "2025-FY",
+                "120",
+                date(2025, 1, 1),
+                date(2025, 12, 31),
+                "acc-net-income-2025",
+                "duration",
+            ),
+            _bank_metadata(
+                "InterestIncomeExpenseNet",
+                "us-gaap:InterestIncomeExpenseNet",
+                "2025-FY",
+                "360",
+                date(2025, 1, 1),
+                date(2025, 12, 31),
+                "acc-nii-2025",
+                "duration",
+            ),
+            _bank_metadata(
+                "NoninterestIncome",
+                "us-gaap:NoninterestIncome",
+                "2025-FY",
+                "140",
+                date(2025, 1, 1),
+                date(2025, 12, 31),
+                "acc-noninterest-income-2025",
+                "duration",
+            ),
+            _bank_metadata(
+                "NoninterestExpense",
+                "us-gaap:NoninterestExpense",
+                "2025-FY",
+                "200",
+                date(2025, 1, 1),
+                date(2025, 12, 31),
+                "acc-noninterest-expense-2025",
+                "duration",
+            ),
+            _bank_metadata(
+                "Assets",
+                "us-gaap:Assets",
+                "2024-FY",
+                "10000",
+                None,
+                date(2024, 12, 31),
+                "acc-assets-2024",
+                "instant",
+            ),
+            _bank_metadata(
+                "Assets",
+                "us-gaap:Assets",
+                "2025-FY",
+                "12000",
+                None,
+                date(2025, 12, 31),
+                "acc-assets-2025",
+                "instant",
+            ),
+            _bank_metadata(
+                "StockholdersEquity",
+                "us-gaap:StockholdersEquity",
+                "2024-FY",
+                "1000",
+                None,
+                date(2024, 12, 31),
+                "acc-equity-2024",
+                "instant",
+            ),
+            _bank_metadata(
+                "StockholdersEquity",
+                "us-gaap:StockholdersEquity",
+                "2025-FY",
+                "1400",
+                None,
+                date(2025, 12, 31),
+                "acc-equity-2025",
+                "instant",
+            ),
+        ]
+        self.fact_calls = []
+
+    def get_concept(self, concept, period=None, return_metadata=False):
+        if concept != "net_income":
+            return None
+        selected_period = period or "2025-FY"
+        for record in self.records:
+            if record["period"] == selected_period and record["concept_name"] == concept:
+                return dict(record) if return_metadata else record["value"]
+        return None
+
+    def get_fact(self, tag, period=None):
+        self.fact_calls.append((tag, period))
+        selected_period = period or "2025-FY"
+        for record in self.records:
+            accepted_tags = {record["tag_used"].split(":", 1)[-1]}
+            if record["concept_name"] == "net_income":
+                accepted_tags.add(record["tag_used"])
+            if record["period"] == selected_period and tag in accepted_tags:
+                return SimpleNamespace(**record)
+        warnings.warn(f"missing raw fact: {tag}", UserWarning)
+        return None
+
+    def get_all_facts(self):
+        return [SimpleNamespace(**record) for record in self.records]
 
 
 class OfflineCompany:
@@ -330,6 +470,77 @@ class EdgarToolTTMTests(unittest.TestCase):
         )
 
         self.assertEqual(snapshots, [])
+
+    def test_collects_fixed_bank_concepts_with_sec_provenance(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        bank_facts = BankFacts()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            facts, fact_warnings, _, _ = EdgarTool(as_of=date(2026, 8, 8))._collect_facts(
+                MetadataCompany(bank_facts, 6020), "0001234567", "JPM"
+            )
+
+        expected_keys = {
+            "net_interest_income",
+            "noninterest_income",
+            "noninterest_expense",
+            "total_assets_beginning",
+            "total_assets_ending",
+            "stockholders_equity_beginning",
+            "stockholders_equity_ending",
+        }
+        self.assertTrue(expected_keys <= set(facts))
+        expected_source = (
+            "https://data.sec.gov/api/xbrl/companyfacts/CIK0001234567.json"
+        )
+        for metric_id in expected_keys:
+            with self.subTest(metric_id=metric_id):
+                fact = facts[metric_id]
+                self.assertEqual(fact.source_reference, expected_source)
+                expected_period = "2024-FY" if metric_id.endswith("_beginning") else "2025-FY"
+                self.assertEqual(fact.period, expected_period)
+                self.assertTrue(fact.accession_number.startswith("acc-"))
+                self.assertTrue(fact.xbrl_tag.startswith("us-gaap:"))
+                expected_start = (
+                    "2024-12-31"
+                    if metric_id.endswith("_beginning")
+                    else "2025-01-01"
+                    if metric_id in {
+                        "net_interest_income",
+                        "noninterest_income",
+                        "noninterest_expense",
+                    }
+                    else "2025-12-31"
+                )
+                expected_end = (
+                    "2025-12-31"
+                    if metric_id in {
+                        "net_interest_income",
+                        "noninterest_income",
+                        "noninterest_expense",
+                    }
+                    else expected_start
+                )
+                self.assertEqual(fact.period_start, expected_start)
+                self.assertEqual(fact.period_end, expected_end)
+                self.assertEqual(fact.filed_at, "2026-02-01")
+                self.assertEqual(fact.form, "10-K")
+
+        self.assertEqual(
+            facts["net_interest_income"].xbrl_tag,
+            "us-gaap:InterestIncomeExpenseNet",
+        )
+        self.assertIn(("us-gaap:InterestIncomeExpenseNet", "2025-FY"), bank_facts.fact_calls)
+        self.assertIn(("InterestIncomeExpenseNet", "2025-FY"), bank_facts.fact_calls)
+        self.assertNotIn("缺少银行 Company Fact：net_interest_income", fact_warnings)
+        self.assertNotIn("缺少银行 Company Fact：noninterest_income", fact_warnings)
+        self.assertNotIn("缺少银行 Company Fact：noninterest_expense", fact_warnings)
+        self.assertNotIn("缺少银行 Company Fact：total_assets_beginning", fact_warnings)
+        self.assertNotIn("缺少银行 Company Fact：total_assets_ending", fact_warnings)
+        self.assertIn("缺少银行 Company Fact：interest_earning_assets_beginning", fact_warnings)
+        self.assertIn("缺少银行 Company Fact：interest_earning_assets_ending", fact_warnings)
+        self.assertEqual([item for item in caught if item.category is UserWarning], [])
 
 
 if __name__ == "__main__":

@@ -33,6 +33,12 @@ BANK_METRIC_IDS = (
 _CORE_METRICS = frozenset(
     {"bank_roa", "bank_roe", "net_interest_margin", "efficiency_ratio"}
 )
+_DURATION_INPUTS = frozenset(
+    {"net_income", "net_interest_income", "noninterest_income", "noninterest_expense"}
+)
+_AVERAGE_INPUTS = frozenset(
+    {"average_assets", "average_equity", "average_earning_assets"}
+)
 _INPUTS = {
     "bank_roa": ("net_income", "average_assets"),
     "bank_roe": ("net_income", "average_equity"),
@@ -81,6 +87,99 @@ def _usable_evidence(
     if counts[evidence_id] != 1:
         return None, "invalid_evidence"
     record = records[evidence_id]
+    if record.validation_status is not ValidationStatus.VALID or record.value is None:
+        return None, "invalid_evidence"
+    if record.filed_at > as_of.date():
+        return None, "filed_after_as_of"
+    if record.as_of > as_of:
+        return None, "future_evidence"
+    return record, ""
+
+
+def _usable_duration_evidence(
+    name: str,
+    metric_inputs: Mapping[str, Any],
+    records: Mapping[str, EvidenceRecord],
+    counts: Counter[str],
+    as_of: datetime,
+    reference: EvidenceRecord | None,
+) -> tuple[EvidenceRecord | None, str]:
+    if reference is None:
+        return None, "duration_reference_missing"
+    record, reason = _usable_evidence(
+        name, metric_inputs, records, counts, as_of
+    )
+    if record is None:
+        return None, reason
+    if (
+        record.period_start != reference.period_start
+        or record.period_end != reference.period_end
+    ):
+        return None, "period_mismatch"
+    return record, ""
+
+
+def _usable_average_evidence(
+    name: str,
+    metric_inputs: Mapping[str, Any],
+    records: Mapping[str, EvidenceRecord],
+    counts: Counter[str],
+    as_of: datetime,
+    duration_reference: EvidenceRecord | None,
+) -> tuple[list[EvidenceRecord] | None, str]:
+    raw_input = metric_inputs.get(name)
+    if isinstance(raw_input, str):
+        record, reason = _usable_evidence(
+            name, metric_inputs, records, counts, as_of
+        )
+        return ([record], "") if record is not None and not reason else (None, reason)
+    if not isinstance(raw_input, Mapping):
+        return None, "missing_required_evidence"
+    if set(raw_input) != {"beginning", "ending"}:
+        return None, "missing_required_evidence"
+
+    evidence_ids = [raw_input["beginning"], raw_input["ending"]]
+    if not all(isinstance(evidence_id, str) and evidence_id for evidence_id in evidence_ids):
+        return None, "missing_required_evidence"
+    if len(set(evidence_ids)) != 2:
+        return None, "invalid_evidence"
+    pair: list[EvidenceRecord] = []
+    for evidence_id in evidence_ids:
+        record, reason = _usable_evidence_id(
+            evidence_id, records, counts, as_of
+        )
+        if record is None:
+            return None, reason
+        pair.append(record)
+
+    beginning, ending = pair
+    if any(record.period_start != record.period_end for record in pair):
+        return None, "point_in_time_mismatch"
+    if beginning.period_end >= ending.period_end:
+        return None, "period_mismatch"
+    if beginning.unit != ending.unit or beginning.currency != ending.currency:
+        return None, "unit_currency_mismatch"
+    if duration_reference is None:
+        return None, "duration_reference_missing"
+    if (
+        ending.period_end != duration_reference.period_end
+        or beginning.period_end >= duration_reference.period_start
+    ):
+        return None, "period_mismatch"
+    return pair, ""
+
+
+def _usable_evidence_id(
+    evidence_id: str,
+    records: Mapping[str, EvidenceRecord],
+    counts: Counter[str],
+    as_of: datetime,
+) -> tuple[EvidenceRecord | None, str]:
+    if counts[evidence_id] != 1:
+        return None, "invalid_evidence"
+    record = records.get(evidence_id)
+    if record is None:
+        return None, "missing_required_evidence"
     if record.validation_status is not ValidationStatus.VALID or record.value is None:
         return None, "invalid_evidence"
     if record.filed_at > as_of.date():
@@ -139,6 +238,14 @@ def _calculate(metric_id: str, values: list[Decimal]) -> Decimal | None:
         if denominator == 0:
             return None
         return numerator / denominator
+
+
+def _average_value(records: list[EvidenceRecord]) -> Decimal:
+    if len(records) == 1:
+        return records[0].value
+    with localcontext() as context:
+        context.prec = 28
+        return (records[0].value + records[1].value) / Decimal("2")
 
 
 def _calculation(
@@ -205,6 +312,9 @@ def evaluate_bank_profile(
         if counts[record.evidence_id] == 1
     }
     market_price, market_reason = _usable_market_price(market_price_records, as_of)
+    net_income_record, net_income_reason = _usable_evidence(
+        "net_income", metric_inputs, evidence_by_id, counts, as_of
+    )
 
     values: dict[str, Decimal | None] = {}
     decisions: list[PolicyDecision] = []
@@ -243,20 +353,49 @@ def evaluate_bank_profile(
 
         input_names = _INPUTS[metric_id]
         source_records: list[EvidenceRecord | MarketPriceRecord] = []
+        calculation_values: list[Decimal] = []
         reason = ""
         for name in input_names:
-            record, reason = _usable_evidence(
-                name, metric_inputs, evidence_by_id, counts, as_of
-            )
+            if name in _AVERAGE_INPUTS:
+                average_records, reason = _usable_average_evidence(
+                    name,
+                    metric_inputs,
+                    evidence_by_id,
+                    counts,
+                    as_of,
+                    net_income_record,
+                )
+                if average_records is None:
+                    break
+                source_records.extend(average_records)
+                calculation_values.append(_average_value(average_records))
+                continue
+            if name in _DURATION_INPUTS and name != "net_income":
+                record, reason = _usable_duration_evidence(
+                    name,
+                    metric_inputs,
+                    evidence_by_id,
+                    counts,
+                    as_of,
+                    net_income_record,
+                )
+            elif name == "net_income" and net_income_record is None:
+                record, reason = None, net_income_reason
+            else:
+                record, reason = _usable_evidence(
+                    name, metric_inputs, evidence_by_id, counts, as_of
+                )
             if record is None:
                 break
             source_records.append(record)
+            calculation_values.append(record.value)
 
         if reason == "" and metric_id in {"price_to_book", "pe_ratio"}:
             if market_price is None:
                 reason = market_reason
             else:
                 source_records.insert(0, market_price)
+                calculation_values.insert(0, market_price.price)
 
         if reason:
             status = "invalid" if reason == "invalid_evidence" else "unavailable"
@@ -273,10 +412,7 @@ def evaluate_bank_profile(
 
         result = _calculate(
             metric_id,
-            [
-                record.price if isinstance(record, MarketPriceRecord) else record.value
-                for record in source_records
-            ],
+            calculation_values,
         )
         if result is None:
             values[metric_id] = None

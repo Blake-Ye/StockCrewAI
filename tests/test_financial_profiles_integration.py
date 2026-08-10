@@ -70,6 +70,78 @@ def _source_metadata(
     }
 
 
+def _bank_profile_result() -> ProfileResult:
+    return ProfileResult(
+        issuer_profile=IssuerProfile.BANK,
+        security_profile=SecurityProfile.COMMON_STOCK,
+        reporting_profile=ReportingProfile.DOMESTIC_US_GAAP,
+        coverage_level=CoverageLevel.FULL,
+        registry_version="profile-registry:test-input",
+    )
+
+
+def _bank_fact(
+    evidence_id: str,
+    value: str,
+    period_start: str,
+    period_end: str,
+    *,
+    unit: str = "USD millions",
+    currency: str = "USD",
+) -> dict[str, str]:
+    return {
+        "evidence_id": evidence_id,
+        "source_reference": f"fixture:bank/{evidence_id}",
+        "as_of": "2026-03-02T21:00:00Z",
+        "filed_at": "2026-02-20",
+        "period_start": period_start,
+        "period_end": period_end,
+        "unit": unit,
+        "currency": currency,
+        "value": value,
+        "validation_status": "valid",
+    }
+
+
+def _automatic_bank_facts() -> dict[str, dict[str, str]]:
+    duration = {"period_start": "2025-01-01", "period_end": "2025-12-31"}
+    return {
+        "net_income": _bank_fact("ev_auto_net_income", "120", **duration),
+        "net_interest_income": _bank_fact("ev_auto_nii", "360", **duration),
+        "noninterest_income": _bank_fact("ev_auto_noninterest_income", "140", **duration),
+        "noninterest_expense": _bank_fact(
+            "ev_auto_noninterest_expense", "200", **duration
+        ),
+        "total_assets_beginning": _bank_fact(
+            "ev_auto_assets_beginning", "10000", "2024-12-31", "2024-12-31"
+        ),
+        "total_assets_ending": _bank_fact(
+            "ev_auto_assets_ending", "12000", "2025-12-31", "2025-12-31"
+        ),
+        "stockholders_equity_beginning": _bank_fact(
+            "ev_auto_equity_beginning", "1000", "2024-12-31", "2024-12-31"
+        ),
+        "stockholders_equity_ending": _bank_fact(
+            "ev_auto_equity_ending", "1400", "2025-12-31", "2025-12-31"
+        ),
+        "interest_earning_assets_beginning": _bank_fact(
+            "ev_auto_earning_assets_beginning", "8000", "2024-12-31", "2024-12-31"
+        ),
+        "interest_earning_assets_ending": _bank_fact(
+            "ev_auto_earning_assets_ending", "10000", "2025-12-31", "2025-12-31"
+        ),
+    }
+
+
+def _automatic_bank_context(facts: dict[str, dict[str, str]]) -> dict[str, Any]:
+    return build_profile_policy_context(
+        profile=_bank_profile_result(),
+        facts=facts,
+        evidence_records=(),
+        market_price_records=(),
+    )
+
+
 def test_registry_contains_frozen_bank_and_insurance_policy_matrices() -> None:
     expected = {
         "bank": (
@@ -144,6 +216,156 @@ def test_complete_bank_context_is_ready_without_ordinary_enterprise_inputs() -> 
         "current_assets",
         "current_liabilities",
     }
+
+
+def test_automatic_bank_core_uses_two_point_evidence_and_optional_missing_is_ready() -> None:
+    context = _automatic_bank_context(_automatic_bank_facts())
+    decisions = {item["metric_id"]: item for item in context["policy_decisions"]}
+    calculations = {
+        item["calculation_id"]: item for item in context["calculation_records"]
+    }
+
+    assert context["profile_envelope"] == {
+        "status": "valid",
+        "reason_code": "typed_profile_envelope_valid",
+    }
+    assert context["gate"]["status"] == "ready"
+    assert context["values"]["bank_roa"] == "0.01090909090909090909090909091"
+    assert context["values"]["bank_roe"] == "0.1"
+    assert context["values"]["net_interest_margin"] == "0.04"
+    assert context["values"]["efficiency_ratio"] == "0.4"
+
+    expected_inputs = {
+        "bank_roa": {
+            "ev_auto_net_income",
+            "ev_auto_assets_beginning",
+            "ev_auto_assets_ending",
+        },
+        "bank_roe": {
+            "ev_auto_net_income",
+            "ev_auto_equity_beginning",
+            "ev_auto_equity_ending",
+        },
+        "net_interest_margin": {
+            "ev_auto_nii",
+            "ev_auto_earning_assets_beginning",
+            "ev_auto_earning_assets_ending",
+        },
+        "efficiency_ratio": {
+            "ev_auto_noninterest_expense",
+            "ev_auto_nii",
+            "ev_auto_noninterest_income",
+        },
+    }
+    for metric_id, evidence_ids in expected_inputs.items():
+        decision = decisions[metric_id]
+        assert decision["status"] == "available"
+        assert decision["blocking"] is False
+        assert len(decision["calculation_ids"]) == 1
+        calculation = calculations[decision["calculation_ids"][0]]
+        assert set(calculation["input_evidence_ids"]) == evidence_ids
+
+    for metric_id in (
+        "cet1_ratio",
+        "loan_to_deposit",
+        "nonperforming_loan_ratio",
+        "provision_coverage",
+        "price_to_book",
+        "pe_ratio",
+    ):
+        assert decisions[metric_id]["status"] == "unavailable"
+        assert decisions[metric_id]["blocking"] is False
+    assert decisions["fcf_yield"]["status"] == "not_applicable"
+
+
+def test_automatic_bank_average_requires_both_matching_point_evidence() -> None:
+    cases = (
+        (
+            "missing ending assets",
+            "total_assets_ending",
+            lambda fact: None,
+            {"bank_roa"},
+            {"bank_roe", "net_interest_margin", "efficiency_ratio"},
+        ),
+        (
+            "unit mismatch",
+            "total_assets_ending",
+            lambda fact: fact.update(unit="USD thousands"),
+            {"bank_roa"},
+            {"bank_roe", "net_interest_margin", "efficiency_ratio"},
+        ),
+        (
+            "currency mismatch",
+            "stockholders_equity_ending",
+            lambda fact: fact.update(currency="EUR"),
+            {"bank_roe"},
+            {"bank_roa", "net_interest_margin", "efficiency_ratio"},
+        ),
+        (
+            "period mismatch",
+            "interest_earning_assets_ending",
+            lambda fact: fact.update(period_start="2025-09-30", period_end="2025-09-30"),
+            {"net_interest_margin"},
+            {"bank_roa", "bank_roe", "efficiency_ratio"},
+        ),
+    )
+    for label, key, mutate, affected, unaffected in cases:
+        facts = _automatic_bank_facts()
+        if mutate.__name__ == "<lambda>":
+            if label == "missing ending assets":
+                facts.pop(key)
+            else:
+                mutate(facts[key])
+        context = _automatic_bank_context(facts)
+        decisions = {item["metric_id"]: item for item in context["policy_decisions"]}
+        calculations = context["calculation_records"]
+        for metric_id in affected:
+            decision = decisions[metric_id]
+            assert decision["status"] == "unavailable", label
+            assert decision["blocking"] is True, label
+            assert decision["evidence_ids"] == [], label
+            assert decision["calculation_ids"] == [], label
+            assert all(
+                not item["calculation_id"].endswith(f"-{metric_id}-v1")
+                for item in calculations
+            ), label
+        for metric_id in unaffected:
+            assert decisions[metric_id]["status"] == "available", label
+
+
+def test_automatic_bank_profile_does_not_infer_from_ordinary_enterprise_fields() -> None:
+    from stockcrewai.pipelines.evidence_pipeline import (
+        _automatic_profile_input,
+        _typed_profile_facts,
+    )
+
+    ordinary_facts = {
+        "net_income": _bank_fact("ev_ordinary_net_income", "120", "2025-01-01", "2025-12-31"),
+        "revenue": _bank_fact("ev_ordinary_revenue", "1000", "2025-01-01", "2025-12-31"),
+        "operating_income": _bank_fact(
+            "ev_ordinary_operating_income", "200", "2025-01-01", "2025-12-31"
+        ),
+        "operating_expenses": _bank_fact(
+            "ev_ordinary_operating_expenses", "800", "2025-01-01", "2025-12-31"
+        ),
+        "stockholders_equity": _bank_fact(
+            "ev_ordinary_equity", "1400", "2025-12-31", "2025-12-31"
+        ),
+    }
+    records_by_metric, _ = _typed_profile_facts(ordinary_facts)
+    automatic_profile = _automatic_profile_input(
+        _bank_profile_result(), records_by_metric, ()
+    )
+    context = _automatic_bank_context(ordinary_facts)
+    decisions = {item["metric_id"]: item for item in context["policy_decisions"]}
+
+    assert automatic_profile is not None
+    assert set(automatic_profile["metric_inputs"]) == {"net_income"}
+    assert context["gate"]["status"] == "blocked"
+    assert context["calculation_records"] == []
+    for metric_id in ("bank_roa", "bank_roe", "net_interest_margin", "efficiency_ratio"):
+        assert decisions[metric_id]["status"] == "unavailable"
+        assert decisions[metric_id]["blocking"] is True
 
 
 def test_missing_bank_cet1_remains_ready_and_typed_not_applicable_fcf() -> None:

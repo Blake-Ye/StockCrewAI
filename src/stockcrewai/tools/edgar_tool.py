@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import warnings as py_warnings
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -27,6 +28,29 @@ DEFAULT_FACT_CONCEPTS = (
     "total_current_liabilities",
     "common_shares_outstanding",
     "earnings_per_share_diluted",
+)
+
+BANK_FACT_CONCEPT_ALIASES = {
+    "net_interest_income": (
+        "us-gaap:NetInterestIncome",
+        "us-gaap:InterestIncomeExpenseNonoperatingNet",
+        "us-gaap:InterestIncomeExpenseNet",
+    ),
+    "noninterest_income": ("us-gaap:NoninterestIncome",),
+    "noninterest_expense": ("us-gaap:NoninterestExpense",),
+    "total_assets": ("us-gaap:Assets",),
+    "stockholders_equity": ("us-gaap:StockholdersEquity",),
+    "interest_earning_assets": ("us-gaap:InterestEarningAssets",),
+}
+_BANK_DURATION_FACTS = (
+    "net_interest_income",
+    "noninterest_income",
+    "noninterest_expense",
+)
+_BANK_BALANCE_FACTS = (
+    "total_assets",
+    "stockholders_equity",
+    "interest_earning_assets",
 )
 
 COMPARATIVE_FACT_CONCEPTS = {
@@ -1101,6 +1125,102 @@ class EdgarTool(BaseTool):
         if container is None:
             return facts, ["SEC Company Facts 不可用"], [], {}
         source = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json"
+        sec_metadata = _company_sec_metadata(company)
+        sec_registrant_profile = _safe_metadata_string(
+            sec_metadata.get("sec_registrant_profile")
+        )
+        sec_sic = _format_sic(sec_metadata.get("sic"))
+        is_bank_issuer = (
+            sec_registrant_profile.casefold() == "bank"
+            if sec_registrant_profile is not None
+            else sec_sic is not None and 6020 <= int(sec_sic) <= 6022
+        )
+        net_income_metadata: dict[str, Any] | None = None
+
+        def bank_fact_metadata(
+            aliases: tuple[str, ...], period: str | None = None
+        ) -> dict[str, Any] | None:
+            get_fact = getattr(container, "get_fact", None)
+            if not callable(get_fact):
+                return None
+            for alias in aliases:
+                for requested_tag in (alias, alias.split(":", 1)[-1]):
+                    with py_warnings.catch_warnings():
+                        py_warnings.simplefilter("ignore", UserWarning)
+                        try:
+                            fact = get_fact(requested_tag, period=period)
+                        except Exception:
+                            continue
+                    if fact is None:
+                        continue
+
+                    def fact_value(name: str) -> Any:
+                        if isinstance(fact, Mapping):
+                            return fact.get(name)
+                        return _read_attr(fact, name)
+
+                    raw_tag = (
+                        fact_value("concept")
+                        or fact_value("tag_used")
+                        or fact_value("xbrl_tag")
+                    )
+                    actual_tag = str(raw_tag or alias)
+                    actual_full_tag = (
+                        actual_tag
+                        if ":" in actual_tag
+                        else f"us-gaap:{actual_tag}"
+                    )
+                    if actual_full_tag != alias:
+                        continue
+
+                    fiscal_year = fact_value("fiscal_year")
+                    fiscal_period = fact_value("fiscal_period")
+                    form_type = fact_value("form_type") or fact_value("form")
+                    accession = fact_value("accession") or fact_value(
+                        "accession_number"
+                    )
+                    period_type = fact_value("period_type")
+                    period_start = fact_value("period_start")
+                    period_end = fact_value("period_end")
+                    if (
+                        str(period_type or "").lower()
+                        in {"instant", "point-in-time"}
+                        and period_start in (None, "")
+                        and period_end is not None
+                    ):
+                        period_start = period_end
+                    value = fact_value("value")
+                    if value is None:
+                        value = fact_value("numeric_value")
+                    if value is None:
+                        continue
+                    return {
+                        "value": value,
+                        "numeric_value": fact_value("numeric_value"),
+                        "unit": fact_value("unit"),
+                        "period": period
+                        or (
+                            f"{fiscal_year}-{fiscal_period}"
+                            if fiscal_year is not None and fiscal_period
+                            else None
+                        ),
+                        "period_start": period_start,
+                        "period_end": period_end,
+                        "period_type": period_type,
+                        "filing_date": fact_value("filing_date"),
+                        "filed_at": fact_value("filing_date"),
+                        "form": form_type,
+                        "form_type": form_type,
+                        "accession": accession,
+                        "accession_number": accession,
+                        "concept": actual_full_tag,
+                        "tag_used": actual_full_tag,
+                        "taxonomy": fact_value("taxonomy")
+                        or actual_full_tag.split(":", 1)[0],
+                        "fiscal_year": fiscal_year,
+                        "fiscal_period": fiscal_period,
+                    }
+            return None
 
         def enrich_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
             enriched = dict(metadata)
@@ -1108,15 +1228,25 @@ class EdgarTool(BaseTool):
             tag = enriched.get("tag_used")
             if not callable(get_fact) or not tag:
                 return enriched
-            try:
-                fact = get_fact(tag, period=enriched.get("period"))
-            except TypeError:
+            with py_warnings.catch_warnings():
+                py_warnings.simplefilter("ignore", UserWarning)
                 try:
-                    fact = get_fact(tag)
+                    fact = get_fact(tag, period=enriched.get("period"))
+                except TypeError:
+                    try:
+                        fact = get_fact(tag)
+                    except Exception:
+                        return enriched
                 except Exception:
                     return enriched
-            except Exception:
-                return enriched
+                if fact is None and ":" in str(tag):
+                    try:
+                        fact = get_fact(
+                            str(tag).split(":", 1)[-1],
+                            period=enriched.get("period"),
+                        )
+                    except Exception:
+                        fact = None
             if fact is None:
                 return enriched
 
@@ -1193,6 +1323,8 @@ class EdgarTool(BaseTool):
             if not metadata:
                 warnings.append(f"缺少 Company Fact：{metric_id}")
                 continue
+            if metric_id == "net_income":
+                net_income_metadata = enrich_metadata(metadata)
             if not add_fact(metric_id, metadata):
                 continue
 
@@ -1214,6 +1346,72 @@ class EdgarTool(BaseTool):
                 )
                 continue
             add_fact(prior_metric_id, prior_metadata)
+
+        if is_bank_issuer and net_income_metadata is not None:
+            target_period = str(net_income_metadata.get("period") or "")
+            target_start = _as_date(net_income_metadata.get("period_start"))
+            target_end = _as_date(net_income_metadata.get("period_end"))
+            is_duration = (
+                bool(target_period)
+                and str(net_income_metadata.get("period_type") or "").lower()
+                == "duration"
+                and target_start is not None
+                and target_end is not None
+                and target_start <= target_end
+            )
+            if is_duration:
+                for metric_id in _BANK_DURATION_FACTS:
+                    metadata = bank_fact_metadata(
+                        BANK_FACT_CONCEPT_ALIASES[metric_id], target_period
+                    )
+                    if metadata is None:
+                        warnings.append(f"缺少银行 Company Fact：{metric_id}")
+                        continue
+                    metadata = enrich_metadata(metadata)
+                    if not (
+                        str(metadata.get("period") or "") == target_period
+                        and str(metadata.get("period_type") or "").lower()
+                        == "duration"
+                        and _as_date(metadata.get("period_start")) == target_start
+                        and _as_date(metadata.get("period_end")) == target_end
+                    ):
+                        warnings.append(f"银行 Company Fact 期间不匹配：{metric_id}")
+                        continue
+                    add_fact(metric_id, metadata)
+
+                beginning_period = _prior_comparable_period(target_period)
+                if beginning_period is None:
+                    warnings.append("无法确定银行资产负债表 opening period")
+                else:
+                    for metric_id in _BANK_BALANCE_FACTS:
+                        aliases = BANK_FACT_CONCEPT_ALIASES[metric_id]
+                        for role, period in (
+                            ("beginning", beginning_period),
+                            ("ending", target_period),
+                        ):
+                            metadata = bank_fact_metadata(aliases, period)
+                            output_metric_id = f"{metric_id}_{role}"
+                            if metadata is None:
+                                warnings.append(
+                                    f"缺少银行 Company Fact：{output_metric_id}"
+                                )
+                                continue
+                            metadata = enrich_metadata(metadata)
+                            period_start = _as_date(metadata.get("period_start"))
+                            period_end = _as_date(metadata.get("period_end"))
+                            if not (
+                                str(metadata.get("period") or "") == period
+                                and str(metadata.get("period_type") or "").lower()
+                                in {"instant", "point-in-time"}
+                                and period_start is not None
+                                and period_end is not None
+                                and period_start == period_end
+                            ):
+                                warnings.append(
+                                    f"银行 Company Fact 非 point-in-time：{output_metric_id}"
+                                )
+                                continue
+                            add_fact(output_metric_id, metadata)
         return (
             facts,
             warnings,
