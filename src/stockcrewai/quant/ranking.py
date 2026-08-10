@@ -139,9 +139,12 @@ def compute_composite_scores(
         available = [item for item in members if item.status == "available"]
         if available:
             ordered = sorted(available, key=lambda item: item.factor_id)
-            values = [item.normalized_value for item in ordered]
-            assert all(isinstance(value, Decimal) and value.is_finite() for value in values)
-            score = _average(values)
+            available_values: list[Decimal] = []
+            for available_observation in ordered:
+                normalized_value = available_observation.normalized_value
+                assert isinstance(normalized_value, Decimal) and normalized_value.is_finite()
+                available_values.append(normalized_value)
+            score = _average(available_values)
             result = CompositeScore(
                 composite_version=version,
                 as_of=as_of,
@@ -170,15 +173,22 @@ def compute_composite_scores(
         by_partition[(as_of, peer_group)].append(result)
 
     results: list[CompositeScore] = []
-    for members in by_partition.values():
+    for composite_members in by_partition.values():
+        def score_key(composite: CompositeScore) -> tuple[Decimal, str]:
+            score = composite.score
+            assert score is not None
+            return -score, composite.ticker
+
         ranked = sorted(
-            (item for item in members if item.score is not None),
-            key=lambda item: (-item.score, item.ticker),
+            (composite for composite in composite_members if composite.score is not None),
+            key=score_key,
         )
-        ranks = {item.ticker: index for index, item in enumerate(ranked, start=1)}
+        ranks = {composite.ticker: index for index, composite in enumerate(ranked, start=1)}
         results.extend(
-            replace(item, rank=ranks[item.ticker]) if item.score is not None else item
-            for item in members
+            replace(composite, rank=ranks[composite.ticker])
+            if composite.score is not None
+            else composite
+            for composite in composite_members
         )
 
     return tuple(

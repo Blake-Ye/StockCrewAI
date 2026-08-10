@@ -11,6 +11,8 @@ from stockcrewai.models.quant import FactorObservation, PointInTimeSnapshot
 
 
 FactorDirection = Literal["high", "low"]
+_FeatureDomain = Literal["financial", "market"]
+_ObservationStatus = Literal["available", "unavailable", "not_applicable", "invalid"]
 
 
 FACTOR_DIRECTIONS: dict[str, FactorDirection] = {
@@ -70,7 +72,7 @@ _APPLICABLE_PROFILES: dict[str, frozenset[IssuerProfile]] = {
     "risk.max_drawdown_12m": _MARKET_PROFILES,
 }
 
-_Feature = tuple[Literal["financial", "market"], str]
+_Feature = tuple[_FeatureDomain, str]
 
 
 def _read(snapshot: PointInTimeSnapshot, feature: _Feature) -> tuple[Decimal | None, str | None]:
@@ -187,8 +189,8 @@ def _cagr(
 def _raw_factor(
     snapshot: PointInTimeSnapshot, factor_id: str
 ) -> tuple[Decimal | None, str]:
-    financial = "financial"
-    market = "market"
+    financial: _FeatureDomain = "financial"
+    market: _FeatureDomain = "market"
     if factor_id == "value.earnings_yield":
         return _divide(snapshot, (financial, "diluted_eps"), ((market, "price"),), denominator_must_be_positive=True)
     if factor_id == "value.fcf_yield":
@@ -308,7 +310,7 @@ def _observation(
     factor_id: str,
     formula_version: str,
     raw_value: Decimal | None,
-    status: str,
+    status: _ObservationStatus,
     reason_code: str,
     evidence_ids: list[str],
     calculation_ids: list[str],
@@ -391,7 +393,7 @@ def compute_factor_observations(
                 )
                 continue
             raw_value, reason_code = _raw_factor(snapshot, factor_id)
-            status = "available" if reason_code == "validated_inputs" else (
+            status: _ObservationStatus = "available" if reason_code == "validated_inputs" else (
                 "invalid" if reason_code in {"invalid_input", "invalid_result"} else "unavailable"
             )
             observations.append(

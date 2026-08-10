@@ -119,8 +119,12 @@ def normalize_cross_section(
             }
             continue
 
-        raw_values = [observation.raw_value for _, observation in available]
-        assert all(isinstance(value, Decimal) for value in raw_values)
+        raw_values: list[Decimal] = []
+        for _, observation in available:
+            value = observation.raw_value
+            assert isinstance(value, Decimal)
+            raw_values.append(value)
+        assert raw_values
         clipped_values = _winsorize(raw_values, winsor_lower, winsor_upper)
         percentiles = _midrank_percentiles(clipped_values)
         direction = FACTOR_DIRECTIONS[factor_id]
