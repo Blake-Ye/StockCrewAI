@@ -259,6 +259,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
         "quant_packet",
         "market_price_data",
         "progress_callback",
+        "profile_input",
+        "profile_evidence_records",
+        "profile_market_price_records",
         "reit_profile_input",
         "reit_evidence_records",
         "reit_market_price_records",
@@ -277,6 +280,13 @@ class ResearchFlow(Flow[ResearchFlowState]):
     _report_crew: Any = PrivateAttr(default=None)
     _quant_packet: Any = PrivateAttr(default=None)
     _market_price_data: Any = PrivateAttr(default=None)
+    _profile_input: Mapping[str, Any] | None = PrivateAttr(default=None)
+    _profile_evidence_records: tuple[EvidenceRecord, ...] = PrivateAttr(
+        default_factory=tuple
+    )
+    _profile_market_price_records: tuple[MarketPriceRecord, ...] = PrivateAttr(
+        default_factory=tuple
+    )
     _reit_profile_input: Mapping[str, Any] | None = PrivateAttr(default=None)
     _reit_evidence_records: tuple[EvidenceRecord, ...] = PrivateAttr(
         default_factory=tuple
@@ -321,6 +331,16 @@ class ResearchFlow(Flow[ResearchFlowState]):
         dependencies = {
             name: data.pop(name, None) for name in self._DEPENDENCY_NAMES
         }
+        profile_input = dependencies["profile_input"]
+        dependencies["profile_input"] = (
+            dict(profile_input) if isinstance(profile_input, Mapping) else None
+        )
+        dependencies["profile_evidence_records"] = self._validated_reit_records(
+            dependencies["profile_evidence_records"], EvidenceRecord
+        )
+        dependencies["profile_market_price_records"] = self._validated_reit_records(
+            dependencies["profile_market_price_records"], MarketPriceRecord
+        )
         reit_profile_input = dependencies["reit_profile_input"]
         dependencies["reit_profile_input"] = (
             dict(reit_profile_input) if isinstance(reit_profile_input, Mapping) else None
@@ -357,11 +377,16 @@ class ResearchFlow(Flow[ResearchFlowState]):
         return tuple(records)
 
     def _is_reit_profile(self) -> bool:
+        explicit_profile = (
+            self._profile_input
+            if isinstance(self._profile_input, Mapping)
+            else self._reit_profile_input
+        )
         candidates = (
             self.state.profile,
             self.state.policy_context.get("profile"),
             self._pipeline_state.get("profile"),
-            self._reit_profile_input,
+            explicit_profile,
         )
         for candidate in candidates:
             if not isinstance(candidate, Mapping):
@@ -373,6 +398,32 @@ class ResearchFlow(Flow[ResearchFlowState]):
             if str(issuer_profile).strip().casefold() == "reit":
                 return True
         return False
+
+    def _active_profile_input(self) -> Mapping[str, Any] | None:
+        if isinstance(self._profile_input, Mapping) and self._profile_input:
+            return self._profile_input
+        if isinstance(self._reit_profile_input, Mapping) and self._reit_profile_input:
+            return self._reit_profile_input
+        return self.state.profile if isinstance(self.state.profile, Mapping) else None
+
+    def _active_profile_records(
+        self,
+    ) -> tuple[
+        Mapping[str, Any] | None,
+        tuple[EvidenceRecord, ...],
+        tuple[MarketPriceRecord, ...],
+    ]:
+        if isinstance(self._profile_input, Mapping):
+            return (
+                self._profile_input,
+                self._profile_evidence_records,
+                self._profile_market_price_records,
+            )
+        return (
+            self._active_profile_input(),
+            self._reit_evidence_records,
+            self._reit_market_price_records,
+        )
 
     @staticmethod
     def _market_price_record_from_data(
@@ -428,26 +479,27 @@ class ResearchFlow(Flow[ResearchFlowState]):
             return ()
         return (record,)
 
-    def _refresh_reit_policy_context(self, market_price_data: Any) -> None:
-        if not self._is_reit_profile():
+    def _refresh_profile_policy_context(self, market_price_data: Any) -> None:
+        profile, evidence_records, market_price_records = self._active_profile_records()
+        if not isinstance(profile, Mapping):
             return
-        market_price_records = self._reit_market_price_records
         if not market_price_records:
             market_price_records = self._market_price_record_from_data(
                 market_price_data
             )
-            self._reit_market_price_records = market_price_records
-        profile = (
-            self._reit_profile_input
-            if isinstance(self._reit_profile_input, Mapping)
-            and self._reit_profile_input
-            else self.state.profile
-        )
+            if isinstance(self._profile_input, Mapping):
+                self._profile_market_price_records = market_price_records
+            else:
+                self._reit_market_price_records = market_price_records
+        issuer_profile = profile.get("issuer_profile", profile.get("issuer_type"))
+        issuer_profile = getattr(issuer_profile, "value", issuer_profile)
+        if str(issuer_profile).strip().casefold() not in {"reit", "bank", "insurance"}:
+            return
         policy_context = pipeline_support.build_profile_policy_context(
             profile=profile,
             facts=self._pipeline_state.get("facts", {}),
             calculations=self._pipeline_state.get("calculations", []),
-            evidence_records=self._reit_evidence_records,
+            evidence_records=evidence_records,
             market_price_records=market_price_records,
         )
         policy_context = _json_safe(policy_context)
@@ -460,7 +512,8 @@ class ResearchFlow(Flow[ResearchFlowState]):
             else None
         ) or (
             "explicit_profile"
-            if isinstance(self._reit_profile_input, Mapping)
+            if isinstance(self._profile_input, Mapping)
+            or isinstance(self._reit_profile_input, Mapping)
             else "sec_metadata"
         )
         self.state.profile = _json_safe(
@@ -469,6 +522,10 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self.state.policy_context = policy_context
         self._pipeline_state["profile"] = self.state.profile
         self._pipeline_state["policy_context"] = policy_context
+
+    def _refresh_reit_policy_context(self, market_price_data: Any) -> None:
+        """保留旧私有调用名，同时刷新所有 typed Profile。"""
+        self._refresh_profile_policy_context(market_price_data)
 
     def _build_analysis_evidence_store(self) -> EvidenceStore:
         """为当前 Flow run 构造不进入 state 的只读 EvidenceStore。"""
@@ -945,9 +1002,14 @@ class ResearchFlow(Flow[ResearchFlowState]):
             else None
         )
         explicit_profile = (
-            self._reit_profile_input
+            self._profile_input
+            if isinstance(self._profile_input, Mapping)
+            else self._reit_profile_input
             if isinstance(self._reit_profile_input, Mapping)
             else state_profile
+        )
+        _, profile_evidence_records, profile_market_price_records = (
+            self._active_profile_records()
         )
         profile_metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
         policy_context = pipeline_support.build_profile_policy_context(
@@ -955,8 +1017,8 @@ class ResearchFlow(Flow[ResearchFlowState]):
             source_metadata=profile_metadata,
             facts=self._pipeline_state.get("facts", {}),
             calculations=self._pipeline_state.get("calculations", []),
-            evidence_records=self._reit_evidence_records,
-            market_price_records=self._reit_market_price_records,
+            evidence_records=profile_evidence_records,
+            market_price_records=profile_market_price_records,
         )
         policy_context = _json_safe(policy_context)
         if not isinstance(policy_context, dict):
@@ -1184,7 +1246,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self.state.historical_valuation = historical_valuation
         self.state.reverse_dcf = reverse_dcf
         self.state.stage = "analysis"
-        self._refresh_reit_policy_context(self._market_price_data)
+        self._refresh_profile_policy_context(self._market_price_data)
         snapshot = self._stage_snapshot()
         self._emit_stage(
             RunStageEvent(
@@ -1732,16 +1794,25 @@ class ResearchFlow(Flow[ResearchFlowState]):
             }.items()
             if value is not None
         }
-        if self._is_reit_profile():
+        active_profile, active_evidence_records, active_market_price_records = (
+            self._active_profile_records()
+        )
+        active_issuer = (
+            active_profile.get("issuer_profile", active_profile.get("issuer_type"))
+            if isinstance(active_profile, Mapping)
+            else None
+        )
+        active_issuer = getattr(active_issuer, "value", active_issuer)
+        if str(active_issuer).strip().casefold() in {"reit", "bank", "insurance"}:
             source_metadata["facts"].update(
                 {
                     record.evidence_id: record.model_dump(mode="json")
-                    for record in self._reit_evidence_records
+                    for record in active_evidence_records
                 }
             )
             source_metadata["market_price"] = (
-                self._reit_market_price_records[0].model_dump(mode="json")
-                if self._reit_market_price_records
+                active_market_price_records[0].model_dump(mode="json")
+                if active_market_price_records
                 else {}
             )
         else:

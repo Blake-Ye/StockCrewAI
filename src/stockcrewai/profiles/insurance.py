@@ -435,7 +435,7 @@ def evaluate_insurance_profile(
                 input_ids,
                 source_by_id,
                 result,
-                "ratio",
+                "multiple",
             ),
         )
 
@@ -459,7 +459,7 @@ def evaluate_insurance_profile(
                 input_ids,
                 source_by_id,
                 result,
-                "ratio",
+                "multiple",
             ),
         )
 

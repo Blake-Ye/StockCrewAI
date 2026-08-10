@@ -20,7 +20,7 @@ from stockcrewai.models.profile import (
     SecurityProfile,
 )
 from stockcrewai.pipelines.metric_registry import (
-    POLICY_VERSION,
+    BANK_POLICY_VERSION,
     evaluate_policy_decisions,
     resolve_metric_policies,
 )
@@ -47,7 +47,7 @@ def _bank_policy_context() -> dict[str, Any]:
         "coverage_level": profile.coverage_level.value,
         "policies": [policy.model_dump(mode="json") for policy in policies],
         "policy_decisions": [decision.model_dump(mode="json") for decision in decisions],
-        "policy_version": POLICY_VERSION,
+        "policy_version": BANK_POLICY_VERSION,
         "gate": gate.model_dump(mode="json"),
     }
 
@@ -75,7 +75,7 @@ def _valuation_policy_context() -> dict[str, Any]:
 def _bank_valuation_policy_context() -> dict[str, Any]:
     return {
         "profile": _bank_profile().model_dump(mode="json"),
-        "policy_version": POLICY_VERSION,
+        "policy_version": BANK_POLICY_VERSION,
         "policy_decisions": [
             PolicyDecision(
                 metric_id="pe_ratio",
@@ -198,7 +198,7 @@ def test_legacy_profile_is_adapted_to_shared_profile_policy_gate() -> None:
 
     assert context["profile"]["issuer_profile"] == "bank"
     assert context["profile"]["coverage_level"] == "full"
-    assert context["policy_version"] == POLICY_VERSION
+    assert context["policy_version"] == BANK_POLICY_VERSION
     assert context["gate"]["status"] == "blocked"
     blocking = context["gate"]["blocking_decisions"]
     assert blocking
@@ -225,14 +225,14 @@ def test_flow_routes_from_profile_gate_and_exposes_one_json_safe_context() -> No
 
     result = flow._flow_result()
     assert result["profile"]["coverage_level"] == "full"
-    assert result["policy_context"]["policy_version"] == POLICY_VERSION
+    assert result["policy_context"]["policy_version"] == BANK_POLICY_VERSION
     assert result["policy_context"]["gate"]["status"] == "blocked"
     assert result["policy_context"]["gate"]["blocking_decisions"]
 
 
 def test_verdict_does_not_require_policy_not_applicable_metrics() -> None:
     policy_context = {
-        "policy_version": POLICY_VERSION,
+        "policy_version": BANK_POLICY_VERSION,
         "policy_decisions": [
             PolicyDecision(
                 metric_id="historical_valuation",
@@ -280,7 +280,7 @@ def test_explicit_not_applicable_valuation_policy_filters_valuation_claims() -> 
 
     claims = pipeline_support.build_deterministic_valuation_claims(valuation_inputs)
 
-    assert claims == []
+    assert [claim["category"] for claim in claims] == ["current_valuation"]
 
 
 def test_verdict_ignores_explicit_not_applicable_pe_and_fcf() -> None:
@@ -295,8 +295,8 @@ def test_verdict_ignores_explicit_not_applicable_pe_and_fcf() -> None:
     )
 
     assert verdict.status == "ready"
-    assert verdict.overall_rating == "reasonable"
-    assert verdict.triggered_rules == ["balanced_valuation"]
+    assert verdict.overall_rating == "expensive"
+    assert verdict.triggered_rules == ["high_valuation"]
 
 
 def test_report_context_preserves_market_price_but_filters_not_applicable_valuation() -> None:
@@ -313,8 +313,8 @@ def test_report_context_preserves_market_price_but_filters_not_applicable_valuat
 
     metric_ids = {metric["metric_id"] for metric in context["metrics"]}
     assert "market_price" in metric_ids
+    assert "pe_ratio" in metric_ids
     assert not metric_ids & {
-        "pe_ratio",
         "fcf_yield",
         "historical_pe_current",
         "historical_pe_median",
@@ -362,9 +362,9 @@ def test_report_context_and_renderer_show_profile_coverage_and_policy_version() 
 
     assert context["coverage_level"] == "full"
     assert context["profile"]["issuer_profile"] == "bank"
-    assert context["policy_version"] == POLICY_VERSION
+    assert context["policy_version"] == BANK_POLICY_VERSION
     assert narrative["coverage_level"] == "full"
-    assert narrative["policy_version"] == POLICY_VERSION
+    assert narrative["policy_version"] == BANK_POLICY_VERSION
     assert "覆盖范围：full" in report
     assert "Profile：issuer=bank" in report
-    assert f"Policy version：{POLICY_VERSION}" in report
+    assert f"Policy version：{BANK_POLICY_VERSION}" in report

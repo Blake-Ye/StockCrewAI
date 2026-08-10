@@ -83,6 +83,8 @@ def _usable_evidence(
     record = records[evidence_id]
     if record.validation_status is not ValidationStatus.VALID or record.value is None:
         return None, "invalid_evidence"
+    if record.filed_at > as_of.date():
+        return None, "filed_after_as_of"
     if record.as_of > as_of:
         return None, "future_evidence"
     return record, ""
@@ -154,7 +156,7 @@ def _calculation(
         source_reference=f"derived:{formula_id}",
         as_of=as_of,
         result=result,
-        unit="ratio",
+        unit="multiple" if metric_id in {"price_to_book", "pe_ratio"} else "ratio",
         period_start=min(
             (record.period_start for record in period_records),
             default=as_of.date(),

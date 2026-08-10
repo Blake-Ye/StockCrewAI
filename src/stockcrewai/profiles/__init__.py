@@ -1,3 +1,15 @@
+from stockcrewai.profiles.bank import (
+    BANK_METRIC_IDS,
+    POLICY_VERSION as BANK_POLICY_VERSION,
+    PROFILE_VERSION as BANK_PROFILE_VERSION,
+    evaluate_bank_profile,
+)
+from stockcrewai.profiles.insurance import (
+    INSURANCE_METRIC_IDS,
+    POLICY_VERSION as INSURANCE_POLICY_VERSION,
+    PROFILE_VERSION as INSURANCE_PROFILE_VERSION,
+    evaluate_insurance_profile,
+)
 from stockcrewai.profiles.reit import (
     POLICY_VERSION,
     PROFILE_VERSION,
@@ -6,8 +18,16 @@ from stockcrewai.profiles.reit import (
 )
 
 __all__ = [
+    "BANK_METRIC_IDS",
+    "BANK_POLICY_VERSION",
+    "BANK_PROFILE_VERSION",
+    "INSURANCE_METRIC_IDS",
+    "INSURANCE_POLICY_VERSION",
+    "INSURANCE_PROFILE_VERSION",
     "POLICY_VERSION",
     "PROFILE_VERSION",
     "REIT_METRIC_IDS",
+    "evaluate_bank_profile",
+    "evaluate_insurance_profile",
     "evaluate_reit_profile",
 ]

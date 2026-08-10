@@ -197,6 +197,27 @@ def test_complete_insurance_profile_computes_metrics_with_traceable_records() ->
         assert set(calculations_by_formula[formula_id].input_evidence_ids) == set(
             expected_input_ids
         )
+    assert all(
+        calculations_by_formula[formula_id].unit == "multiple"
+        for formula_id in (
+            "insurance-price-to-book-v1",
+            "insurance-pe-ratio-v1",
+        )
+    )
+    assert (
+        calculations_by_formula["insurance-book-value-per-share-v1"].unit
+        == "currency/share"
+    )
+    assert all(
+        calculation.unit == "ratio"
+        for calculation in calculations
+        if calculation.formula_id
+        not in {
+            "insurance-price-to-book-v1",
+            "insurance-pe-ratio-v1",
+            "insurance-book-value-per-share-v1",
+        }
+    )
 
 
 def test_missing_combined_is_blocking_without_fabricated_components() -> None:

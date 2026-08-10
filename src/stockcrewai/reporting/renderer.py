@@ -42,6 +42,22 @@ _REPORT_METRIC_LABELS = {
     "debt_to_equity": "债务权益比",
     "share_dilution": "股份稀释率",
     "market_capitalization": "市值",
+    "bank_roa": "银行 ROA",
+    "bank_roe": "银行 ROE",
+    "net_interest_margin": "NIM",
+    "efficiency_ratio": "效率比率",
+    "cet1_ratio": "CET1",
+    "loan_to_deposit": "贷存比",
+    "nonperforming_loan_ratio": "不良贷款率",
+    "provision_coverage": "拨备覆盖率",
+    "loss_ratio": "赔付率",
+    "expense_ratio": "费用率",
+    "combined_ratio": "综合成本率",
+    "insurance_roe": "保险 ROE",
+    "book_value_per_share": "每股账面价值",
+    "investment_income": "投资收益",
+    "solvency_ratio": "偿付能力",
+    "price_to_book": "P/B",
     "pe_ratio": "P/E",
     "fcf_yield": "FCF Yield",
     "ffo_total": "FFO 总额",
@@ -73,7 +89,7 @@ _REPORT_AMOUNT_METRIC_IDS = frozenset(
     {"free_cash_flow", "net_cash", "market_capitalization"}
 )
 _REPORT_MULTIPLE_METRIC_IDS = frozenset(
-    {"net_debt_to_ebitda", "dividend_coverage", "price_to_ffo"}
+    {"net_debt_to_ebitda", "dividend_coverage", "price_to_ffo", "price_to_book"}
 )
 _REIT_METRIC_LABELS = {
     "ffo_total": "FFO 总额",
@@ -208,6 +224,11 @@ def build_narrative_context(
             )
         if section:
             metric_sections.add(str(section))
+    profile_metrics = report_context.get("profile_metrics")
+    if isinstance(profile_metrics, Mapping):
+        profile_issuer = _text((report_context.get("profile") or {}).get("issuer_profile"))
+        if profile_issuer in {"bank", "insurance"}:
+            metric_sections.add("company_quality")
     source_metadata = report_context.get("source_metadata", {})
     source_metadata = source_metadata if isinstance(source_metadata, Mapping) else {}
 
@@ -386,12 +407,17 @@ def _metric_text(metric: Mapping[str, Any]) -> str:
     if unit and unit not in value and metric["metric_id"] == "market_price":
         value = f"{value} {unit}"
     period_end = _text(metric.get("period_end"))
+    provenance = (
+        "；直接披露证据"
+        if metric.get("provenance_type") == "direct_evidence"
+        else ""
+    )
     if period_end:
         return (
             f"- {label}：{value}（期间截至 {period_end}；截至 {metric['as_of']}；"
-            f"来源：{metric['source_reference']}）"
+            f"来源：{metric['source_reference']}{provenance}）"
         )
-    return f"- {label}：{value}（截至 {metric['as_of']}；来源：{metric['source_reference']}）"
+    return f"- {label}：{value}（截至 {metric['as_of']}；来源：{metric['source_reference']}{provenance}）"
 
 
 def _metric_text_for_section(
@@ -423,7 +449,9 @@ def _source_text(context: Mapping[str, Any]) -> str:
     return "\n".join(f"- {reference}" for reference in references)
 
 
-def _term_definitions(*, reit: bool = False) -> tuple[str, ...]:
+def _term_definitions(
+    *, reit: bool = False, profile: str | None = None
+) -> tuple[str, ...]:
     definitions = [
         "### 术语说明",
         "- P/E（市盈率）：股价相对于每股收益的倍数，用于描述市场对盈利的定价。",
@@ -440,7 +468,84 @@ def _term_definitions(*, reit: bool = False) -> tuple[str, ...]:
                 "- P/FFO：市场价格相对于每股 FFO 的倍数，是 REIT 的主要估值参考之一。",
             )
         )
+    if profile == "bank":
+        definitions.extend(
+            (
+                "- ROA（资产回报率）：净利润相对于平均资产的比例，衡量银行资产创造利润的效率。",
+                "- ROE（净资产收益率）：净利润相对于平均股东权益的比例，衡量股东资本回报。",
+                "- NIM（净息差）：净利息收入相对于平均生息资产的比例，反映银行核心息差。",
+                "- 效率比率：非利息费用相对于净利息收入与非利息收入之和的比例，通常越低表示效率越高。",
+                "- CET1（普通股权一级资本充足率）：直接披露的核心资本相对风险承担的监管比率。",
+                "- 贷存比：贷款总额相对于存款总额的比例。",
+                "- 不良贷款率：不良贷款相对于贷款总额的比例。",
+                "- 拨备覆盖率：信用损失准备相对于不良贷款的比例。",
+                "- P/B（市净率）：股价相对于每股账面价值的倍数。",
+            )
+        )
+    if profile == "insurance":
+        definitions.extend(
+            (
+                "- ROA/ROE：分别表示资产回报率和净资产收益率，用于衡量保险公司的盈利效率与股东回报。",
+                "- 赔付率：已发生赔付相对于已赚保费的比例。",
+                "- 费用率：承保费用相对于已赚保费的比例。",
+                "- 综合成本率：赔付率与费用率按固定口径相加，衡量承保业务成本。",
+                "- 偿付能力：公司或法定口径直接披露的资本/偿付能力比率。",
+                "- P/B（市净率）：股价相对于每股账面价值的倍数。",
+            )
+        )
     return tuple(definitions)
+
+
+def _profile_decisions(payload: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    decisions = payload.get("policy_decisions", [])
+    if not isinstance(decisions, Sequence) or isinstance(decisions, (str, bytes)):
+        return {}
+    return {
+        decision["metric_id"]: decision
+        for decision in decisions
+        if isinstance(decision, Mapping) and _text(decision.get("metric_id"))
+    }
+
+
+def _profile_metrics_markdown(
+    profile: str | None,
+    payload: Mapping[str, Any] | None,
+    metrics: Sequence[Mapping[str, Any]],
+) -> str:
+    if profile not in {"bank", "insurance"} or not isinstance(payload, Mapping):
+        return ""
+    metric_ids = payload.get("metric_ids", [])
+    if not isinstance(metric_ids, Sequence) or isinstance(metric_ids, (str, bytes)):
+        metric_ids = []
+    metric_map = {
+        metric.get("metric_id"): metric
+        for metric in metrics
+        if isinstance(metric, Mapping) and metric.get("metric_id") in metric_ids
+    }
+    decisions = _profile_decisions(payload)
+    lines = ["### 银行专用指标" if profile == "bank" else "### 保险专用指标"]
+    for metric_id in metric_ids:
+        metric_id = _text(metric_id)
+        if not metric_id:
+            continue
+        metric = metric_map.get(metric_id)
+        if metric is not None:
+            lines.append(_metric_text(metric))
+            continue
+        decision = decisions.get(metric_id, {})
+        status = _text(decision.get("status")) or "unavailable"
+        reason = _text(decision.get("reason_code")) or "reason_code_missing"
+        label = _REPORT_METRIC_LABELS.get(metric_id, metric_id)
+        if status == "not_applicable" and metric_id == "fcf_yield":
+            explanation = (
+                "银行不计算普通企业 FCF Yield。"
+                if profile == "bank"
+                else "保险不计算普通企业 FCF Yield。"
+            )
+            lines.append(f"- FCF Yield：not_applicable（{reason}）；{explanation}")
+        else:
+            lines.append(f"- {label}：{status}（{reason}）")
+    return "\n".join(lines)
 
 
 def _reit_decisions(payload: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -739,6 +844,11 @@ def _render_report_from_context(
     metrics = context_payload["metrics"]
     reit_metrics = context_payload.get("reit_metrics")
     is_reit = isinstance(reit_metrics, Mapping)
+    profile = context_payload.get("profile", {})
+    profile_issuer = (
+        _text(profile.get("issuer_profile")) if isinstance(profile, Mapping) else None
+    )
+    profile_metrics = context_payload.get("profile_metrics")
     verdict = context_payload.get("verdict", {})
     if not isinstance(verdict, Mapping):
         verdict = {}
@@ -815,6 +925,10 @@ def _render_report_from_context(
                     "",
                 )
             )
+            if profile_markdown := _profile_metrics_markdown(
+                profile_issuer, profile_metrics, metrics
+            ):
+                sections.extend((profile_markdown, ""))
             if is_reit and (unavailable := _reit_unavailable_markdown(reit_metrics)):
                 sections.extend((unavailable, ""))
         elif field == "financial_trend":
@@ -892,7 +1006,7 @@ def _render_report_from_context(
                     "",
                     _source_text(context_payload),
                     "",
-                    *_term_definitions(reit=is_reit),
+                    *_term_definitions(reit=is_reit, profile=profile_issuer),
                     "",
                 )
             )

@@ -161,6 +161,19 @@ def test_complete_bank_profile_computes_metrics_with_traceable_records() -> None
     assert {calculation.formula_id for calculation in calculations} == set(
         expected["calculation_formula_ids"]
     )
+    calculations_by_formula = {
+        calculation.formula_id: calculation for calculation in calculations
+    }
+    assert all(
+        calculations_by_formula[formula_id].unit == "multiple"
+        for formula_id in ("bank-price-to-book-v1", "bank-pe-ratio-v1")
+    )
+    assert all(
+        calculation.unit == "ratio"
+        for calculation in calculations
+        if calculation.formula_id
+        not in {"bank-price-to-book-v1", "bank-pe-ratio-v1"}
+    )
     assert decision_by_metric["cet1_ratio"].evidence_ids == ["ev_bank_cet1"]
     assert decision_by_metric["cet1_ratio"].calculation_ids == []
     assert all(
@@ -309,3 +322,29 @@ def test_invalid_or_duplicate_source_fails_closed() -> None:
             )
             for decision in decisions
         ), label
+
+
+def test_filing_after_profile_as_of_is_unavailable_and_blocking() -> None:
+    fixture = _load_fixture("complete")
+    future_fixture = deepcopy(fixture)
+    next(
+        record
+        for record in future_fixture["evidence_records"]
+        if record["evidence_id"] == "ev_bank_net_income"
+    )["filed_at"] = "2026-03-03"
+
+    values, decisions, calculations = _evaluate_fixture(future_fixture)
+    decision_by_metric = {decision.metric_id: decision for decision in decisions}
+
+    for metric_id in ("bank_roa", "bank_roe"):
+        decision = decision_by_metric[metric_id]
+        assert values[metric_id] is None
+        assert decision.status == "unavailable"
+        assert decision.reason_code == "filed_after_as_of"
+        assert decision.blocking is True
+        assert decision.evidence_ids == []
+        assert decision.calculation_ids == []
+    assert all(
+        "ev_bank_net_income" not in calculation.input_evidence_ids
+        for calculation in calculations
+    )
