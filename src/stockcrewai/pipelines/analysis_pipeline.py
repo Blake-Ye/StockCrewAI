@@ -161,8 +161,14 @@ def _filter_analysis_claims_with_diagnostics(
     risk_filing_evidence_ids: list[str],
     valuation_evidence_ids: list[str],
     validated_calculation_ids: list[str],
+    *,
+    allow_empty_valuation_claims: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
-    """解析并按固定域规则验证 Analysis Crew 的三个输出。"""
+    """解析并按固定域规则验证 Analysis Crew 的三个输出。
+
+    默认仍要求估值 task 产出 Claim；只有 Flow 已确定允许的
+    foreign evidence-only 情形才显式放宽估值 task 为空。
+    """
     calculation_allowlist = set(validated_calculation_ids)
     task_outputs = getattr(output, "tasks_output", None)
     if not isinstance(task_outputs, (list, tuple)) or len(task_outputs) != 3:
@@ -246,6 +252,8 @@ def _filter_analysis_claims_with_diagnostics(
             )
         raw_claims = payload["claims"]
         if not raw_claims:
+            if domain == "valuation" and allow_empty_valuation_claims:
+                continue
             return (
                 [],
                 [missing_code],
@@ -335,7 +343,8 @@ def _risk_analysis_input(
             isinstance(eligibility, Mapping)
             and eligibility.get("eligibility") == "eligible"
             and eligibility.get("evidence_id") == filing.evidence_id
-            and eligibility.get("evidence_kind") in {"item_1a", "substantive_8k_event"}
+            and eligibility.get("evidence_kind")
+            in {"item_1a", "item_3d", "substantive_8k_event"}
             and eligibility.get("source_reference")
             and filing.text_retrieval_status == "available"
             and isinstance(sections, list)

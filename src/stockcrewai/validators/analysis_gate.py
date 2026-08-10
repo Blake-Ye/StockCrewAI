@@ -4,7 +4,13 @@ from collections.abc import Sequence
 from typing import Literal
 
 from stockcrewai.models.policy import GateResult, PolicyDecision
-from stockcrewai.models.profile import CoverageLevel, ProfileResult, SecurityProfile
+from stockcrewai.models.profile import (
+    CoverageLevel,
+    IssuerProfile,
+    ProfileResult,
+    ReportingProfile,
+    SecurityProfile,
+)
 from stockcrewai.pipelines.metric_registry import policy_version_for_profile
 
 
@@ -36,7 +42,19 @@ def evaluate_analysis_gate(
     if profile.coverage_level is CoverageLevel.UNSUPPORTED_SECURITY:
         status = "unsupported"
         fixed_reason_code = "unsupported_security"
-    elif profile.security_profile in {SecurityProfile.ADR, SecurityProfile.SPAC}:
+    elif (
+        profile.reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
+        and (
+            profile.issuer_profile is IssuerProfile.UNKNOWN
+            or profile.security_profile is SecurityProfile.UNKNOWN
+        )
+    ):
+        status = "evidence_only"
+        fixed_reason_code = "foreign_profile_incomplete"
+    elif (
+        profile.security_profile in {SecurityProfile.ADR, SecurityProfile.SPAC}
+        and profile.reporting_profile is not ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
+    ):
         status = "evidence_only"
         fixed_reason_code = "security_profile_policy_unavailable"
     elif profile.coverage_level is CoverageLevel.EVIDENCE_ONLY:

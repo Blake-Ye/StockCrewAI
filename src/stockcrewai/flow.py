@@ -91,6 +91,37 @@ _RUNTIME_METRICS_STAGE_LABELS: dict[int, tuple[str, str, str]] = {
     6: ("research_flow", "claim_gate", "route_claims"),
     7: ("research_flow", "report", "generate_report"),
 }
+_FOREIGN_FX_NOT_IMPLEMENTED_REASON = "foreign_currency_fx_not_implemented"
+
+
+def _allow_empty_foreign_valuation_claims(
+    policy_context: Any,
+    valuation: Any,
+    historical_valuation: Any,
+    reverse_dcf: Any,
+) -> bool:
+    """仅为明确 foreign evidence-only 的 FX 缺失估值跳过估值 Claim。"""
+    if not isinstance(policy_context, Mapping):
+        return False
+    profile = policy_context.get("profile")
+    reporting_profile = (
+        profile.get("reporting_profile") if isinstance(profile, Mapping) else None
+    )
+    reporting_profile = getattr(reporting_profile, "value", reporting_profile)
+    gate = policy_context.get("gate")
+    if (
+        str(reporting_profile).strip().casefold()
+        != "foreign_private_issuer_ifrs"
+        or not isinstance(gate, Mapping)
+        or gate.get("status") != "evidence_only"
+    ):
+        return False
+    return all(
+        isinstance(result, Mapping)
+        and result.get("status") == "not_applicable"
+        and result.get("reason_code") == _FOREIGN_FX_NOT_IMPLEMENTED_REASON
+        for result in (valuation, historical_valuation, reverse_dcf)
+    )
 
 
 def _runtime_metrics_enabled() -> bool:
@@ -493,16 +524,31 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 self._reit_market_price_records = market_price_records
         issuer_profile = profile.get("issuer_profile", profile.get("issuer_type"))
         issuer_profile = getattr(issuer_profile, "value", issuer_profile)
-        if str(issuer_profile).strip().casefold() not in {
+        reporting_profile = profile.get("reporting_profile")
+        reporting_profile = getattr(reporting_profile, "value", reporting_profile)
+        is_foreign_ifrs = (
+            str(reporting_profile).strip().casefold()
+            == "foreign_private_issuer_ifrs"
+        )
+        if (
+            str(issuer_profile).strip().casefold() not in {
             "reit",
             "bank",
             "insurance",
             "utility",
             "commodity_producer",
-        }:
+            }
+            and not is_foreign_ifrs
+        ):
             return
+        current_context = self.state.policy_context
         policy_context = pipeline_support.build_profile_policy_context(
             profile=profile,
+            source_metadata=(
+                current_context.get("foreign_metadata")
+                if is_foreign_ifrs and isinstance(current_context, Mapping)
+                else None
+            ),
             facts=self._pipeline_state.get("facts", {}),
             calculations=self._pipeline_state.get("calculations", []),
             evidence_records=evidence_records,
@@ -511,16 +557,21 @@ class ResearchFlow(Flow[ResearchFlowState]):
         policy_context = _json_safe(policy_context)
         if not isinstance(policy_context, dict):
             raise TypeError("profile policy context 必须是 JSON-safe 映射")
-        current_context = self.state.policy_context
-        policy_context["policy_activation"] = (
-            current_context.get("policy_activation")
-            if isinstance(current_context, Mapping)
-            else None
-        ) or (
-            "explicit_profile"
-            if isinstance(self._profile_input, Mapping)
+        has_explicit_profile = (
+            isinstance(self._profile_input, Mapping)
             or isinstance(self._reit_profile_input, Mapping)
+        )
+        policy_context["policy_activation"] = (
+            "explicit_profile"
+            if has_explicit_profile
             else "sec_metadata"
+            if is_foreign_ifrs
+            else (
+                current_context.get("policy_activation")
+                if isinstance(current_context, Mapping)
+                else None
+            )
+            or "sec_metadata"
         )
         self.state.profile = _json_safe(
             policy_context.get("profile", self.state.profile)
@@ -1099,11 +1150,26 @@ class ResearchFlow(Flow[ResearchFlowState]):
         policy_context = _json_safe(policy_context)
         if not isinstance(policy_context, dict):
             raise TypeError("profile policy context 必须是 JSON-safe 映射")
+        policy_profile = policy_context.get("profile")
+        policy_reporting_profile = (
+            policy_profile.get("reporting_profile")
+            if isinstance(policy_profile, Mapping)
+            else None
+        )
+        policy_reporting_profile = getattr(
+            policy_reporting_profile,
+            "value",
+            policy_reporting_profile,
+        )
+        is_foreign_ifrs = (
+            str(policy_reporting_profile).strip().casefold()
+            == "foreign_private_issuer_ifrs"
+        )
         policy_context["policy_activation"] = (
             "explicit_profile"
             if explicit_profile is not None
             else "sec_metadata"
-            if policy_context.get("policies")
+            if policy_context.get("policies") or is_foreign_ifrs
             else "legacy_analysis_gate"
         )
         self.state.profile = _json_safe(policy_context.get("profile", {}))
@@ -1184,6 +1250,61 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 else fetched_market_price
             )
         self._market_price_data = _json_safe(market_price_data)
+
+        profile_context = pipeline_state.get("policy_context")
+        profile_candidates = [
+            profile_context.get("profile")
+            if isinstance(profile_context, Mapping)
+            else None,
+            pipeline_state.get("profile"),
+            self.state.profile,
+            self._profile_input,
+        ]
+        is_foreign_ifrs = False
+        for candidate in profile_candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            reporting_profile = candidate.get("reporting_profile")
+            reporting_profile = getattr(reporting_profile, "value", reporting_profile)
+            if (
+                str(reporting_profile).strip().casefold()
+                == "foreign_private_issuer_ifrs"
+            ):
+                is_foreign_ifrs = True
+                break
+
+        if is_foreign_ifrs:
+            reason_code = "foreign_currency_fx_not_implemented"
+            unavailable_valuation = {
+                "status": "not_applicable",
+                "readiness": "not_applicable",
+                "validation_status": "unvalidated",
+                "reason_code": reason_code,
+                "calculations": [],
+            }
+            self._trusted_valuation_evidence_ids = set()
+            self.state.market_price_data = _json_safe(self._market_price_data)
+            self.state.valuation = dict(unavailable_valuation)
+            self.state.historical_valuation = dict(unavailable_valuation)
+            self.state.reverse_dcf = dict(unavailable_valuation)
+            self.state.stage = "analysis"
+            self._refresh_profile_policy_context(self._market_price_data)
+            snapshot = self._stage_snapshot()
+            self._emit_stage(
+                RunStageEvent(
+                    step=3,
+                    title="市场价格与估值",
+                    actor="确定性工具：Market Price + Foreign Profile",
+                    status="completed",
+                    input_summary=snapshot["identity"],
+                    output_summary=(
+                        f"price={snapshot['price']}; timestamp={snapshot['timestamp']}; "
+                        "foreign valuation=not_applicable"
+                    ),
+                    next_step="Analysis Gate",
+                )
+            )
+            return dict(unavailable_valuation)
 
         if self._valuation_tool is None:
             self._valuation_tool = ValuationTool()
@@ -1432,7 +1553,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     self.state.historical_valuation,
                     self.state.reverse_dcf,
                 )
-            if "blocking_decisions" in gate and gate.get("status") != "ready":
+            if gate.get("status") in {"blocked", "unsupported"} and (
+                "blocking_decisions" in gate
+            ):
                 required_data = [
                     f"{decision.get('metric_id')}:{decision.get('reason_code')}"
                     for decision in gate.get("blocking_decisions", [])
@@ -1443,10 +1566,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 gate["required_data"] = required_data or [
                     f"profile_policy_gate_{gate.get('status', 'blocked')}"
                 ]
-        profile_gate_blocked = (
-            "blocking_decisions" in gate and gate.get("status") != "ready"
-        )
-        if gate.get("status") == "blocked" or profile_gate_blocked:
+            elif gate.get("status") == "evidence_only":
+                gate["required_data"] = []
+        if gate.get("status") in {"blocked", "unsupported"}:
             self.state.status = "blocked"
             self.state.stage = "request" if self._parser_failed else "analysis"
             self.state.required_data = list(gate.get("required_data", []))
@@ -1594,12 +1716,19 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self._analysis_result = with_deterministic_claims(
             raw_analysis_result
         )
+        allow_empty_valuation_claims = _allow_empty_foreign_valuation_claims(
+            self.state.policy_context,
+            self.state.valuation,
+            self.state.historical_valuation,
+            self.state.reverse_dcf,
+        )
         _, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
             self._analysis_result,
             list(financial_input.get("validated_evidence_ids", [])),
             list(self._risk_input.get("validated_filing_ids", [])),
             list(valuation_input.get("validated_evidence_ids", [])),
             list(valuation_input.get("validated_calculation_ids", [])),
+            allow_empty_valuation_claims=allow_empty_valuation_claims,
         )
         retryable_claim_empty = (
             diagnostics is not None
@@ -1668,12 +1797,19 @@ class ResearchFlow(Flow[ResearchFlowState]):
         """
         financial_input = self._analysis_inputs.get("financial_analysis_input", {})
         valuation_input = self._valuation_analysis_input
+        allow_empty_valuation_claims = _allow_empty_foreign_valuation_claims(
+            self.state.policy_context,
+            self.state.valuation,
+            self.state.historical_valuation,
+            self.state.reverse_dcf,
+        )
         claims, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
             analysis_result,
             list(financial_input.get("validated_evidence_ids", [])),
             list(self._risk_input.get("validated_filing_ids", [])),
             list(valuation_input.get("validated_evidence_ids", [])),
             list(valuation_input.get("validated_calculation_ids", [])),
+            allow_empty_valuation_claims=allow_empty_valuation_claims,
         )
         self.state.required_data = list(required_data)
         if diagnostics is None:
@@ -1879,13 +2015,23 @@ class ResearchFlow(Flow[ResearchFlowState]):
             else None
         )
         active_issuer = getattr(active_issuer, "value", active_issuer)
-        if str(active_issuer).strip().casefold() in {
+        active_reporting = (
+            active_profile.get("reporting_profile")
+            if isinstance(active_profile, Mapping)
+            else None
+        )
+        active_reporting = getattr(active_reporting, "value", active_reporting)
+        if (
+            str(active_issuer).strip().casefold() in {
             "reit",
             "bank",
             "insurance",
             "utility",
             "commodity_producer",
-        }:
+            }
+            or str(active_reporting).strip().casefold()
+            == "foreign_private_issuer_ifrs"
+        ):
             source_metadata["facts"].update(
                 {
                     record.evidence_id: record.model_dump(mode="json")

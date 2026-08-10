@@ -84,6 +84,17 @@ class DeterministicVerdictTool(BaseTool):
         risk_input = risk_input or {}
         policy_context = policy_context or {}
         reasons: list[str] = []
+        gate = policy_context.get("gate")
+        if isinstance(gate, dict) and gate.get("status") == "evidence_only":
+            return VerdictResult(
+                status="insufficient_data",
+                policy_defined=False,
+                is_investment_rating=False,
+                overall_rating="insufficient_data",
+                summary_code="FOREIGN_PROFILE_EVIDENCE_ONLY",
+                triggered_rules=["foreign_profile_evidence_only"],
+                reasons=["foreign_profile_evidence_only"],
+            )
         policy_decisions = policy_context.get("policy_decisions", [])
         if not isinstance(policy_decisions, list):
             policy_decisions = []

@@ -407,6 +407,22 @@ def test_unknown_or_evidence_only_profile_does_not_get_standard_policy() -> None
     assert resolve_metric_policies(unknown) == ()
 
 
+def test_foreign_unknown_security_does_not_get_adr_overlay() -> None:
+    profile = _profile(
+        IssuerProfile.BANK,
+        security=SecurityProfile.UNKNOWN,
+        reporting=ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS,
+        coverage=CoverageLevel.PARTIAL,
+    )
+
+    policies = resolve_metric_policies(profile)
+
+    assert all(
+        policy.metric_id not in {"adr_ratio", "adr_equivalent_shares", "adr_market_cap"}
+        for policy in policies
+    )
+
+
 def test_valid_calculation_is_the_only_minimal_available_provenance() -> None:
     policy = resolve_metric_policies(_profile(IssuerProfile.STANDARD_OPERATING))[0]
     calculation = _calculation("calc-revenue", policy.formula_id)

@@ -38,6 +38,34 @@ class DeterministicVerdictToolTests(unittest.TestCase):
         self.assertTrue(result.is_investment_rating)
         self.assertEqual(result.summary_code, "POLICY_EVALUATED")
 
+    def test_foreign_evidence_only_never_produces_an_investment_rating(self):
+        from stockcrewai.tools.verdict_tool import DeterministicVerdictTool
+
+        result = DeterministicVerdictTool().run(
+            validation_status="valid",
+            valuation={
+                "status": "not_applicable",
+                "reason_code": "foreign_currency_fx_not_implemented",
+            },
+            historical_valuation={
+                "status": "not_applicable",
+                "reason_code": "foreign_currency_fx_not_implemented",
+            },
+            reverse_dcf={
+                "status": "not_applicable",
+                "reason_code": "foreign_currency_fx_not_implemented",
+            },
+            risk_input={"status": "available", "risk_level": "medium"},
+            policy_context={"gate": {"status": "evidence_only"}},
+        )
+
+        self.assertEqual(result.status, "insufficient_data")
+        self.assertFalse(result.policy_defined)
+        self.assertFalse(result.is_investment_rating)
+        self.assertEqual(result.overall_rating, "insufficient_data")
+        self.assertEqual(result.summary_code, "FOREIGN_PROFILE_EVIDENCE_ONLY")
+        self.assertEqual(result.reasons, ["foreign_profile_evidence_only"])
+
 
 if __name__ == "__main__":
     unittest.main()

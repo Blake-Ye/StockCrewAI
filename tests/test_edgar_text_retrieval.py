@@ -191,6 +191,8 @@ class FakeCompany:
         return FakeFacts()
 
     def get_filings(self, **kwargs):
+        if kwargs["form"] in {"20-F", "6-K"}:
+            return FakeFilings([])
         return FakeFilings([self.filing_class(kwargs["form"], 1)])
 
 
@@ -258,6 +260,124 @@ class DirectoryRiskTextCompany(RiskTextCompany):
 
 class DirectoryRiskTextEdgar(FakeEdgar):
     company_class = DirectoryRiskTextCompany
+
+
+class Risk20FTextFiling(RiskTextFiling):
+    twenty_f_text = (
+        "Item 3.D Risk Factors\n"
+        + ("20-F risk body that should be retained.\n" * 20)
+        + "Item 4. Information on the Company\n"
+        + "This is outside the risk section.\n"
+    )
+
+    def text(self):
+        if self.form == "20-F":
+            return self.twenty_f_text
+        return super().text()
+
+
+class Risk20FTextCompany(RiskTextCompany):
+    filing_class = Risk20FTextFiling
+
+    def get_filings(self, **kwargs):
+        if kwargs["form"] == "20-F":
+            return FakeFilings([self.filing_class("20-F", 1)])
+        return super().get_filings(**kwargs)
+
+
+class Risk20FTextEdgar(FakeEdgar):
+    company_class = Risk20FTextCompany
+
+
+class DirectoryRisk20FTextFiling(Risk20FTextFiling):
+    twenty_f_text = (
+        "TABLE OF CONTENTS\n"
+        "Item 3D — Risk Factors .......... 17\n"
+        "Item 4. Information on the Company .......... 20\n"
+        "PART I\n"
+        "D. Risk Factors\n"
+        + ("20-F risk body from the filing正文.\n" * 20)
+        + "Item 4. Information on the Company\n"
+        + "This is outside the risk section.\n"
+    )
+
+
+class DirectoryRisk20FTextCompany(Risk20FTextCompany):
+    filing_class = DirectoryRisk20FTextFiling
+
+
+class DirectoryRisk20FTextEdgar(FakeEdgar):
+    company_class = DirectoryRisk20FTextCompany
+
+
+class KeyInformation20FTextFiling(Risk20FTextFiling):
+    twenty_f_text = (
+        "ITEM 3. KEY INFORMATION\n"
+        "Other key information.\n"
+        "Risk Factors\n"
+        + ("Real 20-F risk paragraph that should be retained.\n" * 20)
+        + "ITEM 4. INFORMATION ON THE COMPANY\n"
+        + "This is outside the risk section.\n"
+    )
+
+
+class KeyInformation20FTextCompany(Risk20FTextCompany):
+    filing_class = KeyInformation20FTextFiling
+
+
+class KeyInformation20FTextEdgar(FakeEdgar):
+    company_class = KeyInformation20FTextCompany
+
+
+class ThinSpaceKeyInformation20FTextFiling(KeyInformation20FTextFiling):
+    twenty_f_text = (
+        "ITEM\u20093. KEY INFORMATION\n"
+        "Risk Factors\n"
+        + ("Real thin-space 20-F risk paragraph that should be retained.\n" * 20)
+        + "ITEM\u20094. INFORMATION ON THE COMPANY\n"
+        + "This is outside the risk section.\n"
+    )
+
+
+class ThinSpaceKeyInformation20FTextCompany(KeyInformation20FTextCompany):
+    filing_class = ThinSpaceKeyInformation20FTextFiling
+
+
+class ThinSpaceKeyInformation20FTextEdgar(FakeEdgar):
+    company_class = ThinSpaceKeyInformation20FTextCompany
+
+
+class DirectoryKeyInformation20FTextFiling(Risk20FTextFiling):
+    twenty_f_text = (
+        "ITEM 3. KEY INFORMATION\n"
+        "Risk Factors\n"
+        ".................... Page 12\n"
+        "ITEM 4. INFORMATION ON THE COMPANY\n"
+    )
+
+
+class DirectoryKeyInformation20FTextCompany(KeyInformation20FTextCompany):
+    filing_class = DirectoryKeyInformation20FTextFiling
+
+
+class DirectoryKeyInformation20FTextEdgar(FakeEdgar):
+    company_class = DirectoryKeyInformation20FTextCompany
+
+
+class NoRisk20FTextFiling(Risk20FTextFiling):
+    twenty_f_text = (
+        "Item 3. Key Information\n"
+        "There is no Item 3.D risk section in this filing.\n"
+        "Item 4. Information on the Company\n"
+    )
+
+
+class NoRisk20FTextCompany(Risk20FTextCompany):
+    filing_class = NoRisk20FTextFiling
+
+
+class NoRisk20FTextEdgar(FakeEdgar):
+    company_class = NoRisk20FTextCompany
 
 
 class Shell8KTextCompany(RiskTextCompany):
@@ -414,6 +534,102 @@ class EdgarTextRetrievalTests(unittest.TestCase):
         self.assertIn("10-Q risk body that should be retained.", section.text)
         self.assertNotIn("ITEM 2", section.text)
         self.assertNotIn("This is not part of the risk section.", section.text)
+
+    def test_complete_20f_extracts_item_3d_and_is_eligible(self):
+        result = self._run(Risk20FTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "20-F")
+        self.assertEqual(len(filing.risk_sections), 1)
+        section = filing.risk_sections[0]
+        self.assertEqual(section.section_type, "20f_item_3d")
+        self.assertIn("20-F risk body that should be retained.", section.text)
+        self.assertNotIn("ITEM 4", section.text.upper())
+        self.assertEqual(filing.risk_eligibility.eligibility, "eligible")
+        self.assertEqual(filing.risk_eligibility.evidence_kind, "item_3d")
+        self.assertEqual(
+            filing.risk_eligibility.reason_code,
+            "eligible_20f_item_3d",
+        )
+
+    def test_20f_key_information_risk_factors_is_eligible(self):
+        result = self._run(KeyInformation20FTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "20-F")
+        self.assertEqual(len(filing.risk_sections), 1)
+        section = filing.risk_sections[0]
+        self.assertEqual(section.section_type, "20f_item_3d")
+        self.assertEqual(section.section_title, "Risk Factors")
+        self.assertIn("Real 20-F risk paragraph that should be retained.", section.text)
+        self.assertNotIn("ITEM 4", section.text.upper())
+        self.assertEqual(filing.risk_eligibility.eligibility, "eligible")
+        self.assertEqual(filing.risk_eligibility.evidence_kind, "item_3d")
+        self.assertEqual(
+            filing.risk_eligibility.reason_code,
+            "eligible_20f_item_3d",
+        )
+
+    def test_20f_key_information_accepts_unicode_horizontal_whitespace(self):
+        result = self._run(
+            ThinSpaceKeyInformation20FTextEdgar(),
+            max_text_chars=5000,
+        )
+
+        filing = self._filing(result, "20-F")
+        self.assertEqual(len(filing.risk_sections), 1)
+        section = filing.risk_sections[0]
+        self.assertEqual(section.section_type, "20f_item_3d")
+        self.assertIn(
+            "Real thin-space 20-F risk paragraph that should be retained.",
+            section.text,
+        )
+        self.assertNotIn("ITEM 4", section.text.upper())
+        self.assertEqual(filing.risk_eligibility.eligibility, "eligible")
+        self.assertEqual(filing.risk_eligibility.evidence_kind, "item_3d")
+        self.assertEqual(
+            filing.risk_eligibility.reason_code,
+            "eligible_20f_item_3d",
+        )
+
+    def test_20f_key_information_directory_shell_is_rejected(self):
+        result = self._run(DirectoryKeyInformation20FTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "20-F")
+        self.assertEqual(filing.risk_sections, [])
+        self._assert_rejected_risk_eligibility(filing, "unsupported_item")
+
+    def test_20f_accepts_explicit_item_3d_heading_variants(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        for title in (
+            "Item 3.D Risk Factors",
+            "Item 3D — Risk Factors",
+            "D. Risk Factors",
+        ):
+            with self.subTest(title=title):
+                sections = EdgarTool._extract_risk_sections(
+                    "20-F",
+                    f"{title}\nRisk body.\nItem 4. Information on the Company\n",
+                    [],
+                )
+                self.assertEqual(len(sections), 1)
+                self.assertEqual(sections[0].section_type, "20f_item_3d")
+
+    def test_20f_directory_heading_is_replaced_by_longer_body(self):
+        result = self._run(DirectoryRisk20FTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "20-F")
+        self.assertEqual(len(filing.risk_sections), 1)
+        section = filing.risk_sections[0]
+        self.assertEqual(section.section_title, "D. Risk Factors")
+        self.assertIn("20-F risk body from the filing正文.", section.text)
+        self.assertNotIn(".......... 17", section.text)
+
+    def test_20f_without_item_3d_is_rejected(self):
+        result = self._run(NoRisk20FTextEdgar(), max_text_chars=5000)
+
+        filing = self._filing(result, "20-F")
+        self.assertEqual(filing.risk_sections, [])
+        self._assert_rejected_risk_eligibility(filing, "unsupported_item")
 
     def test_truncated_10k_keeps_complete_item_1a_from_raw_text(self):
         result = self._run(RiskTextEdgar(), max_text_chars=1000)

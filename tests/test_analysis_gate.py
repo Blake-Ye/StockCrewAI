@@ -113,6 +113,30 @@ class AnalysisGateRiskEvidenceTests(unittest.TestCase):
         self.assertTrue(packet["filings"][0]["risk_sections"][0]["complete"])
         self.assertNotIn("text", packet["filings"][0])
 
+    def test_risk_input_keeps_eligible_20f_item_3d_filing(self):
+        filing = self._filing(
+            "ev_item3d",
+            eligibility="eligible",
+            reason_code="eligible_20f_item_3d",
+            evidence_kind="item_3d",
+            form="20-F",
+            section_type="20f_item_3d",
+            section_title="Item 3.D Risk Factors",
+            section_text="Foreign issuer risk factors.",
+        )
+        packet = pipeline_support._risk_analysis_input(
+            EdgarResult(status="ok", filings=[filing]),
+            {"validated_filing_ids": ["ev_item3d"]},
+        )
+
+        self.assertEqual(packet["status"], "available")
+        self.assertEqual(packet["validated_filing_ids"], ["ev_item3d"])
+        self.assertEqual(packet["filings"][0]["evidence_id"], "ev_item3d")
+        self.assertEqual(
+            packet["filings"][0]["risk_eligibility"]["evidence_kind"],
+            "item_3d",
+        )
+
     def test_analysis_gate_uses_risk_evidence_missing_without_eligible_filing(self):
         edgar_result = EdgarResult(status="ok", filings=self._filings()[1:])
         risk_input = pipeline_support._risk_analysis_input(

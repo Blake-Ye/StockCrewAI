@@ -13,9 +13,19 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from stockcrewai.models.evidence import EvidenceRecord, MarketPriceRecord, ValidationStatus
+from stockcrewai.models.evidence import (
+    CalculationRecord,
+    EvidenceRecord,
+    MarketPriceRecord,
+    ValidationStatus,
+)
 from stockcrewai.models.policy import GateResult, PolicyDecision
-from stockcrewai.models.profile import IssuerProfile, ProfileResult
+from stockcrewai.models.profile import (
+    IssuerProfile,
+    ProfileResult,
+    ReportingProfile,
+    SecurityProfile,
+)
 from stockcrewai.pipelines.metric_registry import (
     POLICY_VERSION,
     evaluate_policy_decisions,
@@ -33,6 +43,12 @@ from stockcrewai.profiles.commodity_producer import (
     evaluate_commodity_producer_profile,
 )
 from stockcrewai.profiles.insurance import evaluate_insurance_profile
+from stockcrewai.profiles.foreign_issuer import (
+    FOREIGN_ISSUER_METRIC_IDS,
+    POLICY_VERSION as FOREIGN_POLICY_VERSION,
+    PROFILE_VERSION as FOREIGN_PROFILE_VERSION,
+    evaluate_foreign_issuer_profile,
+)
 from stockcrewai.profiles.reit import evaluate_reit_profile
 from stockcrewai.profiles.utility import (
     PROFILE_VERSION as UTILITY_PROFILE_VERSION,
@@ -74,6 +90,9 @@ _BANK_PROFILE_FACT_ALLOWLIST = frozenset(
             for key in (beginning_key, ending_key)
         ),
     }
+)
+_FOREIGN_PROFILE_FACT_ALLOWLIST = frozenset(
+    {"ordinary_shares_per_adr", "ordinary_shares_outstanding"}
 )
 
 
@@ -358,6 +377,23 @@ def profile_metadata_from_edgar(edgar_result: Any) -> dict[str, Any]:
             for filing in filings
             if isinstance(filing, Mapping) and filing.get("form")
         ]
+        metadata["filing_envelopes"] = [
+            {
+                key: filing.get(key)
+                for key in (
+                    "evidence_id",
+                    "form",
+                    "filed_at",
+                    "period_end",
+                    "accession_number",
+                    "source_reference",
+                )
+                if filing.get(key) is not None
+            }
+            for filing in filings
+            if isinstance(filing, Mapping)
+            and filing.get("form") in {"20-F", "6-K"}
+        ]
     taxonomy: list[str] = []
     facts = payload.get("facts", {})
     if isinstance(facts, Mapping):
@@ -592,6 +628,8 @@ def _fact_currency(payload: Mapping[str, Any]) -> str | None:
         unit = unit.strip()
         if re.fullmatch(r"[A-Z]{3}", unit):
             return unit
+        if unit.casefold() in {"share", "shares", "ratio", "x"}:
+            return unit
     return None
 
 
@@ -666,6 +704,18 @@ def _automatic_profile_input(
         profile_version = BANK_PROFILE_VERSION
     elif profile_result.issuer_profile is IssuerProfile.UTILITY:
         profile_version = UTILITY_PROFILE_VERSION
+    elif profile_result.reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS:
+        profile_version = FOREIGN_PROFILE_VERSION
+        metric_inputs = {
+            metric_id: record.evidence_id
+            for metric_id, record in records_by_metric.items()
+            if metric_id in _FOREIGN_PROFILE_FACT_ALLOWLIST
+        }
+        profile_records = [
+            record
+            for metric_id, record in records_by_metric.items()
+            if metric_id in _FOREIGN_PROFILE_FACT_ALLOWLIST
+        ]
     else:
         return None
     if profile_result.issuer_profile is IssuerProfile.BANK:
@@ -687,7 +737,7 @@ def _automatic_profile_input(
             for metric_id, record in records_by_metric.items()
             if metric_id in _BANK_PROFILE_FACT_ALLOWLIST
         ]
-    else:
+    elif profile_result.reporting_profile is not ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS:
         metric_inputs = {
             metric_id: record.evidence_id
             for metric_id, record in records_by_metric.items()
@@ -780,6 +830,155 @@ def build_profile_policy_context(
     """构造 Flow 内唯一 JSON-safe 的 Profile/Policy/Gate 共享上下文。"""
     profile_result = _profile_result(profile, source_metadata)
     policies = resolve_metric_policies(profile_result)
+
+    if profile_result.reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS:
+        (
+            profile_input,
+            typed_evidence_records,
+            typed_market_price_records,
+            profile_input_valid,
+            evidence_types_valid,
+            market_types_valid,
+        ) = _typed_profile_envelope_sources(
+            profile_result=profile_result,
+            profile=profile,
+            facts=facts,
+            evidence_records=evidence_records,
+            market_price_records=market_price_records,
+            expected_profile_version=FOREIGN_PROFILE_VERSION,
+        )
+        profile_input_valid = profile_input_valid and isinstance(
+            profile_input, Mapping
+        ) and profile_input.get("policy_version") == FOREIGN_POLICY_VERSION
+        envelope_valid = (
+            profile_input_valid
+            and evidence_types_valid
+            and market_types_valid
+            and bool(typed_evidence_records or typed_market_price_records)
+        )
+        foreign_metric_ids = set(FOREIGN_ISSUER_METRIC_IDS)
+        foreign_policies = tuple(
+            policy for policy in policies if policy.metric_id in foreign_metric_ids
+        )
+        base_policies = tuple(
+            policy for policy in policies if policy.metric_id not in foreign_metric_ids
+        )
+
+        calculation_values: list[Any] = []
+        for value in (calculations, additional_calculations):
+            if isinstance(value, Mapping):
+                value = value.get("calculations", [])
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+                calculation_values.extend(value)
+        typed_calculations = [
+            value for value in calculation_values if isinstance(value, CalculationRecord)
+        ]
+        typed_calculation_ids = {value.calculation_id for value in typed_calculations}
+        typed_calculations.extend(
+            record
+            for record in _policy_calculation_records(calculation_values, base_policies)
+            if record.calculation_id not in typed_calculation_ids
+        )
+
+        if envelope_valid:
+            adapter_input: Mapping[str, object] = profile_input  # type: ignore[assignment]
+            values, foreign_decisions, foreign_calculations = evaluate_foreign_issuer_profile(
+                adapter_input,
+                typed_evidence_records,
+                typed_market_price_records,
+            )
+            base_decisions = evaluate_policy_decisions(
+                base_policies,
+                typed_evidence_records,
+                typed_calculations,
+            )
+            calculation_records = tuple((*typed_calculations, *foreign_calculations))
+            envelope = {"status": "valid", "reason_code": "typed_profile_envelope_valid"}
+        else:
+            values, foreign_decisions = _typed_profile_unavailable_decisions(
+                foreign_policies
+            )
+            raw_evidence = _policy_evidence_records(facts, additional_evidence_ids)
+            raw_calculations = _policy_calculation_records(
+                calculation_values, base_policies
+            )
+            base_decisions = evaluate_policy_decisions(
+                base_policies, raw_evidence, raw_calculations
+            )
+            calculation_records = ()
+            envelope = {
+                "status": "unavailable",
+                "reason_code": "typed_profile_envelope_required",
+            }
+        decisions = tuple((*base_decisions, *foreign_decisions))
+        gate = _profile_policy_gate(profile_result, decisions)
+        foreign_metadata: dict[str, Any] = {}
+        for source in (source_metadata, profile if isinstance(profile, Mapping) else {}):
+            candidate = source.get("foreign_metadata") if isinstance(source, Mapping) else None
+            if isinstance(candidate, Mapping):
+                foreign_metadata.update(candidate)
+        if isinstance(source_metadata, Mapping):
+            for key in (
+                "filing_forms",
+                "filing_envelopes",
+                "taxonomy",
+                "reporting_currency",
+                "market_currency",
+            ):
+                if key in source_metadata:
+                    foreign_metadata[key] = source_metadata[key]
+        foreign_metadata["ifrs_taxonomy"] = [
+            value
+            for value in foreign_metadata.get("taxonomy", [])
+            if isinstance(value, str) and value.casefold().startswith("ifrs")
+        ]
+        if typed_market_price_records:
+            foreign_metadata["market_currency"] = typed_market_price_records[0].currency
+        adr_ratio_decision = next(
+            (
+                decision
+                for decision in foreign_decisions
+                if decision.metric_id == "adr_ratio"
+            ),
+            None,
+        )
+        if profile_result.security_profile is SecurityProfile.UNKNOWN:
+            foreign_metadata["adr_ratio_status"] = "unavailable"
+            foreign_metadata["adr_ratio_reason_code"] = "security_profile_unknown"
+        elif profile_result.security_profile is SecurityProfile.COMMON_STOCK:
+            foreign_metadata["adr_ratio_status"] = "not_applicable"
+            foreign_metadata["adr_ratio_reason_code"] = "foreign_adr_not_applicable"
+        elif adr_ratio_decision is None:
+            foreign_metadata["adr_ratio_status"] = "unavailable"
+            foreign_metadata["adr_ratio_reason_code"] = "foreign_policy_decision_missing"
+        else:
+            foreign_metadata["adr_ratio_status"] = adr_ratio_decision.status
+            foreign_metadata["adr_ratio_reason_code"] = adr_ratio_decision.reason_code
+        return _json_safe(
+            {
+                "profile": profile_result.model_dump(mode="json"),
+                "coverage_level": profile_result.coverage_level.value,
+                "profile_registry_version": profile_result.registry_version,
+                "policies": [policy.model_dump(mode="json") for policy in policies],
+                "policy_decisions": [
+                    decision.model_dump(mode="json") for decision in decisions
+                ],
+                "policy_version": policy_version_for_profile(profile_result),
+                "profile_version": FOREIGN_PROFILE_VERSION,
+                "gate": gate.model_dump(mode="json"),
+                "values": values,
+                "calculation_records": calculation_records,
+                "evidence_records": [
+                    record.model_dump(mode="json") for record in typed_evidence_records
+                ],
+                "market_price_records": [
+                    record.model_dump(mode="json")
+                    for record in typed_market_price_records
+                ],
+                "profile_envelope": envelope,
+                "foreign_metadata": foreign_metadata,
+            }
+        )
 
     if profile_result.issuer_profile is IssuerProfile.REIT:
         reit_profile_input: Mapping[str, object]

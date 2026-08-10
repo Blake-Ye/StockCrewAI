@@ -22,6 +22,7 @@ from stockcrewai.models.profile import (
     SecurityProfile,
 )
 from stockcrewai.profiles.commodity_producer import POLICY_VERSION as COMMODITY_POLICY_VERSION
+from stockcrewai.profiles.foreign_issuer import POLICY_VERSION as FOREIGN_POLICY_VERSION
 
 
 POLICY_VERSION = "metric-policy:v1"
@@ -708,6 +709,42 @@ _SPECIAL_SECURITY_POLICIES: dict[SecurityProfile, _MetricSpec] = {
     ),
 }
 
+_FOREIGN_ADR_SPECS = (
+    _MetricSpec(
+        "adr_ratio",
+        _OPTIONAL,
+        ("ordinary_shares_per_adr",),
+        "foreign-adr-ratio-direct-v1",
+        "company_disclosed_period",
+        "ratio",
+        _NON_BLOCKING,
+        "adr_ratio_missing",
+        FOREIGN_POLICY_VERSION,
+    ),
+    _MetricSpec(
+        "adr_equivalent_shares",
+        _OPTIONAL,
+        ("ordinary_shares_outstanding", "ordinary_shares_per_adr"),
+        "foreign-adr-equivalent-shares-v1",
+        "company_disclosed_period",
+        "shares",
+        _NON_BLOCKING,
+        "adr_equivalent_shares_missing",
+        FOREIGN_POLICY_VERSION,
+    ),
+    _MetricSpec(
+        "adr_market_cap",
+        _OPTIONAL,
+        ("adr_market_price", "ordinary_shares_outstanding", "ordinary_shares_per_adr"),
+        "foreign-adr-market-cap-v1",
+        "market_price_same_point_in_time",
+        "USD",
+        _NON_BLOCKING,
+        "adr_market_cap_missing",
+        FOREIGN_POLICY_VERSION,
+    ),
+)
+
 
 def _policy(profile: ProfileResult, spec: _MetricSpec) -> MetricPolicy:
     return MetricPolicy(
@@ -728,6 +765,12 @@ def _policy(profile: ProfileResult, spec: _MetricSpec) -> MetricPolicy:
 
 def policy_version_for_profile(profile: ProfileResult | IssuerProfile) -> str:
     """Return the fixed metric policy version for a resolved issuer profile."""
+    reporting_profile = getattr(profile, "reporting_profile", None)
+    if (
+        reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
+        or reporting_profile == ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS.value
+    ):
+        return FOREIGN_POLICY_VERSION
     issuer_profile = getattr(profile, "issuer_profile", profile)
     if issuer_profile is IssuerProfile.REIT or issuer_profile == IssuerProfile.REIT.value:
         return _REIT_POLICY_VERSION
@@ -755,6 +798,9 @@ def resolve_metric_policies(profile: ProfileResult) -> tuple[MetricPolicy, ...]:
         IssuerProfile.INSURANCE,
         IssuerProfile.UTILITY,
     }
+    is_foreign_ifrs = (
+        profile.reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
+    )
     if (
         profile.coverage_level
         in {CoverageLevel.EVIDENCE_ONLY, CoverageLevel.UNSUPPORTED_SECURITY}
@@ -762,9 +808,12 @@ def resolve_metric_policies(profile: ProfileResult) -> tuple[MetricPolicy, ...]:
         or profile.security_profile
         in {
             SecurityProfile.UNSUPPORTED_FUND_SECURITY,
-            SecurityProfile.ADR,
             SecurityProfile.SPAC,
         }
+        or (
+            profile.security_profile is SecurityProfile.ADR
+            and not is_foreign_ifrs
+        )
         or (
             profile.security_profile is SecurityProfile.UNKNOWN
             and profile.issuer_profile not in issuer_specific_partial_profiles
@@ -779,6 +828,26 @@ def resolve_metric_policies(profile: ProfileResult) -> tuple[MetricPolicy, ...]:
     specs = _POLICY_TABLE.get(profile.issuer_profile, ())
 
     policies = [_policy(profile, spec) for spec in specs]
+    if is_foreign_ifrs and profile.security_profile in {
+        SecurityProfile.ADR,
+        SecurityProfile.COMMON_STOCK,
+    }:
+        foreign_specs = tuple(
+            spec._replace(
+                applicability=(
+                    _OPTIONAL
+                    if profile.security_profile is SecurityProfile.ADR
+                    else _NOT_APPLICABLE
+                ),
+                reason_code=(
+                    spec.reason_code
+                    if profile.security_profile is SecurityProfile.ADR
+                    else "foreign_adr_not_applicable"
+                ),
+            )
+            for spec in _FOREIGN_ADR_SPECS
+        )
+        policies.extend(_policy(profile, spec) for spec in foreign_specs)
     special_spec = _SPECIAL_SECURITY_POLICIES.get(profile.security_profile)
     if special_spec is not None and all(
         policy.metric_id != special_spec.metric_id for policy in policies
@@ -897,6 +966,7 @@ def evaluate_policy_decisions(
 __all__ = [
     "BANK_POLICY_VERSION",
     "COMMODITY_POLICY_VERSION",
+    "FOREIGN_POLICY_VERSION",
     "INSURANCE_POLICY_VERSION",
     "POLICY_VERSION",
     "UTILITY_POLICY_VERSION",

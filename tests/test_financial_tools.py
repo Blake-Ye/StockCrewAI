@@ -319,6 +319,8 @@ class FakeCompany:
     def get_filings(self, **kwargs):
         self.calls.append(kwargs)
         form = kwargs["form"]
+        if form in {"20-F", "6-K"}:
+            return FakeFilings([])
         if form == "8-K":
             start = date(2026, 8, 5)
             filings = [

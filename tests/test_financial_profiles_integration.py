@@ -80,6 +80,16 @@ def _bank_profile_result() -> ProfileResult:
     )
 
 
+def _foreign_profile_result() -> ProfileResult:
+    return ProfileResult(
+        issuer_profile=IssuerProfile.STANDARD_OPERATING,
+        security_profile=SecurityProfile.ADR,
+        reporting_profile=ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS,
+        coverage_level=CoverageLevel.FULL,
+        registry_version="profile-registry:test-input",
+    )
+
+
 def _bank_fact(
     evidence_id: str,
     value: str,
@@ -366,6 +376,65 @@ def test_automatic_bank_profile_does_not_infer_from_ordinary_enterprise_fields()
     for metric_id in ("bank_roa", "bank_roe", "net_interest_margin", "efficiency_ratio"):
         assert decisions[metric_id]["status"] == "unavailable"
         assert decisions[metric_id]["blocking"] is True
+
+
+def test_automatic_foreign_profile_keeps_only_adr_allowlisted_facts() -> None:
+    from stockcrewai.pipelines.evidence_pipeline import (
+        _automatic_profile_input,
+        _typed_profile_facts,
+    )
+
+    foreign_facts = {
+        "ordinary_shares_per_adr": _bank_fact(
+            "ev_foreign_ratio", "2", "2025-12-31", "2025-12-31", unit="ratio", currency="ratio"
+        ),
+        "ordinary_shares_outstanding": _bank_fact(
+            "ev_foreign_shares", "1000", "2025-12-31", "2025-12-31", unit="shares", currency="shares"
+        ),
+        "revenue": _bank_fact(
+            "ev_foreign_revenue", "1000", "2025-01-01", "2025-12-31"
+        ),
+    }
+    records_by_metric, _ = _typed_profile_facts(foreign_facts)
+
+    automatic_profile = _automatic_profile_input(
+        _foreign_profile_result(), records_by_metric, ()
+    )
+
+    assert automatic_profile is not None
+    assert automatic_profile["profile_version"] == "foreign-issuer-profile:v1"
+    assert set(automatic_profile["metric_inputs"]) == {
+        "ordinary_shares_per_adr",
+        "ordinary_shares_outstanding",
+    }
+
+
+def test_automatic_foreign_profile_ignores_later_unrelated_fact_for_as_of() -> None:
+    from stockcrewai.pipelines.evidence_pipeline import (
+        _automatic_profile_input,
+        _typed_profile_facts,
+    )
+
+    foreign_facts = {
+        "ordinary_shares_per_adr": _bank_fact(
+            "ev_foreign_ratio_as_of", "2", "2025-12-31", "2025-12-31", unit="ratio", currency="ratio"
+        ),
+        "ordinary_shares_outstanding": _bank_fact(
+            "ev_foreign_shares_as_of", "1000", "2025-12-31", "2025-12-31", unit="shares", currency="shares"
+        ),
+        "revenue": {
+            **_bank_fact("ev_foreign_late_revenue", "1000", "2025-01-01", "2025-12-31"),
+            "as_of": "2027-01-01T00:00:00Z",
+        },
+    }
+    records_by_metric, _ = _typed_profile_facts(foreign_facts)
+
+    automatic_profile = _automatic_profile_input(
+        _foreign_profile_result(), records_by_metric, ()
+    )
+
+    assert automatic_profile is not None
+    assert automatic_profile["as_of"] == "2026-03-02T21:00:00+00:00"
 
 
 def test_missing_bank_cet1_remains_ready_and_typed_not_applicable_fcf() -> None:

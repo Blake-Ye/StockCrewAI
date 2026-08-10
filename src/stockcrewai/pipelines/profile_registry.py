@@ -174,11 +174,17 @@ def _fund_security_sources(source_metadata: Mapping[str, Any]) -> frozenset[str]
 
 
 def _has_foreign_filing_signal(source_metadata: Mapping[str, Any]) -> bool:
-    return _has_any_normalized(source_metadata, "filing_forms", frozenset({"20_f", "40_f"})) or any(
+    return _has_any_normalized(source_metadata, "filing_forms", frozenset({"20_f"})) and any(
         (normalized or "").startswith("ifrs")
         for normalized in (
             _normalized(value) for value in _string_values(source_metadata, "taxonomy")
         )
+    )
+
+
+def _has_foreign_form_signal(source_metadata: Mapping[str, Any]) -> bool:
+    return _has_any_normalized(
+        source_metadata, "filing_forms", frozenset({"20_f", "40_f", "6_k"})
     )
 
 
@@ -200,6 +206,11 @@ def _classify_reporting(
         source_metadata, "sec_reporting_profile", ReportingProfile
     )
     if explicit:
+        if (
+            profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
+            and not _has_foreign_filing_signal(source_metadata)
+        ):
+            return ReportingProfile.UNKNOWN, frozenset()
         return (
             profile if isinstance(profile, ReportingProfile) else ReportingProfile.UNKNOWN,
             frozenset({"sec"}) if profile is not None else frozenset(),
@@ -210,11 +221,14 @@ def _classify_reporting(
     if source_metadata.get("is_investment_company") is True:
         return ReportingProfile.INVESTMENT_COMPANY_REPORTING, frozenset({"sec"})
 
-    if source_metadata.get("is_foreign_private_issuer") is True or foreign_filing:
-        sources = {"filing"} if foreign_filing else set()
+    if foreign_filing:
+        sources = {"filing"}
         if source_metadata.get("is_foreign_private_issuer") is True:
             sources.add("sec")
         return ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS, frozenset(sources)
+
+    if _has_foreign_form_signal(source_metadata):
+        return ReportingProfile.UNKNOWN, frozenset()
 
     if _has_domestic_filing_signal(source_metadata):
         return ReportingProfile.DOMESTIC_US_GAAP, frozenset({"filing"})

@@ -29,6 +29,10 @@ DEFAULT_FACT_CONCEPTS = (
     "common_shares_outstanding",
     "earnings_per_share_diluted",
 )
+OPTIONAL_DIRECT_FACT_CONCEPTS = (
+    "ordinary_shares_per_adr",
+    "ordinary_shares_outstanding",
+)
 
 BANK_FACT_CONCEPT_ALIASES = {
     "net_interest_income": (
@@ -128,7 +132,7 @@ class EdgarFact(BaseModel):
 
 
 class EdgarRiskSection(BaseModel):
-    section_type: Literal["10k_item_1a", "10q_item_1a", "8k_event"]
+    section_type: Literal["10k_item_1a", "10q_item_1a", "20f_item_3d", "8k_event"]
     text: str
     section_title: str = ""
     complete: bool = True
@@ -139,6 +143,7 @@ class EdgarRiskEligibility(BaseModel):
     eligibility: Literal["eligible", "rejected"]
     reason_code: Literal[
         "eligible_item_1a",
+        "eligible_20f_item_3d",
         "eligible_8k_event",
         "attachment_shell",
         "truncated",
@@ -146,7 +151,7 @@ class EdgarRiskEligibility(BaseModel):
         "missing_body",
     ]
     source_reference: str
-    evidence_kind: Literal["item_1a", "substantive_8k_event"] | None = None
+    evidence_kind: Literal["item_1a", "item_3d", "substantive_8k_event"] | None = None
     section_title: str | None = None
     filed_at: str | None = None
 
@@ -363,7 +368,7 @@ def _is_complete_fiscal_year_ttm(metadata: dict[str, Any]) -> bool:
         )
     ):
         return False
-    if not str(metadata.get("form_type")).upper().startswith("10-K"):
+    if str(metadata.get("form_type")).upper() not in {"10-K", "20-F"}:
         return False
     try:
         _decimal_string(metadata.get("value"))
@@ -484,7 +489,18 @@ class EdgarTool(BaseTool):
                 for _, section in sorted(matches.values(), key=lambda value: value[0])
             ]
 
-        if normalized_form == "10-K":
+        if normalized_form == "20-F":
+            horizontal_ws = r"[\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]"
+            pattern = (
+                rf"^{horizontal_ws}*(?P<title>(?:"
+                rf"item{horizontal_ws}+3[.]?{horizontal_ws}*d\b[^\n]*?"
+                rf"risk{horizontal_ws}+factors\b"
+                rf"|d[.]?{horizontal_ws}+risk{horizontal_ws}+factors\b)[^\n]*)"
+                r"(?:\n|$).*?"
+                rf"(?=^{horizontal_ws}*item{horizontal_ws}+4\b|\Z)"
+            )
+            section_type = "20f_item_3d"
+        elif normalized_form == "10-K":
             pattern = (
                 r"^[ \t]*(?P<title>item[ \t]+1a\b[^\n]*)(?:\n|$).*?"
                 r"(?=^[ \t]*item[ \t]+1b\b|\Z)"
@@ -501,13 +517,64 @@ class EdgarTool(BaseTool):
         else:
             return []
 
-        matches = list(
-            re.finditer(
-                pattern,
+        matches = []
+        for match in re.finditer(
+            pattern,
+            raw_text,
+            flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+        ):
+            matches.append(match)
+
+        if normalized_form == "20-F":
+            key_information_pattern = (
+                rf"^{horizontal_ws}*item{horizontal_ws}+3[.]?{horizontal_ws}+"
+                rf"key{horizontal_ws}+information\b[^\n]*"
+                r"(?:\n|$).*?"
+                rf"(?=^{horizontal_ws}*item{horizontal_ws}+4\b|\Z)"
+            )
+            risk_factors_pattern = (
+                rf"^{horizontal_ws}*(?P<title>risk{horizontal_ws}+factors)"
+                rf"{horizontal_ws}*(?:\n|$).*"
+            )
+            for item_match in re.finditer(
+                key_information_pattern,
                 raw_text,
                 flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
-            )
-        )
+            ):
+                matches.extend(
+                    re.finditer(
+                        risk_factors_pattern,
+                        item_match.group(0),
+                        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+                    )
+                )
+
+        filtered_matches = []
+        for match in matches:
+            if normalized_form == "20-F":
+                section_text = match.group(0).strip()
+                section_title = match.group("title").strip()
+                section_body = section_text[len(section_title) :].strip()
+                body_lines = [line.strip() for line in section_body.splitlines() if line.strip()]
+                directory_line_pattern = (
+                    r"(?:"
+                    r"[\s.·…,:;_|-]+"
+                    r"|[\s.·…,:;_|-]*(?:page\s*)?\d+(?:\s+of\s+\d+)?[\s.·…,:;_|-]*"
+                    r"|(?:table[ \t]+of[ \t]+contents|contents|risk[ \t]+factors)"
+                    r"[\s.·…,:;_|-]*(?:page\s*)?\d*(?:\s+of\s+\d+)?[\s.·…,:;_|-]*"
+                    r")"
+                )
+                if not body_lines or all(
+                    re.fullmatch(
+                        directory_line_pattern,
+                        line,
+                        flags=re.IGNORECASE,
+                    )
+                    for line in body_lines
+                ):
+                    continue
+            filtered_matches.append(match)
+        matches = filtered_matches
         if not matches:
             return []
         match = max(matches, key=lambda candidate: len(candidate.group(0)))
@@ -533,6 +600,16 @@ class EdgarTool(BaseTool):
         normalized_form = form.strip().upper().split("/", 1)[0]
         section = risk_sections[0] if risk_sections else None
         if section is not None:
+            if section.section_type == "20f_item_3d":
+                return EdgarRiskEligibility(
+                    evidence_id=evidence_id,
+                    eligibility="eligible",
+                    evidence_kind="item_3d",
+                    reason_code="eligible_20f_item_3d",
+                    section_title=section.section_title,
+                    filed_at=filed_at,
+                    source_reference=source_reference,
+                )
             if section.section_type in {"10k_item_1a", "10q_item_1a"}:
                 return EdgarRiskEligibility(
                     evidence_id=evidence_id,
@@ -689,7 +766,11 @@ class EdgarTool(BaseTool):
         errors: list[EdgarError] = []
         scope = (("10-K", 3, None), ("10-Q", 4, None))
         cutoff = self._as_of - timedelta(days=180)
-        scope += (("8-K", 20, cutoff),)
+        scope += (
+            ("8-K", 20, cutoff),
+            ("20-F", 3, None),
+            ("6-K", 20, cutoff),
+        )
         for form, limit, cutoff_date in scope:
             request: dict[str, Any] = {
                 "form": form,
@@ -1318,6 +1399,50 @@ class EdgarTool(BaseTool):
             )
             return True
 
+        def optional_direct_fact_metadata(metric_id: str) -> dict[str, Any] | None:
+            get_concept = getattr(container, "get_concept", None)
+            if not callable(get_concept):
+                return None
+            with py_warnings.catch_warnings():
+                py_warnings.simplefilter("ignore", UserWarning)
+                try:
+                    metadata = get_concept(metric_id, return_metadata=True)
+                except Exception:
+                    return None
+            if not isinstance(metadata, Mapping):
+                return None
+            returned_name = next(
+                (
+                    metadata.get(key)
+                    for key in ("concept_name", "metric_id", "concept")
+                    if metadata.get(key) not in (None, "")
+                ),
+                None,
+            )
+            if str(returned_name).strip().casefold() != metric_id:
+                return None
+            if any(
+                metadata.get(key) in (None, "")
+                for key in (
+                    "value",
+                    "unit",
+                    "period",
+                    "period_type",
+                    "period_start",
+                    "period_end",
+                    "filing_date",
+                    "form_type",
+                    "accession",
+                    "tag_used",
+                )
+            ):
+                return None
+            try:
+                _decimal_string(metadata.get("value"))
+            except ValueError:
+                return None
+            return dict(metadata)
+
         for metric_id in DEFAULT_FACT_CONCEPTS:
             metadata = container.get_concept(metric_id, return_metadata=True)
             if not metadata:
@@ -1346,6 +1471,11 @@ class EdgarTool(BaseTool):
                 )
                 continue
             add_fact(prior_metric_id, prior_metadata)
+
+        for metric_id in OPTIONAL_DIRECT_FACT_CONCEPTS:
+            metadata = optional_direct_fact_metadata(metric_id)
+            if metadata is not None:
+                add_fact(metric_id, metadata)
 
         if is_bank_issuer and net_income_metadata is not None:
             target_period = str(net_income_metadata.get("period") or "")

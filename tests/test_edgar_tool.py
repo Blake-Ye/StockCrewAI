@@ -150,6 +150,49 @@ class DirectFYFacts:
         return []
 
 
+class Direct20FFacts(DirectFYFacts):
+    records = [
+        {**record, "form_type": "20-F"}
+        for record in DirectFYFacts.records
+    ]
+
+
+class OptionalADRFacts(DirectFYFacts):
+    records = [
+        *DirectFYFacts.records,
+        {
+            "concept_name": "ordinary_shares_per_adr",
+            "tag_used": "custom:OrdinarySharesPerADR",
+            "value": "2",
+            "unit": "ratio",
+            "period": "2025-FY",
+            "period_type": "instant",
+            "period_start": date(2025, 12, 31),
+            "period_end": date(2025, 12, 31),
+            "filing_date": date(2026, 2, 1),
+            "form_type": "20-F",
+            "accession": "acc-adr-ratio-2025",
+            "fiscal_year": 2025,
+            "fiscal_period": "FY",
+        },
+        {
+            "concept_name": "ordinary_shares_outstanding",
+            "tag_used": "custom:OrdinarySharesOutstanding",
+            "value": "1000",
+            "unit": "shares",
+            "period": "2025-FY",
+            "period_type": "instant",
+            "period_start": date(2025, 12, 31),
+            "period_end": date(2025, 12, 31),
+            "filing_date": date(2026, 2, 1),
+            "form_type": "20-F",
+            "accession": "acc-ordinary-shares-2025",
+            "fiscal_year": 2025,
+            "fiscal_period": "FY",
+        },
+    ]
+
+
 class SecConceptOnlyFacts(OfflineEPSFacts):
     def get_concept(self, concept, period=None, return_metadata=False):
         if concept == "diluted_eps":
@@ -442,6 +485,57 @@ class EdgarToolTTMTests(unittest.TestCase):
                 self.assertIn("direct_ttm", direct.evidence_id)
                 self.assertEqual(direct.source_reference, SOURCE)
 
+    def test_collects_direct_20f_ttm_inputs_with_full_provenance(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        inputs = EdgarTool(as_of=date(2026, 8, 8))._collect_ttm_inputs(
+            Direct20FFacts(), "0000320193", "FPI"
+        )
+
+        self.assertEqual(inputs["diluted_eps"]["direct_ttm"].form, "20-F")
+        self.assertEqual(
+            inputs["diluted_eps"]["direct_ttm"].accession_number,
+            "acc-eps-fy-2025",
+        )
+        self.assertEqual(
+            inputs["diluted_eps"]["direct_ttm"].period,
+            "2025-FY",
+        )
+
+    def test_keeps_only_explicit_optional_adr_facts_and_no_missing_warning(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        tool = EdgarTool(as_of=date(2026, 8, 8))
+        facts, warnings, _, _ = tool._collect_facts(
+            OfflineCompany(OptionalADRFacts()), "0000320193", "FPI"
+        )
+
+        self.assertEqual(facts["ordinary_shares_per_adr"].value, "2")
+        self.assertEqual(
+            facts["ordinary_shares_per_adr"].xbrl_tag,
+            "custom:OrdinarySharesPerADR",
+        )
+        self.assertEqual(
+            facts["ordinary_shares_per_adr"].accession_number,
+            "acc-adr-ratio-2025",
+        )
+        self.assertEqual(facts["ordinary_shares_per_adr"].period, "2025-FY")
+        self.assertEqual(facts["ordinary_shares_per_adr"].source_reference, SOURCE)
+        self.assertEqual(facts["ordinary_shares_outstanding"].value, "1000")
+        self.assertFalse(any("ordinary_shares" in warning for warning in warnings))
+
+    def test_missing_optional_adr_facts_do_not_change_default_fact_warnings(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        facts, warnings, _, _ = EdgarTool(as_of=date(2026, 8, 8))._collect_facts(
+            OfflineCompany(DirectFYFacts()), "0000320193", "AAPL"
+        )
+
+        self.assertNotIn("ordinary_shares_per_adr", facts)
+        self.assertNotIn("ordinary_shares_outstanding", facts)
+        self.assertIn("缺少 Company Fact：revenue", warnings)
+        self.assertFalse(any("ordinary_shares" in warning for warning in warnings))
+
     def test_builds_only_complete_point_in_time_ttm_eps_snapshot(self):
         from stockcrewai.tools.edgar_tool import EdgarTool
 
@@ -541,6 +635,49 @@ class EdgarToolTTMTests(unittest.TestCase):
         self.assertIn("缺少银行 Company Fact：interest_earning_assets_beginning", fact_warnings)
         self.assertIn("缺少银行 Company Fact：interest_earning_assets_ending", fact_warnings)
         self.assertEqual([item for item in caught if item.category is UserWarning], [])
+
+    def test_collects_fixed_foreign_forms_without_changing_existing_form_order(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        class FilingCompany:
+            def __init__(self):
+                self.requests = []
+
+            def get_filings(self, **kwargs):
+                self.requests.append(kwargs)
+                form = kwargs["form"]
+                return [
+                    SimpleNamespace(
+                        form=form,
+                        filing_date=date(2026, 3, 1),
+                        period_of_report=date(2025, 12, 31),
+                        accession_number=f"acc-{form}",
+                        url=f"sec:test/{form}",
+                        items=[],
+                    )
+                ]
+
+        company = FilingCompany()
+        filings, errors = EdgarTool(as_of=date(2026, 8, 8))._collect_filings(
+            company, "0001234567", False, 12000
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [request["form"] for request in company.requests],
+            ["10-K", "10-Q", "8-K", "20-F", "6-K"],
+        )
+        self.assertEqual(
+            [filing.form for filing in filings],
+            ["10-K", "10-Q", "8-K", "20-F", "6-K"],
+        )
+        foreign_filings = [filing for filing in filings if filing.form in {"20-F", "6-K"}]
+        self.assertEqual(
+            [(filing.accession_number, filing.source_reference, filing.filed_at)
+             for filing in foreign_filings],
+            [("acc-20-F", "sec:test/20-F", "2026-03-01"),
+             ("acc-6-K", "sec:test/6-K", "2026-03-01")],
+        )
 
 
 if __name__ == "__main__":

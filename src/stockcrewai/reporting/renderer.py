@@ -42,6 +42,9 @@ _REPORT_METRIC_LABELS = {
     "debt_to_equity": "债务权益比",
     "share_dilution": "股份稀释率",
     "market_capitalization": "市值",
+    "adr_ratio": "ADR 换普通股比例",
+    "adr_equivalent_shares": "ADR 等价股数",
+    "adr_market_cap": "ADR 等价市值",
     "bank_roa": "银行 ROA",
     "bank_roe": "银行 ROE",
     "net_interest_margin": "NIM",
@@ -109,6 +112,7 @@ _REPORT_AMOUNT_METRIC_IDS = frozenset(
 )
 _REPORT_MULTIPLE_METRIC_IDS = frozenset(
     {
+        "adr_ratio",
         "net_debt_to_ebitda",
         "dividend_coverage",
         "price_to_ffo",
@@ -128,6 +132,9 @@ _COMMODITY_METRIC_IDS = frozenset(
         "impairment_to_commodity_revenue",
         "pe_ratio",
     }
+)
+_FOREIGN_METRIC_IDS = frozenset(
+    {"adr_ratio", "adr_equivalent_shares", "adr_market_cap"}
 )
 _REIT_METRIC_LABELS = {
     "ffo_total": "FFO 总额",
@@ -265,7 +272,16 @@ def build_narrative_context(
     profile_metrics = report_context.get("profile_metrics")
     if isinstance(profile_metrics, Mapping):
         profile_issuer = _text((report_context.get("profile") or {}).get("issuer_profile"))
-        if profile_issuer in {"bank", "insurance", "utility", "commodity_producer"}:
+        if profile_issuer in {
+            "bank",
+            "insurance",
+            "utility",
+            "commodity_producer",
+        } or (
+            isinstance(report_context.get("profile"), Mapping)
+            and report_context["profile"].get("reporting_profile")
+            == "foreign_private_issuer_ifrs"
+        ):
             metric_sections.add("company_quality")
     source_metadata = report_context.get("source_metadata", {})
     source_metadata = source_metadata if isinstance(source_metadata, Mapping) else {}
@@ -560,6 +576,14 @@ def _term_definitions(
                 "- 商品资产减值损失：公司明确披露的商品相关减值，不能用经营亏损或重组费用替代。",
             )
         )
+    if profile == "foreign_private_issuer_ifrs":
+        definitions.extend(
+            (
+                "- 20-F/6-K：外国私人发行人向 SEC 提交的固定范围申报；未同时验证 20-F 与 IFRS taxonomy 时不宣称 IFRS profile。",
+                "- ADR ratio：仅使用已验证的普通股/ADR 兑换比例；缺失时不默认 1:1，也不从价格或市值反推。",
+                "- ADR 等价市值：只使用 USD ADR 价格与 ADR 等价股数；原币财务数据不与 USD 跨币种混算。",
+            )
+        )
     return tuple(definitions)
 
 
@@ -579,13 +603,21 @@ def _profile_metrics_markdown(
     payload: Mapping[str, Any] | None,
     metrics: Sequence[Mapping[str, Any]],
 ) -> str:
-    if profile not in {"bank", "insurance", "utility", "commodity_producer"} or not isinstance(payload, Mapping):
+    if profile not in {
+        "bank",
+        "insurance",
+        "utility",
+        "commodity_producer",
+        "foreign_private_issuer_ifrs",
+    } or not isinstance(payload, Mapping):
         return ""
     metric_ids = payload.get("metric_ids", [])
     if not isinstance(metric_ids, Sequence) or isinstance(metric_ids, (str, bytes)):
         metric_ids = []
     if profile == "commodity_producer":
         metric_ids = [metric_id for metric_id in metric_ids if metric_id in _COMMODITY_METRIC_IDS]
+    if profile == "foreign_private_issuer_ifrs":
+        metric_ids = [metric_id for metric_id in metric_ids if metric_id in _FOREIGN_METRIC_IDS]
     metric_map = {
         metric.get("metric_id"): metric
         for metric in metrics
@@ -597,8 +629,30 @@ def _profile_metrics_markdown(
         "insurance": "### 保险专用指标",
         "utility": "### 公用事业专用指标",
         "commodity_producer": "### 商品生产商专用指标",
+        "foreign_private_issuer_ifrs": "### 外国发行人/ADR 指标",
     }[profile]
     lines = [heading]
+    if profile == "foreign_private_issuer_ifrs":
+        metadata = payload.get("foreign_metadata", {})
+        if isinstance(metadata, Mapping):
+            forms = metadata.get("filing_forms", [])
+            if isinstance(forms, Sequence) and not isinstance(forms, (str, bytes)):
+                forms = [form for form in forms if form in {"20-F", "6-K"}]
+                if forms:
+                    lines.append(f"- SEC foreign filings：{', '.join(forms)}")
+            taxonomies = metadata.get("ifrs_taxonomy", [])
+            if isinstance(taxonomies, Sequence) and not isinstance(taxonomies, (str, bytes)):
+                taxonomies = [taxonomy for taxonomy in taxonomies if isinstance(taxonomy, str)]
+                if taxonomies:
+                    lines.append(f"- IFRS taxonomy：{', '.join(taxonomies)}")
+            for key, label in (
+                ("reporting_currency", "财务报告币种"),
+                ("market_currency", "市场价格币种"),
+                ("adr_ratio_status", "ADR ratio 状态"),
+            ):
+                value = _text(metadata.get(key))
+                if value:
+                    lines.append(f"- {label}：{value}")
     for metric_id in metric_ids:
         metric_id = _text(metric_id)
         if not metric_id:
@@ -923,6 +977,12 @@ def _render_report_from_context(
     profile_issuer = (
         _text(profile.get("issuer_profile")) if isinstance(profile, Mapping) else None
     )
+    profile_kind = profile_issuer
+    if (
+        isinstance(profile, Mapping)
+        and profile.get("reporting_profile") == "foreign_private_issuer_ifrs"
+    ):
+        profile_kind = "foreign_private_issuer_ifrs"
     profile_metrics = context_payload.get("profile_metrics")
     verdict = context_payload.get("verdict", {})
     if not isinstance(verdict, Mapping):
@@ -1001,7 +1061,7 @@ def _render_report_from_context(
                 )
             )
             if profile_markdown := _profile_metrics_markdown(
-                profile_issuer, profile_metrics, metrics
+                profile_kind, profile_metrics, metrics
             ):
                 sections.extend((profile_markdown, ""))
             if is_reit and (unavailable := _reit_unavailable_markdown(reit_metrics)):
@@ -1081,7 +1141,7 @@ def _render_report_from_context(
                     "",
                     _source_text(context_payload),
                     "",
-                    *_term_definitions(reit=is_reit, profile=profile_issuer),
+                    *_term_definitions(reit=is_reit, profile=profile_kind),
                     "",
                 )
             )
