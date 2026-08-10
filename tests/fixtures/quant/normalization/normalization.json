@@ -1,0 +1,85 @@
+{
+  "fixture_version": "wp07-s04-normalization-v1",
+  "winsor_lower": "0.25",
+  "winsor_upper": "0.75",
+  "normalization_version": "winsor-percentile-v1",
+  "cases": {
+    "winsor_directions": {
+      "observations": [
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "high_a", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "HIGA", "raw_value": "1", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_high_a"], "calculation_ids": ["calc_high_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "high_b", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "HIGB", "raw_value": "2", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_high_b"], "calculation_ids": ["calc_high_b"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "high_c", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "HIGC", "raw_value": "3", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_high_c"], "calculation_ids": ["calc_high_c"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "high_d", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "HIGD", "raw_value": "4", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_high_d"], "calculation_ids": ["calc_high_d"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "high_e", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "HIGE", "raw_value": "100", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_high_e"], "calculation_ids": ["calc_high_e"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "risk.volatility_12m", "formula_version": "factor-formulas-v1", "snapshot_id": "low_a", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "LOWA", "raw_value": "0.1", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_low_a"], "calculation_ids": ["calc_low_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "risk.volatility_12m", "formula_version": "factor-formulas-v1", "snapshot_id": "low_b", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "LOWB", "raw_value": "0.2", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_low_b"], "calculation_ids": ["calc_low_b"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "risk.volatility_12m", "formula_version": "factor-formulas-v1", "snapshot_id": "low_c", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "LOWC", "raw_value": "0.2", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_low_c"], "calculation_ids": ["calc_low_c"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "risk.volatility_12m", "formula_version": "factor-formulas-v1", "snapshot_id": "low_d", "as_of": "2026-01-02T00:00:00+00:00", "ticker": "LOWD", "raw_value": "0.4", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_low_d"], "calculation_ids": ["calc_low_d"], "status": "available", "reason_code": "validated_inputs"}
+      ],
+      "expected_order": ["high_a", "high_b", "high_c", "high_d", "high_e", "low_a", "low_b", "low_c", "low_d"],
+      "expected": {
+        "high_a": {"normalized": "0.125", "peer_count": 5, "status": "available", "reason_code": "validated_inputs"},
+        "high_b": {"normalized": "0.125", "peer_count": 5, "status": "available", "reason_code": "validated_inputs"},
+        "high_c": {"normalized": "0.5", "peer_count": 5, "status": "available", "reason_code": "validated_inputs"},
+        "high_d": {"normalized": "0.875", "peer_count": 5, "status": "available", "reason_code": "validated_inputs"},
+        "high_e": {"normalized": "0.875", "peer_count": 5, "status": "available", "reason_code": "validated_inputs"},
+        "low_a": {"normalized": "1", "peer_count": 4, "status": "available", "reason_code": "validated_inputs"},
+        "low_b": {"normalized": "0.5", "peer_count": 4, "status": "available", "reason_code": "validated_inputs"},
+        "low_c": {"normalized": "0.5", "peer_count": 4, "status": "available", "reason_code": "validated_inputs"},
+        "low_d": {"normalized": "0", "peer_count": 4, "status": "available", "reason_code": "validated_inputs"}
+      }
+    },
+    "constant_and_small_sample": {
+      "observations": [
+        {"factor_id": "quality.roic", "formula_version": "factor-formulas-v1", "snapshot_id": "constant_a", "as_of": "2026-01-03T00:00:00+00:00", "ticker": "CONA", "raw_value": "7", "normalized_value": null, "peer_group": "standard_operating:healthcare", "peer_count": 0, "evidence_ids": ["ev_constant_a"], "calculation_ids": ["calc_constant_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roic", "formula_version": "factor-formulas-v1", "snapshot_id": "constant_b", "as_of": "2026-01-03T00:00:00+00:00", "ticker": "CONB", "raw_value": "7", "normalized_value": null, "peer_group": "standard_operating:healthcare", "peer_count": 0, "evidence_ids": ["ev_constant_b"], "calculation_ids": ["calc_constant_b"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roic", "formula_version": "factor-formulas-v1", "snapshot_id": "constant_c", "as_of": "2026-01-03T00:00:00+00:00", "ticker": "CONC", "raw_value": "7", "normalized_value": null, "peer_group": "standard_operating:healthcare", "peer_count": 0, "evidence_ids": ["ev_constant_c"], "calculation_ids": ["calc_constant_c"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "growth.revenue_cagr_3y", "formula_version": "factor-formulas-v1", "snapshot_id": "small_a", "as_of": "2026-01-03T00:00:00+00:00", "ticker": "SMAA", "raw_value": "0.2", "normalized_value": null, "peer_group": "standard_operating:industrials", "peer_count": 0, "evidence_ids": ["ev_small_a"], "calculation_ids": ["calc_small_a"], "status": "available", "reason_code": "validated_inputs"}
+      ],
+      "expected_order": ["constant_a", "constant_b", "constant_c", "small_a"],
+      "expected": {
+        "constant_a": {"normalized": "0.5", "peer_count": 3, "status": "available", "reason_code": "validated_inputs"},
+        "constant_b": {"normalized": "0.5", "peer_count": 3, "status": "available", "reason_code": "validated_inputs"},
+        "constant_c": {"normalized": "0.5", "peer_count": 3, "status": "available", "reason_code": "validated_inputs"},
+        "small_a": {"normalized": null, "peer_count": 1, "status": "unavailable", "reason_code": "insufficient_peer_sample"}
+      }
+    },
+    "partitioned_groups": {
+      "observations": [
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "roe_bank_a", "as_of": "2026-01-04T00:00:00+00:00", "ticker": "ROBA", "raw_value": "1", "normalized_value": null, "peer_group": "bank:technology", "peer_count": 0, "evidence_ids": ["ev_roe_bank_a"], "calculation_ids": ["calc_roe_bank_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "roe_bank_b", "as_of": "2026-01-04T00:00:00+00:00", "ticker": "ROBB", "raw_value": "2", "normalized_value": null, "peer_group": "bank:technology", "peer_count": 0, "evidence_ids": ["ev_roe_bank_b"], "calculation_ids": ["calc_roe_bank_b"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "roe_standard_a", "as_of": "2026-01-04T00:00:00+00:00", "ticker": "ROSA", "raw_value": "1", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_roe_standard_a"], "calculation_ids": ["calc_roe_standard_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "roe_standard_b", "as_of": "2026-01-04T00:00:00+00:00", "ticker": "ROSB", "raw_value": "2", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_roe_standard_b"], "calculation_ids": ["calc_roe_standard_b"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "roe_later_a", "as_of": "2026-02-04T00:00:00+00:00", "ticker": "ROLA", "raw_value": "10", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_roe_later_a"], "calculation_ids": ["calc_roe_later_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "factor-formulas-v1", "snapshot_id": "roe_later_b", "as_of": "2026-02-04T00:00:00+00:00", "ticker": "ROLB", "raw_value": "20", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_roe_later_b"], "calculation_ids": ["calc_roe_later_b"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roic", "formula_version": "factor-formulas-v1", "snapshot_id": "roic_standard_a", "as_of": "2026-01-04T00:00:00+00:00", "ticker": "RICA", "raw_value": "100", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_roic_standard_a"], "calculation_ids": ["calc_roic_standard_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roic", "formula_version": "factor-formulas-v1", "snapshot_id": "roic_standard_b", "as_of": "2026-01-04T00:00:00+00:00", "ticker": "RICB", "raw_value": "200", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_roic_standard_b"], "calculation_ids": ["calc_roic_standard_b"], "status": "available", "reason_code": "validated_inputs"}
+      ],
+      "expected_order": ["roe_bank_a", "roe_bank_b", "roe_standard_a", "roe_standard_b", "roe_later_a", "roe_later_b", "roic_standard_a", "roic_standard_b"],
+      "expected": {
+        "roe_bank_a": {"normalized": "0", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "roe_bank_b": {"normalized": "1", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "roe_standard_a": {"normalized": "0", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "roe_standard_b": {"normalized": "1", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "roe_later_a": {"normalized": "0", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "roe_later_b": {"normalized": "1", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "roic_standard_a": {"normalized": "0", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "roic_standard_b": {"normalized": "1", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"}
+      }
+    },
+    "typed_states_and_provenance": {
+      "observations": [
+        {"factor_id": "quality.roe", "formula_version": "formula-available-v2", "snapshot_id": "typed_available_a", "as_of": "2026-01-05T00:00:00+00:00", "ticker": "TYPA", "raw_value": "1", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_typed_a"], "calculation_ids": ["calc_typed_a"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "formula-available-v2", "snapshot_id": "typed_available_b", "as_of": "2026-01-05T00:00:00+00:00", "ticker": "TYPB", "raw_value": "2", "normalized_value": null, "peer_group": "standard_operating:technology", "peer_count": 0, "evidence_ids": ["ev_typed_b"], "calculation_ids": ["calc_typed_b"], "status": "available", "reason_code": "validated_inputs"},
+        {"factor_id": "quality.roe", "formula_version": "formula-unavailable-v2", "snapshot_id": "typed_unavailable", "as_of": "2026-01-05T00:00:00+00:00", "ticker": "TYPU", "raw_value": null, "normalized_value": "0.33", "peer_group": "standard_operating:technology", "peer_count": 7, "evidence_ids": ["ev_typed_u"], "calculation_ids": ["calc_typed_u"], "status": "unavailable", "reason_code": "missing_input"},
+        {"factor_id": "quality.roe", "formula_version": "formula-not-applicable-v2", "snapshot_id": "typed_not_applicable", "as_of": "2026-01-05T00:00:00+00:00", "ticker": "TYPNA", "raw_value": null, "normalized_value": "0.44", "peer_group": "standard_operating:technology", "peer_count": 8, "evidence_ids": ["ev_typed_na"], "calculation_ids": ["calc_typed_na"], "status": "not_applicable", "reason_code": "profile_not_applicable"},
+        {"factor_id": "quality.roe", "formula_version": "formula-invalid-v2", "snapshot_id": "typed_invalid", "as_of": "2026-01-05T00:00:00+00:00", "ticker": "TYPIN", "raw_value": null, "normalized_value": "0.55", "peer_group": "standard_operating:technology", "peer_count": 9, "evidence_ids": ["ev_typed_i"], "calculation_ids": ["calc_typed_i"], "status": "invalid", "reason_code": "invalid_input"}
+      ],
+      "expected_order": ["typed_available_a", "typed_available_b", "typed_invalid", "typed_not_applicable", "typed_unavailable"],
+      "expected": {
+        "typed_available_a": {"normalized": "0", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"},
+        "typed_available_b": {"normalized": "1", "peer_count": 2, "status": "available", "reason_code": "validated_inputs"}
+      }
+    }
+  }
+}
