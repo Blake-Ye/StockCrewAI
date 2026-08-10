@@ -17,6 +17,7 @@ from pydantic import (
     model_validator,
 )
 from stockcrewai.models.quant import QuantResearchPacket
+from stockcrewai.profiles.reit import PROFILE_VERSION as REIT_PROFILE_VERSION
 
 
 _REPORT_NARRATIVE_CATEGORIES = (
@@ -71,12 +72,25 @@ _REPORT_QUALITY_METRIC_IDS = frozenset(
         "net_cash",
         "current_ratio",
         "debt_to_equity",
+        "ffo_total",
+        "ffo_per_share",
+        "affo",
+        "net_debt_to_ebitda",
+        "dividend_coverage",
     }
 )
 _REPORT_TREND_METRIC_IDS = frozenset(
     {"revenue_growth", "free_cash_flow", "share_dilution"}
 )
 _QUANT_PACKET_UNSET = object()
+_REIT_FORMULA_TO_METRIC = {
+    "reit-ffo-reconciliation-v1": "ffo_total",
+    "reit-ffo-per-share-v1": "ffo_per_share",
+    "company-disclosed-affo-reconciliation-v1": "affo",
+    "reit-net-debt-to-ebitda-v1": "net_debt_to_ebitda",
+    "reit-dividend-coverage-v1": "dividend_coverage",
+    "reit-price-to-ffo-v1": "price_to_ffo",
+}
 
 
 class ReportMetric(BaseModel):
@@ -89,6 +103,7 @@ class ReportMetric(BaseModel):
     display_value: StrictStr
     unit: StrictStr
     as_of: StrictStr
+    period_end: StrictStr | None = None
     source_reference: StrictStr
     evidence_ids: list[StrictStr]
     calculation_id: StrictStr | None = None
@@ -142,6 +157,7 @@ class ReportContext(BaseModel):
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
     quant: dict[str, Any] | None = None
+    reit_metrics: dict[str, Any] | None = None
 
     @field_validator("verdict_status")
     @classmethod
@@ -337,6 +353,38 @@ def _calculation_items(value: Any) -> list[Mapping[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
     return [item for item in value if isinstance(item, Mapping)]
+
+
+def _reit_metric_from_calculation(
+    calculation: Mapping[str, Any],
+    evidence_index: Mapping[str, Mapping[str, Any]],
+) -> ReportMetric | None:
+    """把 S04 的已验证 REIT CalculationRecord 投影成报告指标。"""
+    if calculation.get("validation_status") != "valid":
+        return None
+    formula_id = _text(calculation.get("formula_id"))
+    metric_id = _REIT_FORMULA_TO_METRIC.get(formula_id or "")
+    result = calculation.get("result")
+    if metric_id is None or _text(result) is None:
+        return None
+    evidence_ids = _ids(calculation.get("input_evidence_ids"))
+    period_end = _text(calculation.get("period_end"))
+    if not evidence_ids or period_end is None:
+        return None
+    if any(evidence_id not in evidence_index for evidence_id in evidence_ids):
+        return None
+    display_value = calculation.get("display_result", result)
+    metric = _metric_from_payload(
+        section="current_valuation" if metric_id == "price_to_ffo" else "financial",
+        metric_id=metric_id,
+        display_value=_json_safe_context(display_value),
+        unit=calculation.get("unit"),
+        evidence_ids=evidence_ids,
+        calculation_id=calculation.get("calculation_id"),
+        evidence_index=evidence_index,
+        direct_as_of=(calculation.get("as_of"),),
+    )
+    return metric.model_copy(update={"period_end": period_end}) if metric else None
 
 
 def _percent_display(value: Any) -> str | None:
@@ -541,6 +589,11 @@ def build_report_context(
     valuation_payload = dict(valuation or {})
     historical_payload = dict(historical_valuation or {})
     reverse_payload = dict(reverse_dcf or {})
+    policy_profile = policy_payload.get("profile")
+    is_reit_profile = (
+        isinstance(policy_profile, Mapping)
+        and _text(policy_profile.get("issuer_profile")) == "reit"
+    )
     policy_decisions = policy_payload.get("policy_decisions")
     if not isinstance(policy_decisions, list):
         policy_decisions = []
@@ -584,27 +637,35 @@ def build_report_context(
     evidence_index = _evidence_index(source_payload)
     metrics: list[ReportMetric] = []
 
-    for calculation in _calculation_items(calculation_payload):
-        if (
-            calculation.get("status") != "available"
-            or calculation.get("validation_status") != "valid"
-        ):
-            continue
-        metric = _metric_from_payload(
-            section="financial",
-            metric_id=calculation.get("formula_id"),
-            display_value=calculation.get("display_result"),
-            unit=calculation.get("unit"),
-            evidence_ids=calculation.get("input_evidence_ids"),
-            calculation_id=calculation.get("calculation_id"),
-            evidence_index=evidence_index,
-            direct_source=calculation.get("source_reference"),
-            direct_as_of=(calculation.get("as_of"), calculation.get("period_end")),
-        )
-        if metric is not None:
-            metrics.append(metric)
+    if is_reit_profile:
+        for calculation in _calculation_items(policy_payload.get("calculation_records")):
+            metric = _reit_metric_from_calculation(calculation, evidence_index)
+            if metric is not None:
+                metrics.append(metric)
+    else:
+        for calculation in _calculation_items(calculation_payload):
+            if (
+                calculation.get("status") != "available"
+                or calculation.get("validation_status") != "valid"
+            ):
+                continue
+            metric = _metric_from_payload(
+                section="financial",
+                metric_id=calculation.get("formula_id"),
+                display_value=calculation.get("display_result"),
+                unit=calculation.get("unit"),
+                evidence_ids=calculation.get("input_evidence_ids"),
+                calculation_id=calculation.get("calculation_id"),
+                evidence_index=evidence_index,
+                direct_source=calculation.get("source_reference"),
+                direct_as_of=(calculation.get("as_of"), calculation.get("period_end")),
+            )
+            if metric is not None:
+                metrics.append(metric)
 
-    valuation_calculations = _calculation_items(valuation_payload)
+    valuation_calculations = (
+        [] if is_reit_profile else _calculation_items(valuation_payload)
+    )
     applicable_valuation_calculations = [
         calculation
         for calculation in valuation_calculations
@@ -727,7 +788,6 @@ def build_report_context(
         if metric is not None:
             metrics.append(metric)
 
-    policy_profile = policy_payload.get("profile")
     policy_fields: dict[str, Any] = {}
     if policy_payload:
         if isinstance(policy_profile, Mapping):
@@ -738,6 +798,21 @@ def build_report_context(
         policy_version = _text(policy_payload.get("policy_version"))
         if policy_version:
             policy_fields["policy_version"] = policy_version
+
+    reit_metrics_payload: dict[str, Any] | None = None
+    if is_reit_profile:
+        raw_reit_calculations = _calculation_items(policy_payload.get("calculation_records"))
+        reit_metrics_payload = {
+            "profile_version": _json_safe_context(
+                policy_profile.get("profile_version")
+                or policy_payload.get("profile_version")
+                or REIT_PROFILE_VERSION
+            ),
+            "policy_version": _json_safe_context(policy_payload.get("policy_version")),
+            "values": _json_safe_context(policy_payload.get("values", {})),
+            "policy_decisions": _json_safe_context(policy_decisions),
+            "calculation_records": _json_safe_context(raw_reit_calculations),
+        }
 
     context = ReportContext(
         company=_json_safe_context(company_payload),
@@ -765,11 +840,17 @@ def build_report_context(
             else _verified_reverse_dcf_context(reverse_payload)
         ),
         quant=quant_payload,
+        reit_metrics=reit_metrics_payload,
     )
     context_payload = context.model_dump(mode="json")
+    for metric in context_payload.get("metrics", []):
+        if isinstance(metric, Mapping) and metric.get("period_end") is None:
+            metric.pop("period_end", None)
     if not policy_payload:
         for key in ("profile", "coverage_level", "policy_version"):
             context_payload.pop(key, None)
+    if not is_reit_profile:
+        context_payload.pop("reit_metrics", None)
     if quant_packet is _QUANT_PACKET_UNSET:
         context_payload.pop("quant", None)
     return context_payload

@@ -44,6 +44,12 @@ _REPORT_METRIC_LABELS = {
     "market_capitalization": "市值",
     "pe_ratio": "P/E",
     "fcf_yield": "FCF Yield",
+    "ffo_total": "FFO 总额",
+    "ffo_per_share": "FFO/股",
+    "affo": "AFFO",
+    "net_debt_to_ebitda": "净债务/EBITDA",
+    "dividend_coverage": "股息覆盖",
+    "price_to_ffo": "P/FFO",
     "historical_pe_current": "历史当前 P/E",
     "historical_pe_median": "历史五年中位 P/E",
     "historical_pe_percentile_25": "历史 P/E 二十五分位",
@@ -66,6 +72,23 @@ _REPORT_PERCENT_METRIC_IDS = frozenset(
 _REPORT_AMOUNT_METRIC_IDS = frozenset(
     {"free_cash_flow", "net_cash", "market_capitalization"}
 )
+_REPORT_MULTIPLE_METRIC_IDS = frozenset(
+    {"net_debt_to_ebitda", "dividend_coverage", "price_to_ffo"}
+)
+_REIT_METRIC_LABELS = {
+    "ffo_total": "FFO 总额",
+    "ffo_per_share": "FFO/股",
+    "affo": "AFFO",
+    "same_store_noi": "same-store NOI",
+    "occupancy": "Occupancy",
+    "net_debt_to_ebitda": "净债务/EBITDA",
+    "dividend_coverage": "股息覆盖",
+    "price_to_ffo": "P/FFO",
+}
+_REIT_APPLICABILITY_REASONS = {
+    "pe": "reit_primary_valuation_not_pe",
+    "fcf_yield": "reit_primary_cash_metric_not_fcf",
+}
 _VERDICT_RATING_LABELS = {
     "attractive": "估值吸引",
     "reasonable": "估值合理",
@@ -325,6 +348,10 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
         elif "%" in raw_text and decimal_value > Decimal("1"):
             decimal_value /= Decimal("100")
         return f"{decimal_value:.2f}x"
+    if metric_id in _REPORT_MULTIPLE_METRIC_IDS:
+        return f"{decimal_value:.2f}x"
+    if metric_id in {"ffo_total", "ffo_per_share", "affo"}:
+        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in _REPORT_PERCENT_METRIC_IDS or unit_lower in {
         "ratio",
         "percent",
@@ -358,6 +385,12 @@ def _metric_text(metric: Mapping[str, Any]) -> str:
     unit = metric["unit"]
     if unit and unit not in value and metric["metric_id"] == "market_price":
         value = f"{value} {unit}"
+    period_end = _text(metric.get("period_end"))
+    if period_end:
+        return (
+            f"- {label}：{value}（期间截至 {period_end}；截至 {metric['as_of']}；"
+            f"来源：{metric['source_reference']}）"
+        )
     return f"- {label}：{value}（截至 {metric['as_of']}；来源：{metric['source_reference']}）"
 
 
@@ -390,15 +423,65 @@ def _source_text(context: Mapping[str, Any]) -> str:
     return "\n".join(f"- {reference}" for reference in references)
 
 
-def _term_definitions() -> tuple[str, ...]:
-    return (
+def _term_definitions(*, reit: bool = False) -> tuple[str, ...]:
+    definitions = [
         "### 术语说明",
         "- P/E（市盈率）：股价相对于每股收益的倍数，用于描述市场对盈利的定价。",
         "- FCF Yield（自由现金流收益率）：自由现金流相对于市值的收益率。",
         "- TTM（过去十二个月）：以最近连续十二个月为口径汇总经营数据。",
         "- DCF（现金流折现）：将未来现金流折算到当前价值的估值方法。",
         "- 反向 DCF（由市场价格倒推隐含增长）：从当前市场价格反推出模型所隐含的增长假设。",
+    ]
+    if reit:
+        definitions.extend(
+            (
+                "- FFO（运营资金）：REIT 用于补充说明物业经营表现的行业指标，不能替代 GAAP 净利润。",
+                "- AFFO（调整后运营资金）：仅采用公司明确披露并可追溯的 AFFO reconciliation，没有统一通用公式。",
+                "- P/FFO：市场价格相对于每股 FFO 的倍数，是 REIT 的主要估值参考之一。",
+            )
+        )
+    return tuple(definitions)
+
+
+def _reit_decisions(payload: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    decisions = payload.get("policy_decisions", [])
+    if not isinstance(decisions, Sequence) or isinstance(decisions, (str, bytes)):
+        return {}
+    return {
+        decision["metric_id"]: decision
+        for decision in decisions
+        if isinstance(decision, Mapping) and _text(decision.get("metric_id"))
+    }
+
+
+def _reit_applicability_markdown(payload: Mapping[str, Any]) -> str:
+    decisions = _reit_decisions(payload)
+    pe = decisions.get("pe", {})
+    fcf_yield = decisions.get("fcf_yield", {})
+    pe_status = _text(pe.get("status")) or "not_applicable"
+    pe_reason = _text(pe.get("reason_code")) or _REIT_APPLICABILITY_REASONS["pe"]
+    fcf_status = _text(fcf_yield.get("status")) or "not_applicable"
+    fcf_reason = _text(fcf_yield.get("reason_code")) or _REIT_APPLICABILITY_REASONS["fcf_yield"]
+    return "\n".join(
+        (
+            "### REIT 估值与现金指标适用性",
+            f"- P/E：{pe_status}（{pe_reason}）；REIT 主估值看 FFO/AFFO/P-FFO。",
+            f"- FCF Yield：{fcf_status}（{fcf_reason}）；不能用普通企业 FCF Yield 替代。",
+        )
     )
+
+
+def _reit_unavailable_markdown(payload: Mapping[str, Any]) -> str:
+    decisions = _reit_decisions(payload)
+    lines = []
+    for metric_id, decision in decisions.items():
+        if _text(decision.get("status")) != "unavailable":
+            continue
+        reason_code = _text(decision.get("reason_code")) or "reason_code_missing"
+        lines.append(
+            f"- {_REIT_METRIC_LABELS.get(metric_id, metric_id)}：unavailable（{reason_code}）"
+        )
+    return "\n".join(lines)
 
 
 def _visual_markdown(visuals: Mapping[str, str], key: str, alt: str) -> str | None:
@@ -654,6 +737,8 @@ def _render_report_from_context(
     claims = _validated_claims(context_payload["claims"])
     status = context_payload["verdict_status"]
     metrics = context_payload["metrics"]
+    reit_metrics = context_payload.get("reit_metrics")
+    is_reit = isinstance(reit_metrics, Mapping)
     verdict = context_payload.get("verdict", {})
     if not isinstance(verdict, Mapping):
         verdict = {}
@@ -730,6 +815,8 @@ def _render_report_from_context(
                     "",
                 )
             )
+            if is_reit and (unavailable := _reit_unavailable_markdown(reit_metrics)):
+                sections.extend((unavailable, ""))
         elif field == "financial_trend":
             sections.extend(
                 (
@@ -761,6 +848,8 @@ def _render_report_from_context(
                     "",
                 )
             )
+            if is_reit:
+                sections.extend((_reit_applicability_markdown(reit_metrics), ""))
         elif field == "historical_valuation":
             sections.extend(
                 (
@@ -803,7 +892,7 @@ def _render_report_from_context(
                     "",
                     _source_text(context_payload),
                     "",
-                    *_term_definitions(),
+                    *_term_definitions(reit=is_reit),
                     "",
                 )
             )
