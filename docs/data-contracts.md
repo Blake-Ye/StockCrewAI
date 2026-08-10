@@ -303,3 +303,100 @@ REIT envelope 的最小字段形状如下。`ReitLine`、`Period`、`Calculation
 `available` 表示值非空、必要的 Evidence/Calculation 已验证且期间/单位/币种一致；`unavailable` 表示指标适用但字段、来源、验证、期间或分母条件不足，值必须为 `null`；`not_applicable` 表示 Policy 明确不适用，值同样为 `null`，不能用它掩盖缺失。REIT 的普通 P/E 和 FCF yield 应在报告中解释为不适用，并引导读者查看 FFO、公司披露的 AFFO 和 `price_to_ffo`；它们不得成为无条件阻断项。
 
 REIT Policy 不把缺失、无来源、未验证或期间/单位不匹配标为 `invalid`；这些情况按上表使用 `unavailable`。`invalid` 仅保留给共享模型或有限 Decimal 结构校验失败。
+
+## 7. WP11 银行与保险专用数据契约（typed contract）
+
+本节在 WP00 共享模型和 WP10 REIT 契约之后增量冻结银行、保险的最小 typed contract。它不改写前文共享模型或 REIT v1/v2；后续 `bank.py` 与 `insurance.py` 必须分别实现本节的同一接口形状、独立版本和独立指标 Policy。不得为本节新增 Pydantic 模型、Agent、Crew、YAML、Flow 或依赖。
+
+### 7.1 通用接口与不变量
+
+两个 Profile 后续都使用以下函数形状；`<profile>` 只能替换为 `bank` 或 `insurance`：
+
+```python
+from collections.abc import Mapping, Sequence
+from decimal import Decimal
+
+from stockcrewai.models.evidence import (
+    CalculationRecord,
+    EvidenceRecord,
+    MarketPriceRecord,
+)
+from stockcrewai.models.policy import PolicyDecision
+
+
+def evaluate_<profile>_profile(
+    profile_input: Mapping[str, object],
+    evidence_records: Sequence[EvidenceRecord],
+    market_price_records: Sequence[MarketPriceRecord] = (),
+) -> tuple[
+    dict[str, Decimal | None],
+    tuple[PolicyDecision, ...],
+    tuple[CalculationRecord, ...],
+]:
+    ...
+```
+
+- `profile_input` 只使用本节和 WP11 数值约定中列出的固定键；不创建新的 input model，也不接受同义别名。金融数值输入必须能对应到有限 `Decimal` 和已验证来源。
+- 返回的字典只包含该 Profile 固定的 `metric_id`，每个指标都返回一个键；`available` 时值为有限 `Decimal`，JSON 序列化为十进制字符串；`unavailable` 或 `not_applicable` 时值为 `null`。不得用 0、空字符串、NaN、Infinity 或最近值表示缺失。
+- 只使用现有 `EvidenceRecord`、`MarketPriceRecord`、`CalculationRecord` 和 `PolicyDecision`。`EvidenceRecord`/`MarketPriceRecord` 的 `validation_status` 必须为 `valid` 才能作为可用来源；行情的 `evidence_id` 也是可追溯的来源 ID。
+- 每个 `PolicyDecision` 必须包含现有模型的 `status`、`reason_code`、`blocking`、`evidence_ids` 和 `calculation_ids`。`available` 的直接披露指标至少携带已验证 `evidence_ids`；派生指标同时携带全部输入 `evidence_ids` 和对应 `calculation_ids`。`unavailable`、`not_applicable` 的两个 provenance 列表必须为空，不得伪造或转抄未验证 ID。
+- 每个 `CalculationRecord.input_evidence_ids` 只能引用传入且已验证的 `EvidenceRecord.evidence_id` 或 `MarketPriceRecord.evidence_id`；不得创建不存在的来源 ID。其 `formula_id` 只能来自本节固定的 formula ID 清单。
+- 传入的 `evidence_records` 与 `market_price_records` 合并后，任何重复 `evidence_id` 都必须 fail closed：不得产生 `available` 结果，相关决定按固定阻断规则返回 typed `unavailable`，并使用 `duplicate_evidence_id`。
+- 对目标 `as_of`，任何 `EvidenceRecord.filed_at > as_of` 都必须 fail closed；不得把未来 filing 当作当前可用证据，相关决定使用 `filed_after_as_of`。期间、单位或币种不一致时同样不可用。
+- 不自动年化、不补零、不跨币种。除非本节明确给出固定公式，不从相近字段推断替代值；比例内部保持小数形式，不乘 100。显示层可以把小数格式化为百分比，但不能回写计算值。
+- 核心 `required/blocking` 指标缺失会使其 `PolicyDecision.blocking=true` 并阻断 Gate；可选指标缺失只返回 `unavailable` 且 `blocking=false`。`not_applicable` 始终为 `blocking=false`。普通企业模板中的缺失字段不能跨 Profile 继承为阻断条件。
+
+通用稳定 reason code 固定为：`missing_input`、`unvalidated_evidence_id`、`duplicate_evidence_id`、`filed_after_as_of`、`period_mismatch`、`unit_mismatch`、`currency_mismatch`、`market_price_missing`、`point_in_time_mismatch`、`zero_denominator` 和 `non-positive-eps`。Profile 专属缺失或不适用 reason code 见下表。
+
+### 7.2 Bank Profile（`bank-profile:v1`）
+
+银行实现固定使用 `profile_version = bank-profile:v1` 和 `policy_version = metric-policy:bank:v1`。下表是唯一的银行指标 Policy；`required_evidence` 使用的键也同时是后续实现允许读取的 `profile_input`/来源映射键。
+
+| `metric_id` | `applicability` / `gate_effect` | 固定输入键或来源规则 | 固定公式 / `formula_id` | Profile 专属缺失或不适用 reason code |
+| --- | --- | --- | --- | --- |
+| `bank_roa` | `required` / `blocking` | `net_income`, `average_assets` | `net_income / average_assets` / `bank-roa-v1` | `bank_roa_missing` |
+| `bank_roe` | `required` / `blocking` | `net_income`, `average_equity` | `net_income / average_equity` / `bank-roe-v1` | `bank_roe_missing` |
+| `net_interest_margin` | `required` / `blocking` | `net_interest_income`, `average_earning_assets` | `net_interest_income / average_earning_assets` / `bank-net-interest-margin-v1` | `net_interest_margin_missing` |
+| `efficiency_ratio` | `required` / `blocking` | `noninterest_expense`, `net_interest_income`, `noninterest_income` | `noninterest_expense / (net_interest_income + noninterest_income)` / `bank-efficiency-ratio-v1` | `efficiency_ratio_missing` |
+| `cet1_ratio` | `optional` / `non_blocking` | 公司或 filing 直接披露的 `cet1_ratio` | 只接受 direct evidence，不从 CET1 capital / RWA 重算 / `bank-cet1-ratio-v1` | `cet1_ratio_not_disclosed` |
+| `loan_to_deposit` | `optional` / `non_blocking` | `total_loans`, `total_deposits` | `total_loans / total_deposits` / `bank-loan-to-deposit-v1` | `loan_to_deposit_missing` |
+| `nonperforming_loan_ratio` | `optional` / `non_blocking` | `nonperforming_loans`, `total_loans` | `nonperforming_loans / total_loans` / `bank-nonperforming-loan-ratio-v1` | `nonperforming_loan_ratio_missing` |
+| `provision_coverage` | `optional` / `non_blocking` | `allowance_for_credit_losses`, `nonperforming_loans` | `allowance_for_credit_losses / nonperforming_loans` / `bank-provision-coverage-v1` | `provision_coverage_missing` |
+| `price_to_book` | `optional` / `non_blocking` | `market_price`（来自 valid `MarketPriceRecord`）、`book_value_per_share` | `market_price / book_value_per_share` / `bank-price-to-book-v1` | `price_to_book_missing` |
+| `pe_ratio` | `optional` / `non_blocking` | `market_price`（来自 valid `MarketPriceRecord`）、`diluted_eps` | 仅当 `diluted_eps > 0` 且与价格为同一 point-in-time 时 `market_price / diluted_eps` / `bank-pe-ratio-v1` | `pe_ratio_missing`；EPS 非正使用 `non-positive-eps` |
+| `fcf_yield` | `not_applicable` / `non_blocking` | 无 | 银行不计算 FCF yield / `bank-fcf-yield-not-applicable-v1` | `bank_fcf_not_applicable` |
+
+银行的四个核心指标只有 `bank_roa`、`bank_roe`、`net_interest_margin` 和 `efficiency_ratio`；它们的 required evidence 缺失才允许阻断。可选指标缺失必须是 typed `unavailable`，Gate 仍可因核心指标齐全而 `ready`。`capex`、`free_cash_flow`、`current_assets`、`current_liabilities` 以及普通企业的其他经营现金流字段都不能成为银行阻断条件。负 `net_income` 是有效经济值，ROA/ROE 保留其负号；任何上述公式的零分母统一返回 `unavailable/zero_denominator`，不补零或改用替代分母。
+
+### 7.3 Insurance Profile（`insurance-profile:v1`）
+
+保险实现固定使用 `profile_version = insurance-profile:v1` 和 `policy_version = metric-policy:insurance:v1`。下表是唯一的保险指标 Policy。
+
+| `metric_id` | `applicability` / `gate_effect` | 固定输入键或来源规则 | 固定公式 / `formula_id` | Profile 专属缺失或不适用 reason code |
+| --- | --- | --- | --- | --- |
+| `loss_ratio` | `required` / `blocking` | `incurred_losses`, `earned_premiums` | `incurred_losses / earned_premiums` / `insurance-loss-ratio-v1` | `loss_ratio_missing` |
+| `expense_ratio` | `required` / `blocking` | `underwriting_expenses`, `earned_premiums` | `underwriting_expenses / earned_premiums` / `insurance-expense-ratio-v1` | `expense_ratio_missing` |
+| `combined_ratio` | `required` / `blocking` | `incurred_losses`, `underwriting_expenses`, `earned_premiums` | `(incurred_losses + underwriting_expenses) / earned_premiums` / `insurance-combined-ratio-v1` | `combined_ratio_components_missing` |
+| `insurance_roe` | `required` / `blocking` | `net_income`, `average_equity` | `net_income / average_equity` / `insurance-roe-v1` | `insurance_roe_missing` |
+| `book_value_per_share` | `optional` / `non_blocking` | `common_equity`, `diluted_weighted_average_shares` | `common_equity / diluted_weighted_average_shares` / `insurance-book-value-per-share-v1` | `book_value_per_share_missing` |
+| `investment_income` | `optional` / `non_blocking` | 公司或 filing 直接披露的 `investment_income` | 只接受 direct evidence / `insurance-investment-income-direct-v1` | `investment_income_not_disclosed` |
+| `solvency_ratio` | `optional` / `non_blocking` | 法定 solvency/capital ratio 直接披露的 `solvency_ratio` | 只接受 statutory direct evidence，不从资本和风险字段重算 / `insurance-solvency-ratio-direct-v1` | `solvency_ratio_not_disclosed` |
+| `price_to_book` | `optional` / `non_blocking` | `market_price`（来自 valid `MarketPriceRecord`）、`book_value_per_share` | `market_price / book_value_per_share` / `insurance-price-to-book-v1` | `price_to_book_missing` |
+| `pe_ratio` | `optional` / `non_blocking` | `market_price`（来自 valid `MarketPriceRecord`）、`diluted_eps` | 仅当 `diluted_eps > 0` 且与价格为同一 point-in-time 时 `market_price / diluted_eps` / `insurance-pe-ratio-v1` | `pe_ratio_missing`；EPS 非正使用 `non-positive-eps` |
+| `fcf_yield` | `not_applicable` / `non_blocking` | 无 | 保险不计算 FCF yield / `insurance-fcf-yield-not-applicable-v1` | `insurance_fcf_not_applicable` |
+
+保险的四个核心指标只有 `loss_ratio`、`expense_ratio`、`combined_ratio` 和 `insurance_roe`；普通企业指标缺失不能阻断保险。`combined_ratio` 允许且只能由同一期间、单位、币种且均已验证的 `incurred_losses` 与 `underwriting_expenses` 两个组件按固定公式生成 `CalculationRecord`；不得从 `operating_expenses`、准备金、再保险变化或其他无关字段发明该指标。缺少任一组件时返回 `unavailable/combined_ratio_components_missing`。`earned_premiums = 0` 时，loss、expense 和 combined ratio 均返回 `unavailable/zero_earned_premiums`。loss/expense/combined ratio 的负值和大于 1 的经济值都保留原值，不做 clipping；普通企业的 `capex`、`free_cash_flow`、`current_assets`、`current_liabilities` 缺失不构成保险统一 blocking 条件。
+
+### 7.4 固定 formula ID 清单
+
+银行只能使用以下 formula ID：
+
+`bank-roa-v1`、`bank-roe-v1`、`bank-net-interest-margin-v1`、`bank-efficiency-ratio-v1`、`bank-cet1-ratio-v1`、`bank-loan-to-deposit-v1`、`bank-nonperforming-loan-ratio-v1`、`bank-provision-coverage-v1`、`bank-price-to-book-v1`、`bank-pe-ratio-v1`、`bank-fcf-yield-not-applicable-v1`。
+
+保险只能使用以下 formula ID：
+
+`insurance-loss-ratio-v1`、`insurance-expense-ratio-v1`、`insurance-combined-ratio-v1`、`insurance-roe-v1`、`insurance-book-value-per-share-v1`、`insurance-investment-income-direct-v1`、`insurance-solvency-ratio-direct-v1`、`insurance-price-to-book-v1`、`insurance-pe-ratio-v1`、`insurance-fcf-yield-not-applicable-v1`。
+
+### 7.5 报告与量化边界
+
+后续报告和量化层只展示适用且 `status=available` 的指标；`not_applicable` 不进入数值展示，`unavailable` 只保留 typed reason code 和诊断。P/E、P/B 只有在对应 valid source、期间/币种/point-in-time 均满足时才展示；缺来源时不得输出占位数字。Profile 函数、固定 Policy 和 Python 计算器负责指标选择、公式和 Gate，LLM 只能解释已验证的 Evidence/Calculation，不能选择指标、计算数值或发明替代公式。

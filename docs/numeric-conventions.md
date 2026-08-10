@@ -213,3 +213,65 @@ REIT 采用以下稳定 reason code；缺失、无来源或未验证 Evidence �
 | `reit_primary_cash_metric_not_fcf` | REIT 不采用普通 FCF yield 作为主现金指标 |
 
 `pe` 和 `fcf_yield` 固定为 `status=not_applicable`、`blocking=false`，而不是 `unavailable`；报告必须用解释性文本把分析引导至 FFO/AFFO 和 `price_to_ffo`。普通企业的 P/E/FCF 规则不应被复制为 REIT 的无条件阻断条件。SEC 关于非 GAAP 指标应清晰标注、与最直接可比 GAAP 指标对照并避免误导性调整的要求见 [SEC Non-GAAP Financial Measures](https://www.sec.gov/rules-regulations/staff-guidance/corporation-finance-interpretations/non-gaap-financial-measures)。
+
+## 8. WP11 银行与保险专用数值口径
+
+本节与 `docs/data-contracts.md` 第 7 节共同冻结 WP11-S01；它是后续银行、保险 Python Profile 计算器的唯一公式来源。银行和保险各自使用独立的 Profile/Policy 版本，不套用普通企业或 REIT 的替代公式。
+
+### 8.1 通用 Decimal、期间和 provenance 规则
+
+- `profile_input` 中参与计算的金额、股数、价格、EPS 和比率必须转换为有限 `Decimal`；内部结果保持 Decimal，JSON 只把 Decimal 序列化为十进制字符串，缺失统一为 `null`。禁止 Python `float`、NaN、Infinity 和用 0 代表缺失。
+- 只有 `EvidenceRecord.validation_status=valid` 和 `MarketPriceRecord.validation_status=valid` 的来源才能进入计算。直接披露指标使用对应 Evidence；派生指标的 `CalculationRecord.input_evidence_ids` 必须列出全部实际输入来源，且只能是已验证来源 ID。
+- 每个 `PolicyDecision` 固定包含 `status`、`reason_code`、`blocking`、`evidence_ids`、`calculation_ids`。可用直接披露至少有 Evidence provenance；可用派生值同时有输入 Evidence 和 Calculation；`unavailable`/`not_applicable` 的值为 `null` 且 provenance 列表为空。
+- 参与同一比率的金额必须期间、单位和币种一致；市场价格必须来自 valid `MarketPriceRecord`，具有价格时间戳、币种和来源。`filed_at > as_of`、重复 `evidence_id`、期间/单位/币种冲突和 point-in-time 不匹配均 fail closed。
+- 不自动年化、不补零、不跨币种、不把邻近期间或最近市场价格当作同一时点。比率内部结果保持小数，例如 `0.125`，不得乘 100；百分号只由显示层格式化。
+- 通用分母非法时使用稳定 `reason_code=zero_denominator`；P/E 的 EPS 必须严格大于 0，否则使用稳定 `reason_code=non-positive-eps`，不把它改写成零分母或负 P/E。
+
+### 8.2 Bank 固定公式（`bank-profile:v1`）
+
+银行的 `profile_version` 固定为 `bank-profile:v1`，`policy_version` 固定为 `metric-policy:bank:v1`。输入键、公式和 `formula_id` 固定如下：
+
+| `metric_id` | 固定 `profile_input` 键或来源 | 固定公式 | `formula_id` |
+| --- | --- | --- | --- |
+| `bank_roa` | `net_income`, `average_assets` | `bank_roa = net_income / average_assets` | `bank-roa-v1` |
+| `bank_roe` | `net_income`, `average_equity` | `bank_roe = net_income / average_equity` | `bank-roe-v1` |
+| `net_interest_margin` | `net_interest_income`, `average_earning_assets` | `net_interest_margin = net_interest_income / average_earning_assets` | `bank-net-interest-margin-v1` |
+| `efficiency_ratio` | `noninterest_expense`, `net_interest_income`, `noninterest_income` | `efficiency_ratio = noninterest_expense / (net_interest_income + noninterest_income)` | `bank-efficiency-ratio-v1` |
+| `cet1_ratio` | 直接披露的 `cet1_ratio` Evidence | 只接受 company/filing disclosed CET1 ratio direct evidence | `bank-cet1-ratio-v1` |
+| `loan_to_deposit` | `total_loans`, `total_deposits` | `loan_to_deposit = total_loans / total_deposits` | `bank-loan-to-deposit-v1` |
+| `nonperforming_loan_ratio` | `nonperforming_loans`, `total_loans` | `nonperforming_loan_ratio = nonperforming_loans / total_loans` | `bank-nonperforming-loan-ratio-v1` |
+| `provision_coverage` | `allowance_for_credit_losses`, `nonperforming_loans` | `provision_coverage = allowance_for_credit_losses / nonperforming_loans` | `bank-provision-coverage-v1` |
+| `price_to_book` | `market_price`（valid `MarketPriceRecord`）、`book_value_per_share` | `price_to_book = market_price / book_value_per_share` | `bank-price-to-book-v1` |
+| `pe_ratio` | `market_price`（valid `MarketPriceRecord`）、`diluted_eps` | 仅当 `diluted_eps > 0` 且 EPS 与价格为同一 point-in-time：`pe_ratio = market_price / diluted_eps` | `bank-pe-ratio-v1` |
+| `fcf_yield` | 无输入 | 银行固定 `not_applicable`，不计算普通企业 FCF yield | `bank-fcf-yield-not-applicable-v1` |
+
+`bank_roa`、`bank_roe`、`net_interest_margin`、`efficiency_ratio` 是唯一的 `required/blocking` 指标；`cet1_ratio`、`loan_to_deposit`、`nonperforming_loan_ratio`、`provision_coverage`、`price_to_book`、`pe_ratio` 是 `optional/non_blocking`；`fcf_yield` 是 `not_applicable/non_blocking`。缺少 optional 输入返回 typed `unavailable`，不改变 Gate ready 条件。`capex`、`free_cash_flow`、`current_assets`、`current_liabilities` 不属于银行公式输入，不能阻断银行 Profile。
+
+银行计算保留经济符号：负 `net_income` 产生负的 ROA/ROE 仍然有效；不得 clipping。`average_assets`、`average_equity`、`average_earning_assets`、`total_deposits`、`total_loans`、`nonperforming_loans`、`book_value_per_share` 或 P/E 的 EPS 分母为零时返回 `unavailable/zero_denominator`，但 P/E 的 EPS 小于或等于零固定返回 `unavailable/non-positive-eps`。CET1 不能由 CET1 capital、RWA 或其他字段重算；没有直接披露时返回 `unavailable/cet1_ratio_not_disclosed`。
+
+### 8.3 Insurance 固定公式（`insurance-profile:v1`）
+
+保险的 `profile_version` 固定为 `insurance-profile:v1`，`policy_version` 固定为 `metric-policy:insurance:v1`。输入键、公式和 `formula_id` 固定如下：
+
+| `metric_id` | 固定 `profile_input` 键或来源 | 固定公式 | `formula_id` |
+| --- | --- | --- | --- |
+| `loss_ratio` | `incurred_losses`, `earned_premiums` | `loss_ratio = incurred_losses / earned_premiums` | `insurance-loss-ratio-v1` |
+| `expense_ratio` | `underwriting_expenses`, `earned_premiums` | `expense_ratio = underwriting_expenses / earned_premiums` | `insurance-expense-ratio-v1` |
+| `combined_ratio` | `incurred_losses`, `underwriting_expenses`, `earned_premiums` | `combined_ratio = (incurred_losses + underwriting_expenses) / earned_premiums` | `insurance-combined-ratio-v1` |
+| `insurance_roe` | `net_income`, `average_equity` | `insurance_roe = net_income / average_equity` | `insurance-roe-v1` |
+| `book_value_per_share` | `common_equity`, `diluted_weighted_average_shares` | `book_value_per_share = common_equity / diluted_weighted_average_shares` | `insurance-book-value-per-share-v1` |
+| `investment_income` | 直接披露的 `investment_income` Evidence | 只接受 disclosed investment income direct evidence | `insurance-investment-income-direct-v1` |
+| `solvency_ratio` | 直接披露的 `solvency_ratio` Evidence | 只接受 disclosed statutory solvency/capital ratio direct evidence | `insurance-solvency-ratio-direct-v1` |
+| `price_to_book` | `market_price`（valid `MarketPriceRecord`）、`book_value_per_share` | `price_to_book = market_price / book_value_per_share` | `insurance-price-to-book-v1` |
+| `pe_ratio` | `market_price`（valid `MarketPriceRecord`）、`diluted_eps` | 仅当 `diluted_eps > 0` 且 EPS 与价格为同一 point-in-time：`pe_ratio = market_price / diluted_eps` | `insurance-pe-ratio-v1` |
+| `fcf_yield` | 无输入 | 保险固定 `not_applicable`，不计算普通企业 FCF yield | `insurance-fcf-yield-not-applicable-v1` |
+
+`loss_ratio`、`expense_ratio`、`combined_ratio`、`insurance_roe` 是唯一的 `required/blocking` 指标；`book_value_per_share`、`investment_income`、`solvency_ratio`、`price_to_book`、`pe_ratio` 是 `optional/non_blocking`；`fcf_yield` 是 `not_applicable/non_blocking`。普通企业 `capex`、`free_cash_flow`、`current_assets`、`current_liabilities` 缺失不作保险统一 blocking。
+
+`combined_ratio` 只能从同一期间、单位、币种并分别通过验证的 `incurred_losses` 与 `underwriting_expenses` 两个组件按上述固定公式产生 CalculationRecord；不得从 `operating_expenses`、准备金、再保险变化或其他无关字段替代。缺少任一组件时返回 `unavailable/combined_ratio_components_missing`，不能因为有其他保费或赔付字段就补造 combined ratio。`earned_premiums = 0` 时 loss、expense、combined 三个比率固定返回 `unavailable/zero_earned_premiums`。
+
+保险的 loss、expense、combined ratio 保留负值和大于 1 的经济值，不做 clipping；`net_income` 为负时 insurance ROE 保留负号。`average_equity` 或稀释加权平均股数为零时返回 `unavailable/zero_denominator`；P/E 的非正 EPS 固定返回 `unavailable/non-positive-eps`。investment income 和 solvency ratio 均不能由普通资产负债表字段、资本字段或再保险字段重算，没有直接披露时分别返回 `unavailable/investment_income_not_disclosed` 和 `unavailable/solvency_ratio_not_disclosed`。
+
+### 8.4 报告和量化的数值边界
+
+量化与报告只读取 Profile 计算器返回的固定指标字典和 `PolicyDecision`；只展示适用且 `available` 的数值。P/E/P/B 必须同时满足对应来源可用、币种/期间一致和 point-in-time 条件，缺来源或条件不满足就不展示数值。LLM 不选择 Profile 指标、不计算比率、不年化、不补缺失，也不产生新的 Evidence、Calculation 或 formula ID；不增加 Agent 或依赖。
