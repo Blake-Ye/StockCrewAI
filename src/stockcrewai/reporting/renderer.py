@@ -150,6 +150,13 @@ _HOLDING_METRIC_IDS = frozenset(
         "holding_company_nav_discount",
     }
 )
+_HOLDING_AMOUNT_METRIC_IDS = frozenset(
+    {
+        "attributable_holdings_value",
+        "holding_company_nav",
+        "holding_company_market_cap",
+    }
+)
 _HOLDING_NOT_APPLICABLE_METRIC_IDS = frozenset(
     {"pe_ratio", "fcf_yield", "historical_valuation", "reverse_dcf"}
 )
@@ -470,6 +477,8 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
         "historical_pe_percentile_75",
     }:
         return f"{decimal_value:.2f}x"
+    if metric_id in _HOLDING_AMOUNT_METRIC_IDS:
+        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in _REPORT_AMOUNT_METRIC_IDS or unit_lower in {"currency", "usd"}:
         if metric_id == "market_price":
             return f"{decimal_value:.2f} {unit}".strip()
@@ -1017,6 +1026,11 @@ def _render_report_from_context(
 
     sections: list[str] = ["# 投资研究报告", ""]
     for field, heading in _REPORT_SECTIONS:
+        if profile_kind == "holding_company" and field in {
+            "historical_valuation",
+            "reverse_dcf",
+        }:
+            continue
         if field == "key_risks" and quant_present:
             sections.extend(
                 ("## 量化旁证", "", _quant_evidence_markdown(context_payload.get("quant")), "")

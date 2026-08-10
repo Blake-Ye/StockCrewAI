@@ -184,3 +184,45 @@ def test_holding_report_renders_primary_nav_and_not_applicable_boundary() -> Non
         assert len(lines) == 1
         assert "not_applicable" in lines[0]
         assert reason_code in lines[0]
+
+
+def test_holding_report_renders_nonzero_nav_amounts_with_usd_units() -> None:
+    _, report_context = _report_context()
+
+    report = render_validated_report(
+        report_context=report_context,
+        report_draft=build_deterministic_report_draft(),
+    )
+    holding_section = report.split("### 控股公司专用指标", 1)[1].split("\n## ", 1)[0]
+
+    for label, value in {
+        "归属持仓价值": "800.00 USD",
+        "控股公司 NAV（净资产价值）": "680.00 USD",
+        "控股公司市值": "500.00 USD",
+    }.items():
+        assert f"- {label}：{value}（" in holding_section
+    assert "- NAV 折价/溢价：26.47%（" in holding_section
+
+
+def test_holding_report_omits_or_marks_ordinary_valuation_sections() -> None:
+    _, report_context = _report_context()
+
+    report = render_validated_report(
+        report_context=report_context,
+        report_draft=build_deterministic_report_draft(),
+    )
+
+    for heading, reason_code in (
+        (
+            "历史估值",
+            "holding_company_historical_valuation_not_applicable",
+        ),
+        ("反向 DCF", "holding_company_reverse_dcf_not_applicable"),
+    ):
+        heading_marker = f"## {heading}"
+        if heading_marker not in report:
+            continue
+        section = report.split(heading_marker, 1)[1].split("\n## ", 1)[0]
+        assert "控股公司" in section
+        assert reason_code in section
+        assert "缺少已验证" not in section
