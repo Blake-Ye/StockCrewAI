@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+from contextlib import ExitStack
+from io import BytesIO
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
+import re
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
+from PIL import Image
 import pytest
 
 from stockcrewai.models.profile import CoverageLevel
@@ -17,10 +24,23 @@ from stockcrewai.reporting.renderer import (
     render_validated_report,
 )
 from stockcrewai.reporting.validator import validate_report_draft
+from tests.test_crew_configuration import (
+    VALID_REPORT_DRAFT,
+    RecordingCrew,
+    _valid_analysis_outputs,
+)
+from tests.test_main_flow import _flow_dependencies, _offline_flow_patches, _run_flow
 
 
 FACTOR_ARTIFACT_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 BACKTEST_ARTIFACT_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+_FLOW_UNSET = object()
+_FLOW_VERDICT = {
+    "status": "ready",
+    "overall_rating": "reasonable",
+    "risk_level": "medium",
+    "triggered_rules": [],
+}
 EXPECTED_QUANT_REPORT_FRAGMENTS = (
     "AAPL",
     "2/10",
@@ -135,6 +155,75 @@ def _contains_float(value: Any) -> bool:
     if isinstance(value, (list, tuple)):
         return any(_contains_float(child) for child in value)
     return False
+
+
+def _new_flow(*, quant_packet: Any = _FLOW_UNSET):
+    from stockcrewai.flow import ResearchFlow
+
+    parser_result, dependencies = _flow_dependencies()
+    flow_kwargs = {
+        **dependencies,
+        "analysis_crew": RecordingCrew(task_raws=_valid_analysis_outputs()),
+        "report_crew": RecordingCrew(VALID_REPORT_DRAFT),
+    }
+    if quant_packet is not _FLOW_UNSET:
+        flow_kwargs["quant_packet"] = quant_packet
+    return parser_result, ResearchFlow(**flow_kwargs)
+
+
+def _run_quant_flow(*, quant_packet: Any = _FLOW_UNSET):
+    import stockcrewai.pipeline_support as pipeline_support
+    import stockcrewai.flow as flow_module
+
+    parser_result, flow = _new_flow(quant_packet=quant_packet)
+    captured_context_kwargs: dict[str, Any] = {}
+    verdict_call = None
+    original_build_report_context = flow_module.build_report_context
+
+    def capture_report_context(**kwargs: Any) -> dict[str, Any]:
+        captured_context_kwargs.update(kwargs)
+        return original_build_report_context(**kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(_offline_flow_patches(parser_result))
+        verdict_call = stack.enter_context(
+            patch.object(
+                pipeline_support,
+                "_deterministic_verdict",
+                return_value=_FLOW_VERDICT,
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                flow_module,
+                "build_report_context",
+                side_effect=capture_report_context,
+            )
+        )
+        result = _run_flow(flow)
+
+    assert verdict_call is not None
+    return result, flow, captured_context_kwargs, verdict_call.call_args.kwargs
+
+
+def _nested_mapping_keys(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {
+            nested
+            for child in value.values()
+            for nested in _nested_mapping_keys(child)
+        }
+    if isinstance(value, list):
+        return {nested for child in value for nested in _nested_mapping_keys(child)}
+    return set()
+
+
+def _png_uris(report: str) -> list[str]:
+    return re.findall(r"data:image/png;base64,[A-Za-z0-9+/=]+", report)
+
+
+def _png_files(root: Path) -> set[Path]:
+    return {path.resolve() for path in root.rglob("*.png")}
 
 
 def _quant_section(report: str) -> str:
@@ -309,3 +398,123 @@ def test_omitting_quant_packet_preserves_legacy_context_and_report() -> None:
         report_draft=build_deterministic_report_draft(),
     )
     assert "## 量化旁证" not in report
+
+
+def test_flow_keeps_quant_packet_private_and_state_json_safe(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    _, flow = _new_flow(quant_packet=quant_packet)
+
+    assert flow._quant_packet is quant_packet
+    state_payload = flow.state.model_dump(mode="json")
+    assert state_payload["quant"] == {}
+    assert "quant_packet" not in state_payload
+    json.dumps(state_payload, ensure_ascii=False, allow_nan=False)
+
+
+def test_flow_injects_valid_quant_packet_before_report(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    result, _, context_kwargs, _ = _run_quant_flow(quant_packet=quant_packet)
+
+    assert result["status"] == "ok"
+    assert result["required_data"] == []
+    assert context_kwargs["quant_packet"] is quant_packet
+    assert result["quant"] == {
+        "status": "available",
+        "reason_code": "quant_packet_validated",
+        "packet": quant_packet.model_dump(mode="json"),
+    }
+    assert "## 量化旁证" in result["report"]
+    assert result["report"].count("data:image/png;base64,") == 3
+    json.dumps(result, ensure_ascii=False, allow_nan=False)
+
+
+def test_flow_missing_quant_packet_is_typed_unavailable_without_blocking() -> None:
+    result, _, context_kwargs, _ = _run_quant_flow()
+
+    assert result["status"] == "ok"
+    assert result["stage"] == "report"
+    assert result["required_data"] == []
+    assert context_kwargs["quant_packet"] is None
+    assert result["quant"] == {
+        "status": "unavailable",
+        "reason_code": "quant_packet_missing",
+        "packet": None,
+    }
+    assert "## 量化旁证" in result["report"]
+    assert "quant_packet_missing" in result["report"]
+
+
+def test_flow_invalid_quant_packet_is_typed_unavailable_without_blocking() -> None:
+    invalid_packet = {"coverage": "not-a-coverage"}
+    result, _, context_kwargs, _ = _run_quant_flow(quant_packet=invalid_packet)
+
+    assert result["status"] == "ok"
+    assert result["stage"] == "report"
+    assert result["required_data"] == []
+    assert context_kwargs["quant_packet"] == invalid_packet
+    assert result["quant"] == {
+        "status": "unavailable",
+        "reason_code": "quant_packet_invalid",
+        "packet": None,
+    }
+    assert "## 量化旁证" in result["report"]
+    assert "quant_packet_invalid" in result["report"]
+
+
+def test_flow_partial_or_evidence_only_quant_does_not_block_report(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    for coverage in (CoverageLevel.PARTIAL, CoverageLevel.EVIDENCE_ONLY):
+        packet = quant_packet.model_copy(deep=True, update={"coverage": coverage})
+        result, _, _, _ = _run_quant_flow(quant_packet=packet)
+
+        assert result["status"] == "ok"
+        assert result["stage"] == "report"
+        assert result["required_data"] == []
+        assert result["quant"]["status"] == "available"
+        assert result["quant"]["packet"]["coverage"] == coverage.value
+        assert "## 量化旁证" in result["report"]
+
+
+def test_flow_quant_sidecar_does_not_change_verdict_inputs_or_hash(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    without_quant, _, _, verdict_kwargs_without = _run_quant_flow()
+    with_quant, _, _, verdict_kwargs_with = _run_quant_flow(quant_packet=quant_packet)
+
+    assert _canonical_json_sha256(verdict_kwargs_without) == _canonical_json_sha256(
+        verdict_kwargs_with
+    )
+    assert _canonical_json_sha256(without_quant["verdict"]) == _canonical_json_sha256(
+        with_quant["verdict"]
+    )
+    assert not {"quant", "quant_packet"} & _nested_mapping_keys(verdict_kwargs_without)
+    assert not {"quant", "quant_packet"} & _nested_mapping_keys(verdict_kwargs_with)
+    assert "## 量化旁证" in with_quant["report"]
+    assert with_quant["report"].count("data:image/png;base64,") == 3
+
+
+def test_flow_quant_report_leaves_no_png_files_in_workspace(
+    quant_packet: QuantResearchPacket,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    repository_pngs_before = _png_files(repository_root)
+    tmp_pngs_before = _png_files(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result, _, _, _ = _run_quant_flow(quant_packet=quant_packet)
+
+    assert result["status"] == "ok"
+    uris = _png_uris(result["report"])
+    assert len(uris) == 3
+    for uri in uris:
+        payload = base64.b64decode(uri.split(",", 1)[1], validate=True)
+        assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+        with Image.open(BytesIO(payload)) as image:
+            image.verify()
+    assert _png_files(repository_root) == repository_pngs_before
+    assert _png_files(tmp_path) == tmp_pngs_before

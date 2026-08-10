@@ -219,6 +219,7 @@ class ResearchFlowState(BaseModel):
     analysis_attempts: int = 0
     analysis_diagnostics: dict[str, Any] = Field(default_factory=dict)
     verdict: dict[str, Any] | None = None
+    quant: dict[str, Any] = Field(default_factory=dict)
     report: Any = None
     status: str = "pending"
     stage: str = "request"
@@ -254,6 +255,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         "analysis_crew",
         "evidence_store",
         "report_crew",
+        "quant_packet",
         "market_price_data",
         "progress_callback",
     )
@@ -269,6 +271,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
     _analysis_crew: Any = PrivateAttr(default=None)
     _evidence_store: Any = PrivateAttr(default=None)
     _report_crew: Any = PrivateAttr(default=None)
+    _quant_packet: Any = PrivateAttr(default=None)
     _market_price_data: Any = PrivateAttr(default=None)
 
     _parser_result: Any = PrivateAttr(default=None)
@@ -1604,7 +1607,10 @@ class ResearchFlow(Flow[ResearchFlowState]):
             ttm=self.state.ttm,
             source_metadata=source_metadata,
             policy_context=self.state.policy_context,
+            quant_packet=self._quant_packet,
         )
+        quant_payload = _json_safe(report_context.get("quant", {}))
+        self.state.quant = quant_payload if isinstance(quant_payload, dict) else {}
         report_inputs = {"narrative_context": build_narrative_context(report_context)}
         self.state.verdict = _json_safe(verdict)
         draft_source = "agent"
