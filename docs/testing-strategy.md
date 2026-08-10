@@ -51,3 +51,32 @@ fixture 固定包含同一 Universe 在 `signal_as_of=T0` 的 score/snapshot、`
 - `selected_count` 必须是 `ceil(0.20 * eligible_count)` 且 eligible 为 0 时 typed unavailable；同分按 ASCII 排序，重复运行和输入重排 hash 不变。
 - 第一 period 必须从 CASH=1 计算换手；`turnover = 0.5 * sum(abs(target-previous))`、`cost_return = turnover*bps/10000`、`net = gross-cost` 必须与独立 Decimal 手算一致，基准成本恒为 0。
 - 统计 golden fixture 必须独立复核 CAGR、`ddof=1` 年化波动、零 risk-free Sharpe、回撤、excess CAGR、Spearman IC、Q1–Q5 和平均/年化 turnover；空样本、零波动、少于规定历史或常数 rank 输入必须返回 typed reason code 且无 NaN/Infinity。
+
+## WP09 QuantResearchPacket 报告旁证离线验收
+
+WP09 默认验收固定离线：不调用 SEC、Yahoo、DeepSeek、付费 API 或 VPN，不运行 live smoke。量化报告目标测试为 `tests/test_quant_packet.py`、`tests/test_quant_report_integration.py` 和 `tests/test_report_visuals.py`。
+
+回归和全量门禁统一使用 `UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync`：
+
+```bash
+# QuantResearchPacket / Report / visuals 回归
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_quant_packet.py tests/test_quant_report_integration.py tests/test_report_visuals.py
+# Flow / Report 回归
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_main_flow.py tests/test_flow_module.py tests/test_reporting_modules.py tests/test_crew_configuration.py
+# 全量离线门禁
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m unittest discover -s tests -p 'test_*.py'
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync python -m compileall -q src tests
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync ruff check src tests
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync mypy src/stockcrewai/models
+```
+
+`quant/services/pipelines/validators/reporting` 的扩展 mypy 需要单独处理第三方 stub/Python 目标问题，不属于 WP09 验收门禁。
+
+正式离线报告只写到 `/private/tmp` 下的临时目录，验收保留最终 Markdown；量化旁证三张图均以内嵌 `data:image/png;base64,` Data URI 形式存在，临时 PNG 在验收后删除，仓库不留下 PNG。
+
+量化旁证中的数字和 packet 字段文字直接来自已验证的 `QuantResearchPacket`，LLM 只解释旁证。packet 缺失或非法时返回 typed `status=unavailable` 及 reason code；合法 packet 的 `coverage=partial` 或 `coverage=evidence_only` 原样保留，不升级为 `full`。这些状态不阻断报告；缺失或不可用的数值不补零，也不生成假图。
+
+接入 Quant 前后，Deterministic Verdict 的输入和结果都必须保持相同的 canonical hash；Quant 不进入 Verdict 输入、计算或结果。
+
+验收在且仅在以下条件同时满足时停止：报告 `status=ok`、`stage=report`；三张量化 PNG 均可解码；接入前后 Verdict canonical hash 一致；工作树无运行垃圾。
