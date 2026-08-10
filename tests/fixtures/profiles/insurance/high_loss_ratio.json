@@ -1,0 +1,208 @@
+{
+  "fixture_version": "wp11-s04-insurance-profile-v1-high-loss-ratio",
+  "synthetic": true,
+  "source_note": "Offline deterministic synthetic insurance data; loss and combined ratios above 1.0 are valid economic values and must not be clipped.",
+  "profile_input": {
+    "profile_version": "insurance-profile:v1",
+    "issuer_profile": "insurance",
+    "security_profile": "common_stock",
+    "reporting_profile": "domestic_us_gaap",
+    "coverage_level": "full",
+    "policy_version": "metric-policy:insurance:v1",
+    "as_of": "2026-03-02T21:00:00Z",
+    "metric_inputs": {
+      "incurred_losses": "ev_ins_losses",
+      "underwriting_expenses": "ev_ins_expenses",
+      "earned_premiums": "ev_ins_premiums",
+      "net_income": "ev_ins_net_income",
+      "average_equity": "ev_ins_average_equity",
+      "common_equity": "ev_ins_common_equity",
+      "diluted_weighted_average_shares": "ev_ins_shares",
+      "investment_income": "ev_ins_investment_income",
+      "solvency_ratio": "ev_ins_solvency",
+      "diluted_eps": "ev_ins_eps"
+    }
+  },
+  "evidence_records": [
+    {
+      "evidence_id": "ev_ins_losses",
+      "source_reference": "fixture:insurance/high-loss-ratio/incurred-losses",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "1100",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_expenses",
+      "source_reference": "fixture:insurance/high-loss-ratio/underwriting-expenses",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "300",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_premiums",
+      "source_reference": "fixture:insurance/high-loss-ratio/earned-premiums",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "1000",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_net_income",
+      "source_reference": "fixture:insurance/high-loss-ratio/net-income",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "100",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_average_equity",
+      "source_reference": "fixture:insurance/high-loss-ratio/average-equity",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "1000",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_common_equity",
+      "source_reference": "fixture:insurance/high-loss-ratio/common-equity",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "1000",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_shares",
+      "source_reference": "fixture:insurance/high-loss-ratio/diluted-shares",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "shares",
+      "currency": "N/A",
+      "value": "100",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_investment_income",
+      "source_reference": "fixture:insurance/high-loss-ratio/investment-income",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "150",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_solvency",
+      "source_reference": "fixture:insurance/high-loss-ratio/solvency-ratio",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "ratio",
+      "currency": "N/A",
+      "value": "1.8",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_ins_eps",
+      "source_reference": "fixture:insurance/high-loss-ratio/diluted-eps",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD",
+      "currency": "USD",
+      "value": "5",
+      "validation_status": "valid"
+    }
+  ],
+  "market_price_records": [
+    {
+      "evidence_id": "ev_ins_market_price",
+      "ticker": "INS",
+      "price": "50",
+      "currency": "USD",
+      "price_timestamp": "2026-03-02T20:00:00Z",
+      "source_reference": "fixture:insurance/high-loss-ratio/market-price",
+      "adjustment_basis": "raw",
+      "validation_status": "valid"
+    }
+  ],
+  "expected": {
+    "profile_version": "insurance-profile:v1",
+    "policy_version": "metric-policy:insurance:v1",
+    "metric_ids": [
+      "loss_ratio",
+      "expense_ratio",
+      "combined_ratio",
+      "insurance_roe",
+      "book_value_per_share",
+      "investment_income",
+      "solvency_ratio",
+      "price_to_book",
+      "pe_ratio",
+      "fcf_yield"
+    ],
+    "values": {
+      "loss_ratio": "1.1",
+      "expense_ratio": "0.3",
+      "combined_ratio": "1.4",
+      "insurance_roe": "0.1",
+      "book_value_per_share": "10",
+      "investment_income": "150",
+      "solvency_ratio": "1.8",
+      "price_to_book": "5",
+      "pe_ratio": "10",
+      "fcf_yield": null
+    },
+    "decisions": {
+      "loss_ratio": {"status": "available", "blocking": false},
+      "expense_ratio": {"status": "available", "blocking": false},
+      "combined_ratio": {"status": "available", "blocking": false},
+      "insurance_roe": {"status": "available", "blocking": false},
+      "fcf_yield": {
+        "status": "not_applicable",
+        "reason_code": "insurance_fcf_not_applicable",
+        "blocking": false
+      }
+    },
+    "calculation_formula_ids": [
+      "insurance-loss-ratio-v1",
+      "insurance-expense-ratio-v1",
+      "insurance-combined-ratio-v1",
+      "insurance-roe-v1",
+      "insurance-book-value-per-share-v1",
+      "insurance-price-to-book-v1",
+      "insurance-pe-ratio-v1"
+    ]
+  }
+}
