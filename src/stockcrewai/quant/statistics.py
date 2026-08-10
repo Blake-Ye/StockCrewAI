@@ -17,7 +17,7 @@ TOLERANCE = Decimal("1e-12")
 _DECIMAL_CONTEXT_PRECISION = 28
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
-_PERIODS_PER_YEAR = Decimal(PERIODS_PER_YEAR)
+_PERIODS_PER_YEAR: Decimal = Decimal(PERIODS_PER_YEAR)
 
 StatisticStatus: TypeAlias = Literal["available", "unavailable", "invalid"]
 
@@ -319,13 +319,20 @@ def _rank_correlation(
     return_mean = _decimal_mean(tuple(return_ranks[key] for key in keys))
     with localcontext() as context:
         context.prec = _DECIMAL_CONTEXT_PRECISION
-        score_variance = sum((score_ranks[key] - score_mean) ** 2 for key in keys)
-        return_variance = sum((return_ranks[key] - return_mean) ** 2 for key in keys)
+        score_variance = sum(
+            ((score_ranks[key] - score_mean) ** 2 for key in keys), _ZERO
+        )
+        return_variance = sum(
+            ((return_ranks[key] - return_mean) ** 2 for key in keys), _ZERO
+        )
         if score_variance == _ZERO or return_variance == _ZERO:
             return None
         covariance = sum(
-            (score_ranks[key] - score_mean) * (return_ranks[key] - return_mean)
-            for key in keys
+            (
+                (score_ranks[key] - score_mean) * (return_ranks[key] - return_mean)
+                for key in keys
+            ),
+            _ZERO,
         )
         result = covariance / (score_variance * return_variance).sqrt()
     return result if result.is_finite() else None
@@ -376,10 +383,10 @@ def aggregate_spearman_ic(
         return _unavailable("no_complete_periods")
     with localcontext() as context:
         context.prec = _DECIMAL_CONTEXT_PRECISION
-        result = sum(available, _ZERO) / Decimal(len(available))
-    if not result.is_finite():
+        aggregated_ic = sum(available, _ZERO) / Decimal(len(available))
+    if not aggregated_ic.is_finite():
         return _invalid("invalid_result")
-    return _result(result, "available", "computed")
+    return _result(aggregated_ic, "available", "computed")
 
 
 def _quintile_states(reason_code: str) -> dict[str, StatisticResult]:
