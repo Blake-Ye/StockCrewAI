@@ -1,0 +1,82 @@
+{
+  "protocol": {
+    "strategy_version": "quant-walk-forward-fixture-v1",
+    "backtest_version": "quant-backtest-v1",
+    "artifact_schema_version": "quant-backtest-artifact-v1",
+    "periods_per_year": 12,
+    "conversion_version": "decimal-to-float64-v1",
+    "tolerance": "1e-12"
+  },
+  "universe": {
+    "universe_id": "fixture-universe-50-v1",
+    "tickers": [
+      "T00", "T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09",
+      "T10", "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19",
+      "T20", "T21", "T22", "T23", "T24", "T25", "T26", "T27", "T28", "T29",
+      "T30", "T31", "T32", "T33", "T34", "T35", "T36", "T37", "T38", "T39",
+      "T40", "T41", "T42", "T43", "T44", "T45", "T46", "T47", "T48", "T49"
+    ],
+    "selection_as_of": "2019-12-31T00:00:00+00:00",
+    "membership_source": "fixture:fixed-universe",
+    "membership_basis": "offline-deterministic-membership",
+    "known_biases": ["survivorship_bias_known"],
+    "manifest_version": "fixture-universe-manifest-v1"
+  },
+  "snapshots": [
+    {
+      "snapshot_id_prefix": "baseline",
+      "as_of": "2019-12-31T00:00:00+00:00",
+      "filing_cutoff": "2019-12-30T00:00:00+00:00",
+      "price_cutoff": "2019-12-30T00:00:00+00:00",
+      "score_version": "composite-ranking-v1",
+      "high_tickers": [
+        "T00", "T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09"
+      ],
+      "high_score": "100",
+      "low_score": "1"
+    },
+    {
+      "snapshot_id_prefix": "future-reversal",
+      "as_of": "2020-02-01T00:00:00+00:00",
+      "filing_cutoff": "2020-01-31T00:00:00+00:00",
+      "price_cutoff": "2020-01-31T00:00:00+00:00",
+      "score_version": "composite-ranking-v1",
+      "high_tickers": [
+        "T40", "T41", "T42", "T43", "T44", "T45", "T46", "T47", "T48", "T49"
+      ],
+      "high_score": "100",
+      "low_score": "1"
+    }
+  ],
+  "periods": {
+    "start_trade_date": "2020-02-03",
+    "count": 61
+  },
+  "levels": {
+    "initial": "100",
+    "monthly_returns": {
+      "SPY": "0.01",
+      "default": "0.005",
+      "T00": "0.02",
+      "T01": "0.02",
+      "T02": "0.02",
+      "T03": "0.02",
+      "T04": "0.02",
+      "T05": "0.02",
+      "T06": "0.02",
+      "T07": "0.02",
+      "T08": "0.02",
+      "T09": "0.02",
+      "T40": "0.015",
+      "T41": "0.015",
+      "T42": "0.015",
+      "T43": "0.015",
+      "T44": "0.015",
+      "T45": "0.015",
+      "T46": "0.015",
+      "T47": "0.015",
+      "T48": "0.015",
+      "T49": "0.015"
+    }
+  }
+}
