@@ -88,3 +88,9 @@
 ### 5.5 数值边界与复核
 
 线性比率和加减法全程使用 `Decimal`。CAGR 使用 Decimal 的 `ln`/`exp` 在固定局部精度 28 下计算：`exp(ln(current / base) / 3) - 1`；不得把财务原值先转 float。winsor 分位数和 mid-rank 可在 NumPy `float64` 边界执行，转换前后必须保留 raw Decimal，转换回 Decimal 时使用字符串表示并接受绝对误差 `1e-12`。测试必须使用独立手算 Decimal fixture，比较容差为 `1e-12`；不通过时失败而不是放宽容差。
+
+### 5.6 Composite score 与排名（composite-ranking-v1）
+
+S05 只接受已经完成行业内标准化的 `FactorObservation`。在相同 `(as_of, peer_group)` 内按 ticker 汇总；每个 ticker 的 composite score 是其 `status="available"` 且 `normalized_value` 非空因子的等权算术平均。不可用或不适用因子不进入分子或分母，也不能把缺失当作 0；如果一个 ticker 没有任何可用因子，返回 `status="unavailable"`、`reason_code="no_available_factors"`，不参加排名。
+
+排名输出必须带 `composite_version="composite-ranking-v1"`、ticker、as_of、peer_group、score、available_factor_count、factor_ids、status、reason_code。每个 `(as_of, peer_group)` 内按 `score` 降序，score 完全相同时按 ticker 的 ASCII 升序排序并分配唯一的 ordinal rank（不使用不稳定的并列顺序）。输入 observation 顺序不得影响 score、rank、输出 JSON 或 hash；不得跨行业、Profile 或 as_of 排名。所有 Decimal 平均值保持 Decimal，显示或序列化前不提前舍入。
