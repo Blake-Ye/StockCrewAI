@@ -663,7 +663,16 @@ def _render_report_from_context(
     sections: list[str] = ["# 投资研究报告", ""]
     for field, heading in _REPORT_SECTIONS:
         if field == "key_risks" and quant_present:
-            sections.extend(("## 量化旁证", "", _quant_evidence_markdown(context_payload.get("quant")), ""))
+            sections.extend(
+                ("## 量化旁证", "", _quant_evidence_markdown(context_payload.get("quant")), "")
+            )
+            for key, alt in (
+                ("quant_factor_percentile", "行业百分位（目标与同行）"),
+                ("quant_cagr_comparison", "策略与基准 CAGR 对比"),
+                ("quant_drawdown_comparison", "策略与基准最大回撤对比"),
+            ):
+                if chart := _visual_markdown(visuals, key, alt):
+                    sections.extend((chart, ""))
         sections.extend((f"## {heading}", ""))
         if field == "execution_summary":
             sections.extend(

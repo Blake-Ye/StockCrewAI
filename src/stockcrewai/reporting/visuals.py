@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import os
@@ -20,6 +21,7 @@ import matplotlib  # noqa: E402
 matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib import font_manager  # noqa: E402
+from matplotlib.ticker import PercentFormatter  # noqa: E402
 
 
 def _configure_cjk_font() -> None:
@@ -45,6 +47,9 @@ _configure_cjk_font()
 
 
 _PNG_PREFIX = "data:image/png;base64,"
+_PNG_OUTPUT_PATH: ContextVar[Path | None] = ContextVar(
+    "stockcrewai_png_output_path", default=None
+)
 _FINANCIAL_KPI_IDS = (
     "revenue_growth",
     "operating_margin",
@@ -179,9 +184,26 @@ def _png_uri(draw: Callable[[Any], None], *, size: tuple[float, float]) -> str:
             bbox_inches="tight",
             metadata={"Software": "StockCrewAI"},
         )
-        return _PNG_PREFIX + base64.b64encode(buffer.getvalue()).decode("ascii")
+        payload = buffer.getvalue()
+        if output_path := _PNG_OUTPUT_PATH.get():
+            output_path.write_bytes(payload)
+        return _PNG_PREFIX + base64.b64encode(payload).decode("ascii")
     finally:
         plt.close(figure)
+
+
+def _render_to_output_dir(
+    key: str,
+    output_dir: Path | None,
+    renderer: Callable[[], str | None],
+) -> str | None:
+    if output_dir is None:
+        return renderer()
+    token = _PNG_OUTPUT_PATH.set(output_dir / f"{key}.png")
+    try:
+        return renderer()
+    finally:
+        _PNG_OUTPUT_PATH.reset(token)
 
 
 def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
@@ -338,6 +360,179 @@ def _historical_pe_png(payload: Mapping[str, Any]) -> str | None:
     return _png_uri(draw, size=(8.0, 4.2))
 
 
+def _quant_decimal(value: Any) -> Decimal | None:
+    """严格解析量化 JSON 数字，拒绝浮点、布尔和非有限值。"""
+    if isinstance(value, Decimal):
+        result = value
+    elif isinstance(value, int) and not isinstance(value, bool):
+        result = Decimal(value)
+    elif isinstance(value, str) and value.strip():
+        try:
+            result = Decimal(value.strip())
+        except (InvalidOperation, ValueError):
+            return None
+    else:
+        return None
+    return result if result.is_finite() else None
+
+
+def _quant_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    label = value.strip()
+    return label or None
+
+
+def _quant_axis_limits(
+    values: Sequence[float], *, base_limits: tuple[float, float] | None = None
+) -> tuple[float, float]:
+    lower = min(0.0, min(values))
+    upper = max(0.0, max(values))
+    if base_limits is not None:
+        lower = min(lower, base_limits[0])
+        upper = max(upper, base_limits[1])
+    span = upper - lower
+    padding = max(span * 0.10, 0.05)
+    return lower - padding, upper + padding
+
+
+def _quant_factor_png(packet: Mapping[str, Any]) -> str | None:
+    ranking = packet.get("ranking_summary")
+    if not isinstance(ranking, Mapping):
+        return None
+    percentile = _quant_decimal(ranking.get("industry_percentile"))
+    target_ticker = _quant_label(ranking.get("target_ticker"))
+    peer_group = _quant_label(ranking.get("peer_group"))
+    if (
+        percentile is None
+        or percentile < Decimal("0")
+        or percentile > Decimal("1")
+        or target_ticker is None
+        or peer_group is None
+    ):
+        return None
+
+    def draw(axes: Any) -> None:
+        percentile_value = float(percentile)
+        axes.barh([0], [percentile_value], color="#3568a8", height=0.48)
+        axes.set_yticks([0])
+        axes.set_yticklabels([target_ticker])
+        axes.set_xlim(
+            *_quant_axis_limits([percentile_value], base_limits=(0.0, 1.0))
+        )
+        axes.set_xticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        axes.xaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
+        axes.set_xlabel("行业分位（百分比）")
+        axes.set_title(f"行业百分位（{peer_group}）", pad=14, wrap=True)
+        axes.grid(axis="x", alpha=0.25)
+        for label in axes.get_yticklabels():
+            label.set_wrap(True)
+        axes.title.set_wrap(True)
+        label_x = percentile_value - 0.02 if percentile_value > 0.85 else percentile_value + 0.02
+        axes.text(
+            label_x,
+            0,
+            f"{percentile_value:.2%}",
+            ha="right" if percentile_value > 0.85 else "left",
+            va="center",
+            fontsize=9,
+        )
+        axes.figure.subplots_adjust(left=0.36, right=0.97, bottom=0.22, top=0.78)
+
+    return _png_uri(draw, size=(9.0, 5.0))
+
+
+def _quant_comparison_png(
+    values: Sequence[tuple[str, Decimal]], *, title: str, color: str
+) -> str:
+    def draw(axes: Any) -> None:
+        numeric_values = [float(value) for _, value in values]
+        bars = axes.bar(
+            [label for label, _ in values],
+            numeric_values,
+            color=color,
+            width=0.58,
+        )
+        axes.set_ylim(*_quant_axis_limits(numeric_values))
+        axes.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
+        axes.set_ylabel("百分比")
+        axes.set_title(title)
+        axes.axhline(0, color="#555555", linewidth=0.8)
+        axes.grid(axis="y", alpha=0.25)
+        span = max(axes.get_ylim()[1] - axes.get_ylim()[0], 1.0)
+        offset = span * 0.02
+        for bar, value in zip(bars, numeric_values):
+            positive = value >= 0
+            axes.text(
+                bar.get_x() + bar.get_width() / 2,
+                value + offset if positive else value - offset,
+                f"{value:.2%}",
+                ha="center",
+                va="bottom" if positive else "top",
+                fontsize=9,
+            )
+        axes.figure.subplots_adjust(left=0.13, right=0.97, bottom=0.20, top=0.84)
+
+    return _png_uri(draw, size=(9.0, 5.0))
+
+
+def _quant_cagr_png(packet: Mapping[str, Any]) -> str | None:
+    backtest = packet.get("backtest_summary")
+    benchmark = packet.get("benchmark_summary")
+    if not isinstance(backtest, Mapping) or not isinstance(benchmark, Mapping):
+        return None
+    if backtest.get("strategy_cagr_status") != "available":
+        return None
+    decimals = [
+        _quant_decimal(backtest.get("strategy_cagr")),
+        _quant_decimal(benchmark.get("spy_cagr")),
+        _quant_decimal(benchmark.get("universe_cagr")),
+    ]
+    if any(value is None for value in decimals):
+        return None
+    return _quant_comparison_png(
+        tuple(
+            zip(
+                ("策略", "SPY", "Universe"),
+                (value for value in decimals if value is not None),
+            )
+        ),
+        title="策略与基准 CAGR 对比",
+        color="#4c956c",
+    )
+
+
+def _quant_drawdown_png(packet: Mapping[str, Any]) -> str | None:
+    backtest = packet.get("backtest_summary")
+    benchmark = packet.get("benchmark_summary")
+    if not isinstance(backtest, Mapping) or not isinstance(benchmark, Mapping):
+        return None
+    if backtest.get("strategy_max_drawdown_status") != "available":
+        return None
+    decimals = [
+        _quant_decimal(backtest.get("strategy_max_drawdown")),
+        _quant_decimal(benchmark.get("spy_max_drawdown")),
+        _quant_decimal(benchmark.get("universe_max_drawdown")),
+    ]
+    if any(
+        value is None
+        or value < Decimal("-1")
+        or value > Decimal("0")
+        for value in decimals
+    ):
+        return None
+    return _quant_comparison_png(
+        tuple(
+            zip(
+                ("策略", "SPY", "Universe"),
+                (value for value in decimals if value is not None),
+            )
+        ),
+        title="策略与基准最大回撤对比",
+        color="#b91c1c",
+    )
+
+
 def build_report_visuals(
     financial_metrics: Any = None,
     ttm_metrics: Any = None,
@@ -347,6 +542,7 @@ def build_report_visuals(
     ttm: Any = None,
     historical_valuation: Mapping[str, Any] | None = None,
     context: Mapping[str, Any] | None = None,
+    output_dir: str | Path | None = None,
 ) -> dict[str, str]:
     """从已验证的确定性输入生成内嵌 PNG；缺一图输入只省略该图。"""
     if context is not None:
@@ -358,6 +554,9 @@ def build_report_visuals(
     historical_payload = (
         historical_valuation if historical_payload is None else historical_payload
     )
+    output_path = Path(output_dir) if output_dir is not None else None
+    if output_path is not None:
+        output_path.mkdir(parents=True, exist_ok=True)
 
     financial_records = {
         metric_id: record
@@ -373,14 +572,50 @@ def build_report_visuals(
     }
     visuals: dict[str, str] = {}
     if len(financial_records) == len(_FINANCIAL_KPI_IDS):
-        if (uri := _financial_kpi_png(financial_records)) is not None:
+        if (
+            uri := _render_to_output_dir(
+                "financial_kpis",
+                output_path,
+                lambda: _financial_kpi_png(financial_records),
+            )
+        ) is not None:
             visuals["financial_kpis"] = uri
     if len(ttm_records) == len(_TTM_IDS):
-        if (uri := _ttm_png(ttm_records)) is not None:
+        if (
+            uri := _render_to_output_dir(
+                "ttm_scale",
+                output_path,
+                lambda: _ttm_png(ttm_records),
+            )
+        ) is not None:
             visuals["ttm_scale"] = uri
     if isinstance(historical_payload, Mapping):
-        if (uri := _historical_pe_png(historical_payload)) is not None:
+        if (
+            uri := _render_to_output_dir(
+                "historical_pe",
+                output_path,
+                lambda: _historical_pe_png(historical_payload),
+            )
+        ) is not None:
             visuals["historical_pe"] = uri
+    quant_wrapper = context.get("quant") if isinstance(context, Mapping) else None
+    if isinstance(quant_wrapper, Mapping) and quant_wrapper.get("status") == "available":
+        quant_packet = quant_wrapper.get("packet")
+        if isinstance(quant_packet, Mapping):
+            quant_renderers = (
+                ("quant_factor_percentile", _quant_factor_png),
+                ("quant_cagr_comparison", _quant_cagr_png),
+                ("quant_drawdown_comparison", _quant_drawdown_png),
+            )
+            for key, renderer in quant_renderers:
+                if (
+                    uri := _render_to_output_dir(
+                        key,
+                        output_path,
+                        lambda renderer=renderer: renderer(quant_packet),
+                    )
+                ) is not None:
+                    visuals[key] = uri
     return visuals
 
 
