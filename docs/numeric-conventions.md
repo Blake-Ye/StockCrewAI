@@ -94,3 +94,62 @@
 S05 只接受已经完成行业内标准化的 `FactorObservation`。在相同 `(as_of, peer_group)` 内按 ticker 汇总；每个 ticker 的 composite score 是其 `status="available"` 且 `normalized_value` 非空因子的等权算术平均。不可用或不适用因子不进入分子或分母，也不能把缺失当作 0；如果一个 ticker 没有任何可用因子，返回 `status="unavailable"`、`reason_code="no_available_factors"`，不参加排名。
 
 排名输出必须带 `composite_version="composite-ranking-v1"`、ticker、as_of、peer_group、score、available_factor_count、factor_ids、status、reason_code。每个 `(as_of, peer_group)` 内按 `score` 降序，score 完全相同时按 ticker 的 ASCII 升序排序并分配唯一的 ordinal rank（不使用不稳定的并列顺序）。输入 observation 顺序不得影响 score、rank、输出 JSON 或 hash；不得跨行业、Profile 或 as_of 排名。所有 Decimal 平均值保持 Decimal，显示或序列化前不提前舍入。
+
+## 6. WP08 回测协议（walk-forward-backtest-v1）
+
+本节是 WP08 回测的唯一数值和时间协议。实现不得把下列常量、排序、缺失处理或统计定义暴露为可调参数；Agent、Report 或外部数据都不能修改它们。
+
+### 6.1 固定 Universe 与时间轴
+
+- 每次回测使用一个不可变的 `UniverseManifest`，成员数必须为 **50–100（含边界）**；每个成员必须是美国普通股（`security_profile=common_stock`），不得包含 ETF、基金、ADR 或其他证券结构。回测期间不重建、不按未来市值换入换出成员。
+- 协议字段为 `membership_as_of`、`membership_source`、`known_biases`。当前共享 Pydantic 模型的 `selection_as_of` 是 `membership_as_of` 的既有字段名；WP08 只能使用这一日期，不得再引入第二个成员日期。
+- `membership_source` 必须是非空、可追溯的 manifest/数据源引用；`known_biases` 必须是去重后的非空字符串列表，并且必须包含精确值 `survivorship_bias_known`。不得声称该固定股票池消除了幸存者偏差。
+- 回测月度锚点固定为每个自然月最后一个 XNYS session；至少覆盖 60 个自然月。对每个锚点，在所有可用 snapshot 日期中取不晚于该锚点的最后一个**共享** `as_of`，记为 `signal_as_of`。不得为不同 ticker 选择不同的更晚 snapshot；没有可用日期时该 period 为 `unavailable/no_signal_snapshot`。
+- `trade_date` 必须是严格晚于 `signal_as_of` 的下一 XNYS session，禁止 `trade_date == signal_as_of`、同日成交或使用 `previous` session。每个有收益的 period 还必须保存严格晚于 `trade_date` 的下一个月度 `trade_date`，记为 `next_trade_date`；末尾没有下一日期的 period 只保存终止状态，不进入收益统计。
+- 选股只能读取 `signal_as_of` 及之前的 `PointInTimeSnapshot`、`FactorObservation` 和 `CompositeScore`；每个使用的 snapshot 的 `as_of`、`filing_cutoff`、`price_cutoff` 都不得晚于 `signal_as_of`。`trade_date` 之后的价格和收益只能作为结果，不得进入 score、rank、selected tickers 或权重。
+- 个股和 SPY 均使用同一日期的已验证 `total_return_adjusted` level；period 收益固定为 `level(next_trade_date) / level(trade_date) - 1`，不计算 signal 日到 trade 日的收益，不使用同日未来收益。
+
+### 6.2 排名、Top 20% 与目标权重
+
+- `score_version` 固定为 `composite-ranking-v1`。`eligible_count` 只统计在同一个 `signal_as_of` 有有限 `score` 且 `status="available"` 的成员。
+- 先按 composite score 降序，再按 ticker 的 ASCII 升序稳定排序；完全同分也必须使用该 ticker 次序，禁止随机、哈希顺序或输入顺序。当 `eligible_count>=1` 时，`selected_count = ceil(Decimal("0.20") * eligible_count)` 且至少为 1；当 `eligible_count=0` 时不伪造选股，period 为 `unavailable/no_eligible_scores`。
+- 正常 period 的 `target_weights` 必须包含所有 Universe ticker 和保留键 `CASH`。在固定 Decimal precision=28 下先令 `base_weight = Decimal("1") / selected_count`；按 score/ASCII 次序保存 selected tickers，除最后一只外均为 `base_weight`，最后一只为 `Decimal("1") - base_weight * (selected_count - 1)`，以吸收有限 Decimal 表示残差。未入选 ticker 和 `CASH` 均为 `Decimal("0")`，权重和必须精确等于 `Decimal("1")`；该残差规则是等权的唯一序列化规则。
+- 第一 period 的 `previous_weights` 固定为所有 ticker 为 `Decimal("0")`、`CASH=Decimal("1")`，现金不产生收益。之后的 `previous_weights` 是前一 period 的 target weights，始终包含 CASH；不得省略现金或把缺失收益补成现金收益。没有 target weights 的 unavailable period 不更新上一份有效 target weights。
+
+### 6.3 换手与交易成本
+
+对每个有 target weights 的 period 固定使用：
+
+```text
+turnover = Decimal("0.5") * sum(abs(target_weight - previous_weight))
+gross_return = sum(target_weight[ticker] * return[ticker] for ticker in selected_tickers)
+cost_return = turnover * round_trip_cost_bps / Decimal("10000")
+net_return = gross_return - cost_return
+```
+
+`round_trip_cost_bps` 是买卖双边合计成本，不是单边成本；基准值固定为 `10` bps。成本敏感性只运行 `[0, 5, 10, 20]` bps，四次运行复用完全相同的 signal、selected tickers、weights 和 gross returns，不做参数搜索。策略 cost 只从策略 gross return 扣除，SPY 和 Universe 等权基准不扣策略 cost。权重已知但下一期收益缺失时，turnover 和 cost_return 仍可保存；gross/net 按 6.4 返回 typed unavailable。
+
+### 6.4 缺失收益与基准
+
+- 不得用 0、前值、后值或任何未来值填补 missing return。任一策略持仓 ticker，或任一 benchmark 成分，在 `trade_date → next_trade_date` 缺少有效 total-return level/return 时，该 period 的 `gross_return`、`net_return` 和两条 `benchmark_return` 均必须为 `status="unavailable"`，并带 `reason_code="missing_next_period_return"`；不得写 NaN。
+- 每个 period 保存 `coverage`（required count、available count、`ratio=Decimal(available_count)/required_count`）和按 ASCII 排序的 `missing_return_ids`。策略 coverage 的 required 成分是 target weight 非零的 ticker；Universe 等权 benchmark 的 required 成分是全部固定 ticker；SPY 的 required 成分是 `SPY`。缺少记录时 ID 固定为 `ticker@trade_date->next_trade_date`，已有源记录 ID 另存于 provenance，不得用空列表掩盖缺失。
+- 回测 benchmark 固定为两条：`SPY_total_return` 和同一固定 Universe 的月度等权总收益。两者必须使用策略完全相同的 `trade_date`、`next_trade_date` 和 complete-period 过滤；不得各自选择日期或 nearest date。Universe 等权收益为全部 N 个成员下一期收益的等权平均，SPY 为 SPY total-return level 的端点比值；两者均不扣策略成本。
+- `complete period` 要求策略持仓、SPY、Universe 等权三条序列的 required returns 全部 available。所有统计只使用 complete periods；任何被排除的 period 仍保留其 coverage 和 missing IDs，不能静默删除。`complete_period_count=0` 时所有依赖收益的统计均为 `unavailable/no_complete_periods`。
+
+### 6.5 统计定义（`periods_per_year=12`）
+
+统计主序列是 baseline `10` bps 的 `net_return`；同时保存 gross、SPY 和 Universe 等权序列。所有收益、权重、turnover、cost 和累计财富在统计库边界前均为有限 `Decimal`。
+
+- 令 complete period 数为 `n`、月收益为 `r_i`。CAGR/annualized return 固定为 `(Π(1+r_i)) ** (12/n) - 1`；`n < 12` 返回 `insufficient_history`，累计增长因子非正返回 `invalid_return_factor`。`net_minus_benchmark_excess_cagr` 对每条 benchmark 固定为 `CAGR(net) - CAGR(benchmark)`，使用相同 complete periods。
+- Annualized volatility 固定为 `sample_std(r_i, ddof=1) * sqrt(12)`；`n < 2` 返回 `insufficient_history`。样本标准差为零时 volatility 可保存有限值 `0` 并带 `zero_volatility`，Sharpe 必须为 `unavailable/zero_volatility`。
+- Sharpe 版本固定为 `sharpe-zero-rf-period-v1`：每个 period 的 risk-free return 恒为 `Decimal("0")`，`Sharpe = mean(r_i - 0) / sample_std(r_i - 0, ddof=1) * sqrt(12)`；必须在结果中保存该版本。不得改用年化无风险率或外部利率。
+- Max drawdown 使用 `wealth_0=1`、`wealth_t=wealth_(t-1)*(1+r_t)`，`drawdown_t=wealth_t/max(wealth_0..wealth_t)-1`，取最小值；无 complete period 时返回 `no_complete_periods`，不产生 NaN。
+- IC 在每个 rebalance 用该 `signal_as_of` 的 score 与每个 eligible ticker 的下一期个股 total return 计算 Spearman；并列 rank 使用平均秩。少于 2 个有效 ticker 或 score/return rank 方差为零时，该 rebalance IC 为 `unavailable/insufficient_cross_section` 或 `unavailable/zero_rank_variance`，不得填 0。总 IC 是 complete rebalance 中可用 IC 的算术平均，不把不可用 period 纳入分母。
+- 五分位组合固定按同一 score/ASCII 顺序切成连续五组，rank `k` 的组号为 `min(5, floor((k-1)*5/eligible_count)+1)`；Q1 为最高分组，Q5 为最低分组。每组收益是组内个股下一期 total return 的等权平均，不扣成本；空组或成员收益缺失返回 typed unavailable，不填 0。保存每期 Q1–Q5 收益及其 complete-period 平均收益/CAGR。
+- 平均 turnover 固定为 complete periods 的算术平均；年化 turnover 固定为 `average_turnover * 12`。无 complete period 返回 `no_complete_periods`。所有零波动、空样本和历史不足都必须是显式 `status/reason_code/value=None`（或零波动定义允许的有限零值），绝不序列化 NaN/Infinity。
+
+### 6.6 Decimal 边界、来源和 period artifact
+
+- 只有进入统计库（NumPy/pandas 等）的序列才允许显式转换为 `float64`；转换协议固定为 `conversion_version="decimal-to-float64-v1"`、`tolerance=Decimal("1e-12")`。转换前保留 Decimal；统计结果立即恢复为有限 Decimal/typed outcome，误差超过 `1e-12` 必须失败而不是放宽容差。
+- 默认运行只读本地 fixture/artifact，不联网；不做参数搜索、自动调参或结果导向的 Universe/成本选择。Agent 只能解释已验证结果，不能选择 source、修改 score、权重、收益、成本、统计值或 reason code。
+- 每个 backtest period 必须保存：`signal_as_of`、`trade_date`、`next_trade_date`、`snapshot_ids`（ticker→snapshot ID）、`score_version`、`eligible_count`、`selected_tickers`、`previous_weights`、`target_weights`、`gross_return`、`net_return`、两条 `benchmark_return` 及其 status/reason_code、`turnover`、`round_trip_cost_bps`、`cost_return`、`coverage`、`missing_return_ids`。所有 ID、ticker、列表和映射使用稳定排序；不可用数值使用 `value=None`，不得用 0 代替。
