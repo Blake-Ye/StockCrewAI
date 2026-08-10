@@ -17,6 +17,9 @@ from stockcrewai.models.quant import PointInTimeSnapshot, QuantResearchPacket
 
 
 AS_OF = datetime(2026, 8, 10, tzinfo=timezone.utc)
+TARGET_TICKER = "AURX"
+FACTOR_ARTIFACT_SCHEMA_VERSION = "quant-factor-artifact-v1"
+BACKTEST_ARTIFACT_SCHEMA_VERSION = "quant-backtest-artifact-v1"
 INTEGRATION_FIXTURE = Path(__file__).parent / "fixtures" / "quant" / "integration" / "snapshots.json"
 BACKTEST_FIXTURE = Path(__file__).parent / "fixtures" / "quant" / "backtest" / "backtest.json"
 
@@ -150,6 +153,8 @@ def _packet_api() -> tuple[Any, Any]:
 def _build_packet(
     factor_artifact: Mapping[str, object] | None,
     backtest_artifact: Mapping[str, object] | None,
+    *,
+    ticker: str = TARGET_TICKER,
     **overrides: object,
 ) -> QuantResearchPacket:
     build_quant_research_packet, _ = _packet_api()
@@ -157,6 +162,7 @@ def _build_packet(
         factor_artifact,
         backtest_artifact,
         as_of=AS_OF,
+        ticker=ticker,
         **overrides,
     )
 
@@ -176,6 +182,37 @@ def _rehash(artifact: dict[str, Any]) -> None:
 
 def _decimal(value: object) -> Decimal:
     return Decimal(str(value))
+
+
+def _optional_decimal(value: object) -> Decimal | None:
+    return None if value is None else _decimal(value)
+
+
+def _target_ranking(
+    factor: Mapping[str, Any], ticker: str = TARGET_TICKER
+) -> Mapping[str, Any]:
+    matches = [item for item in factor["rankings"] if item["ticker"] == ticker]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _target_peer_count(factor: Mapping[str, Any], target: Mapping[str, Any]) -> int:
+    return sum(item["peer_group"] == target["peer_group"] for item in factor["rankings"])
+
+
+def _industry_percentile(rank: int, peer_count: int) -> Decimal:
+    # 冻结行业百分位：rank=1 为 1，rank=n 为 0；n=1 时为 1。
+    if peer_count == 1:
+        return Decimal("1")
+    return Decimal(peer_count - rank) / Decimal(peer_count - 1)
+
+
+def _typed_metric_fields(prefix: str, metric: Mapping[str, Any]) -> dict[str, object]:
+    return {
+        prefix: _optional_decimal(metric["value"]),
+        f"{prefix}_status": metric["status"],
+        f"{prefix}_reason_code": metric["reason_code"],
+    }
 
 
 def _assert_scalar_mapping(value: Mapping[str, object]) -> None:
@@ -207,6 +244,8 @@ def test_complete_offline_artifacts_build_an_auditable_partial_packet(
 ) -> None:
     factor, backtest = valid_artifacts
     packet = _build_packet(factor, backtest)
+    target = _target_ranking(factor)
+    peer_count = _target_peer_count(factor, target)
     baseline = backtest["baseline_summary"]
     strategy = baseline["strategy"]
     benchmarks = baseline["benchmarks"]
@@ -230,15 +269,33 @@ def test_complete_offline_artifacts_build_an_auditable_partial_packet(
     assert packet.ranking_summary == {
         "composite_version": factor["composite_version"],
         "ranking_count": _decimal(factor["row_counts"]["rankings"]),
+        "target_ticker": TARGET_TICKER,
+        "peer_group": target["peer_group"],
+        "score": _decimal(target["score"]),
+        "rank": _decimal(target["rank"]),
+        "peer_count": _decimal(peer_count),
+        "industry_percentile": _industry_percentile(int(target["rank"]), peer_count),
+        "target_available_factor_count": _decimal(target["available_factor_count"]),
+        "target_rank_status": target["status"],
+        "target_rank_reason_code": target["reason_code"],
     }
-    assert packet.backtest_summary == {
+    expected_backtest_summary: dict[str, object] = {
         "artifact_schema_version": backtest["artifact_schema_version"],
         "backtest_version": backtest["backtest_version"],
         "complete_period_count": _decimal(baseline["complete_period_count"]),
         "net_cost_bps": _decimal(baseline["net_cost_bps"]),
-        "strategy_cagr": _decimal(strategy["cagr"]["value"]),
-        "strategy_max_drawdown": _decimal(strategy["max_drawdown"]["value"]),
     }
+    expected_backtest_summary.update(_typed_metric_fields("strategy_cagr", strategy["cagr"]))
+    expected_backtest_summary.update(
+        _typed_metric_fields("strategy_max_drawdown", strategy["max_drawdown"])
+    )
+    expected_backtest_summary.update(
+        _typed_metric_fields("average_turnover", baseline["average_turnover"])
+    )
+    expected_backtest_summary.update(
+        _typed_metric_fields("annualized_turnover", baseline["annualized_turnover"])
+    )
+    assert packet.backtest_summary == expected_backtest_summary
     assert packet.benchmark_summary == {
         "spy_cagr": _decimal(benchmarks["SPY_total_return"]["cagr"]["value"]),
         "spy_max_drawdown": _decimal(benchmarks["SPY_total_return"]["max_drawdown"]["value"]),
@@ -271,16 +328,32 @@ def test_complete_offline_artifacts_build_an_auditable_partial_packet(
 def test_explicit_packet_identity_overrides_are_preserved(
     valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
 ) -> None:
+    factor, backtest = valid_artifacts
     packet = _build_packet(
-        *valid_artifacts,
-        universe_id="offline-universe-v2",
-        strategy_version="strategy-v2",
+        factor,
+        backtest,
+        universe_id=backtest["universe_id"],
+        strategy_version=backtest["strategy_version"],
     )
 
     assert (packet.universe_id, packet.strategy_version) == (
-        "offline-universe-v2",
-        "strategy-v2",
+        backtest["universe_id"],
+        backtest["strategy_version"],
     )
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest, universe_id="offline-universe-v2")
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest, strategy_version="strategy-v2")
+
+
+def test_target_ticker_must_exist_in_factor_rankings(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    factor, backtest = valid_artifacts
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest, ticker="NOT-IN-RANKINGS")
 
 
 @pytest.mark.parametrize("missing", ["factor", "backtest"])
@@ -349,6 +422,125 @@ def test_artifact_with_missing_required_field_is_rejected(
 
 
 @pytest.mark.parametrize("artifact_name", ["factor", "backtest"])
+def test_empty_provenance_is_rejected(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]], artifact_name: str
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    artifact = factor if artifact_name == "factor" else backtest
+    artifact["provenance"] = {}
+    _rehash(artifact)
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest)
+
+
+@pytest.mark.parametrize("field", ["evidence_ids", "calculation_ids"])
+@pytest.mark.parametrize("bad_value", [None, [], ""])
+def test_factor_provenance_requires_nonempty_evidence_and_calculation_ids(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+    field: str,
+    bad_value: object,
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    if bad_value is None:
+        factor["provenance"].pop(field)
+    else:
+        factor["provenance"][field] = bad_value
+    _rehash(factor)
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest)
+
+
+@pytest.mark.parametrize(
+    "bad_provenance",
+    [{"": "source"}, {"source": ""}, {"source": None}],
+)
+def test_backtest_provenance_requires_nonempty_keys_and_values(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+    bad_provenance: dict[str, object],
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    backtest["provenance"] = bad_provenance
+    _rehash(backtest)
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest)
+
+
+@pytest.mark.parametrize("artifact_name", ["factor", "backtest"])
+def test_provenance_tampering_without_rehash_is_rejected(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]], artifact_name: str
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    if artifact_name == "factor":
+        factor["provenance"]["evidence_ids"].append("tampered-evidence")
+    else:
+        backtest["provenance"]["membership_source"] = "tampered-source"
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest)
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "expected_schema"),
+    [
+        ("factor", FACTOR_ARTIFACT_SCHEMA_VERSION),
+        ("backtest", BACKTEST_ARTIFACT_SCHEMA_VERSION),
+    ],
+)
+def test_artifact_schema_version_is_fixed(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+    artifact_name: str,
+    expected_schema: str,
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    artifact = factor if artifact_name == "factor" else backtest
+    assert artifact["artifact_schema_version"] == expected_schema
+    artifact["artifact_schema_version"] = "wrong-artifact-schema-v999"
+    _rehash(artifact)
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest)
+
+
+@pytest.mark.parametrize("count_field", ["snapshots", "observations_normalized", "rankings"])
+@pytest.mark.parametrize("bad_value", [1.5, -1])
+def test_factor_row_counts_must_be_nonnegative_integers(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+    count_field: str,
+    bad_value: object,
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    factor["row_counts"][count_field] = bad_value
+    _rehash(factor)
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest)
+
+
+@pytest.mark.parametrize(
+    ("count_field", "array_field"),
+    [
+        ("snapshots", "snapshot_ids"),
+        ("observations_normalized", "observations_normalized"),
+        ("rankings", "rankings"),
+    ],
+)
+def test_factor_row_counts_must_match_artifact_arrays(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+    count_field: str,
+    array_field: str,
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    factor["row_counts"][count_field] = len(factor[array_field]) + 1
+    _rehash(factor)
+
+    with pytest.raises(ValueError):
+        _build_packet(factor, backtest)
+
+
+@pytest.mark.parametrize("artifact_name", ["factor", "backtest"])
 def test_nan_numeric_artifact_value_is_rejected(
     valid_artifacts: tuple[dict[str, Any], dict[str, Any]], artifact_name: str
 ) -> None:
@@ -364,6 +556,42 @@ def test_nan_numeric_artifact_value_is_rejected(
         _build_packet(factor, backtest)
 
 
+def test_unavailable_strategy_cagr_is_preserved_as_typed_missing_value(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    backtest["baseline_summary"]["strategy"]["cagr"] = {
+        "value": None,
+        "status": "unavailable",
+        "reason_code": "missing_history",
+    }
+    _rehash(backtest)
+
+    packet = _build_packet(factor, backtest)
+
+    assert packet.backtest_summary["strategy_cagr"] is None
+    assert packet.backtest_summary["strategy_cagr_status"] == "unavailable"
+    assert packet.backtest_summary["strategy_cagr_reason_code"] == "missing_history"
+
+
+def test_all_available_rankings_without_known_bias_is_full_coverage(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    factor, backtest = deepcopy(valid_artifacts)
+    for ranking in factor["rankings"]:
+        ranking["status"] = "available"
+    _rehash(factor)
+
+    backtest["known_biases"] = []
+    backtest["data_quality"]["survivorship_bias_known"] = False
+    _rehash(backtest)
+
+    packet = _build_packet(factor, backtest)
+
+    assert packet.coverage is CoverageLevel.FULL
+    assert packet.limitations == []
+
+
 def test_packet_does_not_copy_verdict_decision_fields_or_mutate_inputs(
     valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
 ) -> None:
@@ -372,7 +600,13 @@ def test_packet_does_not_copy_verdict_decision_fields_or_mutate_inputs(
     packet = _build_packet(factor, backtest)
     packet_keys = _nested_keys(packet.model_dump(mode="json"))
 
-    assert not packet_keys & {"verdict", "status", "rating", "recommendation"}
+    assert not packet_keys & {
+        "verdict",
+        "rating",
+        "recommendation",
+        "overall_rating",
+        "advice",
+    }
     assert (factor, backtest) == before
 
 
