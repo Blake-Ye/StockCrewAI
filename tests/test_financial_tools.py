@@ -142,17 +142,13 @@ class TTMFacts(FakeFacts):
         fiscal_year = int(resolved_period[:4])
         fiscal_period = resolved_period[5:]
         if fiscal_period == "FY":
-            period_start, period_end, form = date(fiscal_year, 1, 1), date(
-                fiscal_year, 12, 31
-            ), "10-K"
+            period_end = date(fiscal_year, 12, 31)
         elif fiscal_period in {"Q3", "Q4"}:
-            period_start = date(fiscal_year, 1, 1)
             period_end = date(
                 fiscal_year,
                 9 if fiscal_period == "Q3" else 12,
                 30 if fiscal_period == "Q3" else 31,
             )
-            form = "10-Q" if fiscal_period == "Q3" else "10-K"
         else:
             raise AssertionError(f"unexpected test period: {resolved_period}")
         return {
