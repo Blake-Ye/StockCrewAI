@@ -192,8 +192,26 @@ def _calculation(
         ),
         (
             IssuerProfile.UTILITY,
-            ("utility_operating_margin",),
-            {"utility_operating_margin": Applicability.REQUIRED},
+            (
+                "utility_operating_margin",
+                "rate_base",
+                "capex_intensity",
+                "interest_coverage",
+                "utility_roe",
+                "price_to_book",
+                "pe_ratio",
+                "fcf_yield",
+            ),
+            {
+                "utility_operating_margin": Applicability.REQUIRED,
+                "rate_base": Applicability.OPTIONAL,
+                "capex_intensity": Applicability.OPTIONAL,
+                "interest_coverage": Applicability.OPTIONAL,
+                "utility_roe": Applicability.OPTIONAL,
+                "price_to_book": Applicability.OPTIONAL,
+                "pe_ratio": Applicability.OPTIONAL,
+                "fcf_yield": Applicability.OPTIONAL,
+            },
         ),
         (
             IssuerProfile.COMMODITY_PRODUCER,

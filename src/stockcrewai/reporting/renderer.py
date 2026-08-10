@@ -57,6 +57,11 @@ _REPORT_METRIC_LABELS = {
     "book_value_per_share": "每股账面价值",
     "investment_income": "投资收益",
     "solvency_ratio": "偿付能力",
+    "utility_operating_margin": "公用事业营业利润率",
+    "rate_base": "Rate Base（费率基数）",
+    "capex_intensity": "CapEx 强度",
+    "interest_coverage": "利息保障倍数",
+    "utility_roe": "公用事业 ROE",
     "price_to_book": "P/B",
     "pe_ratio": "P/E",
     "fcf_yield": "FCF Yield",
@@ -77,6 +82,9 @@ _REPORT_PERCENT_METRIC_IDS = frozenset(
     {
         "revenue_growth",
         "operating_margin",
+        "utility_operating_margin",
+        "capex_intensity",
+        "utility_roe",
         "net_margin",
         "free_cash_flow_margin",
         "cash_conversion",
@@ -86,10 +94,16 @@ _REPORT_PERCENT_METRIC_IDS = frozenset(
     }
 )
 _REPORT_AMOUNT_METRIC_IDS = frozenset(
-    {"free_cash_flow", "net_cash", "market_capitalization"}
+    {"free_cash_flow", "net_cash", "market_capitalization", "rate_base"}
 )
 _REPORT_MULTIPLE_METRIC_IDS = frozenset(
-    {"net_debt_to_ebitda", "dividend_coverage", "price_to_ffo", "price_to_book"}
+    {
+        "net_debt_to_ebitda",
+        "dividend_coverage",
+        "price_to_ffo",
+        "price_to_book",
+        "interest_coverage",
+    }
 )
 _REIT_METRIC_LABELS = {
     "ffo_total": "FFO 总额",
@@ -227,7 +241,7 @@ def build_narrative_context(
     profile_metrics = report_context.get("profile_metrics")
     if isinstance(profile_metrics, Mapping):
         profile_issuer = _text((report_context.get("profile") or {}).get("issuer_profile"))
-        if profile_issuer in {"bank", "insurance"}:
+        if profile_issuer in {"bank", "insurance", "utility"}:
             metric_sections.add("company_quality")
     source_metadata = report_context.get("source_metadata", {})
     source_metadata = source_metadata if isinstance(source_metadata, Mapping) else {}
@@ -369,6 +383,8 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
         elif "%" in raw_text and decimal_value > Decimal("1"):
             decimal_value /= Decimal("100")
         return f"{decimal_value:.2f}x"
+    if metric_id == "rate_base":
+        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in _REPORT_MULTIPLE_METRIC_IDS:
         return f"{decimal_value:.2f}x"
     if metric_id in {"ffo_total", "ffo_per_share", "affo"}:
@@ -493,6 +509,15 @@ def _term_definitions(
                 "- P/B（市净率）：股价相对于每股账面价值的倍数。",
             )
         )
+    if profile == "utility":
+        definitions.extend(
+            (
+                "- Rate Base（费率基数）：公用事业公司或监管机构直接披露的受监管资本基数，不由资产负债表字段推断。",
+                "- CapEx Intensity（资本开支强度）：资本开支相对于营业收入的比例。",
+                "- Interest Coverage（利息保障倍数）：营业利润相对于利息费用的比例。",
+                "- FCF Yield（自由现金流收益率）：公用事业自由现金流相对于直接披露市值的收益率，不由价格与股数推算。",
+            )
+        )
     return tuple(definitions)
 
 
@@ -512,7 +537,7 @@ def _profile_metrics_markdown(
     payload: Mapping[str, Any] | None,
     metrics: Sequence[Mapping[str, Any]],
 ) -> str:
-    if profile not in {"bank", "insurance"} or not isinstance(payload, Mapping):
+    if profile not in {"bank", "insurance", "utility"} or not isinstance(payload, Mapping):
         return ""
     metric_ids = payload.get("metric_ids", [])
     if not isinstance(metric_ids, Sequence) or isinstance(metric_ids, (str, bytes)):
@@ -523,7 +548,12 @@ def _profile_metrics_markdown(
         if isinstance(metric, Mapping) and metric.get("metric_id") in metric_ids
     }
     decisions = _profile_decisions(payload)
-    lines = ["### 银行专用指标" if profile == "bank" else "### 保险专用指标"]
+    heading = {
+        "bank": "### 银行专用指标",
+        "insurance": "### 保险专用指标",
+        "utility": "### 公用事业专用指标",
+    }[profile]
+    lines = [heading]
     for metric_id in metric_ids:
         metric_id = _text(metric_id)
         if not metric_id:

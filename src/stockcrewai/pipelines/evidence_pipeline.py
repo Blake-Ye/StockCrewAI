@@ -25,6 +25,10 @@ from stockcrewai.pipelines.profile_registry import classify_profiles
 from stockcrewai.profiles.bank import evaluate_bank_profile
 from stockcrewai.profiles.insurance import evaluate_insurance_profile
 from stockcrewai.profiles.reit import evaluate_reit_profile
+from stockcrewai.profiles.utility import (
+    PROFILE_VERSION as UTILITY_PROFILE_VERSION,
+    evaluate_utility_profile,
+)
 from stockcrewai.tools.edgar_tool import EdgarError, EdgarResult
 from stockcrewai.tools.validation_tool import sync_validation_status
 from stockcrewai.validators.analysis_gate import evaluate_analysis_gate
@@ -556,6 +560,63 @@ def build_profile_policy_context(
                 "gate": gate.model_dump(mode="json"),
                 "values": values,
                 "calculation_records": calculation_records,
+            }
+        )
+
+    if profile_result.issuer_profile is IssuerProfile.UTILITY:
+        typed_evidence_records, evidence_types_valid = _typed_records(
+            evidence_records, EvidenceRecord
+        )
+        typed_market_price_records, market_types_valid = _typed_records(
+            market_price_records, MarketPriceRecord
+        )
+        profile_input_valid = _typed_profile_input_valid(
+            profile,
+            UTILITY_PROFILE_VERSION,
+        )
+        envelope_valid = (
+            profile_input_valid
+            and evidence_types_valid
+            and market_types_valid
+            and bool(typed_evidence_records or typed_market_price_records)
+        )
+        if envelope_valid:
+            adapter_input: Mapping[str, object] = profile  # type: ignore[assignment]
+            values, decisions, calculation_records = evaluate_utility_profile(
+                adapter_input,
+                typed_evidence_records,
+                typed_market_price_records,
+            )
+            envelope = {"status": "valid", "reason_code": "typed_profile_envelope_valid"}
+        else:
+            values, decisions = _typed_profile_unavailable_decisions(policies)
+            calculation_records = ()
+            envelope = {
+                "status": "unavailable",
+                "reason_code": "typed_profile_envelope_required",
+            }
+        gate = _profile_policy_gate(profile_result, decisions)
+        return _json_safe(
+            {
+                "profile": profile_result.model_dump(mode="json"),
+                "coverage_level": profile_result.coverage_level.value,
+                "profile_registry_version": profile_result.registry_version,
+                "policies": [policy.model_dump(mode="json") for policy in policies],
+                "policy_decisions": [
+                    decision.model_dump(mode="json") for decision in decisions
+                ],
+                "policy_version": policy_version_for_profile(profile_result),
+                "gate": gate.model_dump(mode="json"),
+                "values": values,
+                "calculation_records": calculation_records,
+                "evidence_records": [
+                    record.model_dump(mode="json") for record in typed_evidence_records
+                ],
+                "market_price_records": [
+                    record.model_dump(mode="json")
+                    for record in typed_market_price_records
+                ],
+                "profile_envelope": envelope,
             }
         )
 

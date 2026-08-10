@@ -16,6 +16,12 @@ from stockcrewai.profiles.reit import (
     REIT_METRIC_IDS,
     evaluate_reit_profile,
 )
+from stockcrewai.profiles.utility import (
+    POLICY_VERSION as UTILITY_POLICY_VERSION,
+    PROFILE_VERSION as UTILITY_PROFILE_VERSION,
+    UTILITY_METRIC_IDS,
+    evaluate_utility_profile,
+)
 
 __all__ = [
     "BANK_METRIC_IDS",
@@ -27,7 +33,11 @@ __all__ = [
     "POLICY_VERSION",
     "PROFILE_VERSION",
     "REIT_METRIC_IDS",
+    "UTILITY_METRIC_IDS",
+    "UTILITY_POLICY_VERSION",
+    "UTILITY_PROFILE_VERSION",
     "evaluate_bank_profile",
     "evaluate_insurance_profile",
     "evaluate_reit_profile",
+    "evaluate_utility_profile",
 ]

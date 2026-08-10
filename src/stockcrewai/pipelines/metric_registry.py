@@ -27,6 +27,7 @@ POLICY_VERSION = "metric-policy:v1"
 _REIT_POLICY_VERSION = "metric-policy:v2"
 BANK_POLICY_VERSION = "metric-policy:bank:v1"
 INSURANCE_POLICY_VERSION = "metric-policy:insurance:v1"
+UTILITY_POLICY_VERSION = "metric-policy:utility:v1"
 
 
 class _MetricSpec(NamedTuple):
@@ -457,7 +458,88 @@ _POLICY_TABLE: dict[IssuerProfile, tuple[_MetricSpec, ...]] = {
             _REQUIRED,
             ("operating_income", "revenue"),
             gate_effect=_BLOCKING,
-            reason_code="required_utility_operating_margin",
+            reason_code="utility_operating_margin_missing",
+            formula_id="utility-operating-margin-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="ratio",
+            policy_version=UTILITY_POLICY_VERSION,
+        ),
+        _spec(
+            "rate_base",
+            _OPTIONAL,
+            ("rate_base",),
+            gate_effect=_NON_BLOCKING,
+            reason_code="rate_base_not_disclosed",
+            formula_id="utility-rate-base-direct-v1",
+            period_basis="company_disclosed_period",
+            unit_policy="currency_amount",
+            policy_version=UTILITY_POLICY_VERSION,
+        ),
+        _spec(
+            "capex_intensity",
+            _OPTIONAL,
+            ("capex", "revenue"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="capex_intensity_missing",
+            formula_id="utility-capex-intensity-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="ratio",
+            policy_version=UTILITY_POLICY_VERSION,
+        ),
+        _spec(
+            "interest_coverage",
+            _OPTIONAL,
+            ("operating_income", "interest_expense"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="interest_coverage_missing",
+            formula_id="utility-interest-coverage-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="ratio",
+            policy_version=UTILITY_POLICY_VERSION,
+        ),
+        _spec(
+            "utility_roe",
+            _OPTIONAL,
+            ("net_income", "average_equity"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="utility_roe_missing",
+            formula_id="utility-roe-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="ratio",
+            policy_version=UTILITY_POLICY_VERSION,
+        ),
+        _spec(
+            "price_to_book",
+            _OPTIONAL,
+            ("market_price", "book_value_per_share"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="price_to_book_missing",
+            formula_id="utility-price-to-book-v1",
+            period_basis="market_price_at_or_after_financial_as_of",
+            unit_policy="multiple",
+            policy_version=UTILITY_POLICY_VERSION,
+        ),
+        _spec(
+            "pe_ratio",
+            _OPTIONAL,
+            ("market_price", "diluted_eps"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="pe_ratio_missing",
+            formula_id="utility-pe-ratio-v1",
+            period_basis="market_price_same_point_in_time",
+            unit_policy="multiple",
+            policy_version=UTILITY_POLICY_VERSION,
+        ),
+        _spec(
+            "fcf_yield",
+            _OPTIONAL,
+            ("free_cash_flow", "market_cap"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="fcf_yield_missing",
+            formula_id="utility-fcf-yield-v1",
+            period_basis="market_price_same_point_in_time",
+            unit_policy="ratio",
+            policy_version=UTILITY_POLICY_VERSION,
         ),
     ),
     IssuerProfile.COMMODITY_PRODUCER: (
@@ -563,6 +645,8 @@ def policy_version_for_profile(profile: ProfileResult | IssuerProfile) -> str:
         or issuer_profile == IssuerProfile.INSURANCE.value
     ):
         return INSURANCE_POLICY_VERSION
+    if issuer_profile is IssuerProfile.UTILITY or issuer_profile == IssuerProfile.UTILITY.value:
+        return UTILITY_POLICY_VERSION
     return POLICY_VERSION
 
 
@@ -705,6 +789,7 @@ __all__ = [
     "BANK_POLICY_VERSION",
     "INSURANCE_POLICY_VERSION",
     "POLICY_VERSION",
+    "UTILITY_POLICY_VERSION",
     "evaluate_policy_decisions",
     "policy_version_for_profile",
     "resolve_metric_policies",

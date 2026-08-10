@@ -1,0 +1,264 @@
+{
+  "fixture_version": "wp12-s01-utility-profile-v1-complete",
+  "synthetic": true,
+  "source_note": "Offline deterministic synthetic utility data; no network, SEC, market, LLM, CrewAI, Flow, or registry access.",
+  "profile_input": {
+    "profile_version": "utility-profile:v1",
+    "issuer_profile": "utility",
+    "security_profile": "common_stock",
+    "reporting_profile": "domestic_us_gaap",
+    "coverage_level": "full",
+    "policy_version": "metric-policy:utility:v1",
+    "as_of": "2026-03-02T21:00:00Z",
+    "metric_inputs": {
+      "revenue": "ev_util_revenue",
+      "operating_income": "ev_util_operating_income",
+      "capex": "ev_util_capex",
+      "interest_expense": "ev_util_interest_expense",
+      "net_income": "ev_util_net_income",
+      "average_equity": "ev_util_average_equity",
+      "rate_base": "ev_util_rate_base",
+      "book_value_per_share": "ev_util_book_value_per_share",
+      "diluted_eps": "ev_util_diluted_eps",
+      "free_cash_flow": "ev_util_free_cash_flow",
+      "market_cap": "ev_util_market_cap"
+    }
+  },
+  "evidence_records": [
+    {
+      "evidence_id": "ev_util_revenue",
+      "source_reference": "fixture:utility/complete/revenue",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "1000",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_operating_income",
+      "source_reference": "fixture:utility/complete/operating-income",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "200",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_capex",
+      "source_reference": "fixture:utility/complete/capex",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "100",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_interest_expense",
+      "source_reference": "fixture:utility/complete/interest-expense",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "50",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_net_income",
+      "source_reference": "fixture:utility/complete/net-income",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "120",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_average_equity",
+      "source_reference": "fixture:utility/complete/average-equity",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "1000",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_rate_base",
+      "source_reference": "fixture:utility/complete/rate-base-direct",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "5000",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_book_value_per_share",
+      "source_reference": "fixture:utility/complete/book-value-per-share",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD/share",
+      "currency": "USD",
+      "value": "40",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_diluted_eps",
+      "source_reference": "fixture:utility/complete/diluted-eps",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD/share",
+      "currency": "USD",
+      "value": "5",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_free_cash_flow",
+      "source_reference": "fixture:utility/complete/free-cash-flow",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "150",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_util_market_cap",
+      "source_reference": "fixture:utility/complete/market-cap",
+      "as_of": "2026-03-02T21:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD millions",
+      "currency": "USD",
+      "value": "5000",
+      "validation_status": "valid"
+    }
+  ],
+  "market_price_records": [
+    {
+      "evidence_id": "ev_util_market_price",
+      "ticker": "UTIL",
+      "price": "50",
+      "currency": "USD",
+      "price_timestamp": "2026-03-02T20:00:00Z",
+      "source_reference": "fixture:utility/complete/market-price",
+      "adjustment_basis": "raw",
+      "validation_status": "valid"
+    }
+  ],
+  "expected": {
+    "profile_version": "utility-profile:v1",
+    "policy_version": "metric-policy:utility:v1",
+    "metric_ids": [
+      "utility_operating_margin",
+      "rate_base",
+      "capex_intensity",
+      "interest_coverage",
+      "utility_roe",
+      "price_to_book",
+      "pe_ratio",
+      "fcf_yield"
+    ],
+    "values": {
+      "utility_operating_margin": "0.2",
+      "rate_base": "5000",
+      "capex_intensity": "0.1",
+      "interest_coverage": "4",
+      "utility_roe": "0.12",
+      "price_to_book": "1.25",
+      "pe_ratio": "10",
+      "fcf_yield": "0.03"
+    },
+    "decisions": {
+      "utility_operating_margin": {
+        "status": "available",
+        "reason_code": "calculated",
+        "blocking": true,
+        "evidence_ids": ["ev_util_operating_income", "ev_util_revenue"],
+        "calculation_ids": ["calc_utility_operating_margin_v1"]
+      },
+      "rate_base": {
+        "status": "available",
+        "reason_code": "validated_evidence",
+        "blocking": false,
+        "evidence_ids": ["ev_util_rate_base"],
+        "calculation_ids": []
+      },
+      "capex_intensity": {
+        "status": "available",
+        "reason_code": "calculated",
+        "blocking": false,
+        "evidence_ids": ["ev_util_capex", "ev_util_revenue"],
+        "calculation_ids": ["calc_utility_capex_intensity_v1"]
+      },
+      "interest_coverage": {
+        "status": "available",
+        "reason_code": "calculated",
+        "blocking": false,
+        "evidence_ids": ["ev_util_operating_income", "ev_util_interest_expense"],
+        "calculation_ids": ["calc_utility_interest_coverage_v1"]
+      },
+      "utility_roe": {
+        "status": "available",
+        "reason_code": "calculated",
+        "blocking": false,
+        "evidence_ids": ["ev_util_net_income", "ev_util_average_equity"],
+        "calculation_ids": ["calc_utility_roe_v1"]
+      },
+      "price_to_book": {
+        "status": "available",
+        "reason_code": "calculated",
+        "blocking": false,
+        "evidence_ids": ["ev_util_market_price", "ev_util_book_value_per_share"],
+        "calculation_ids": ["calc_utility_price_to_book_v1"]
+      },
+      "pe_ratio": {
+        "status": "available",
+        "reason_code": "calculated",
+        "blocking": false,
+        "evidence_ids": ["ev_util_market_price", "ev_util_diluted_eps"],
+        "calculation_ids": ["calc_utility_pe_ratio_v1"]
+      },
+      "fcf_yield": {
+        "status": "available",
+        "reason_code": "calculated",
+        "blocking": false,
+        "evidence_ids": ["ev_util_free_cash_flow", "ev_util_market_cap"],
+        "calculation_ids": ["calc_utility_fcf_yield_v1"]
+      }
+    },
+    "calculation_formula_ids": [
+      "utility-operating-margin-v1",
+      "utility-capex-intensity-v1",
+      "utility-interest-coverage-v1",
+      "utility-roe-v1",
+      "utility-price-to-book-v1",
+      "utility-pe-ratio-v1",
+      "utility-fcf-yield-v1"
+    ]
+  }
+}

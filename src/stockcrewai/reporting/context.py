@@ -91,7 +91,7 @@ _REIT_FORMULA_TO_METRIC = {
     "reit-dividend-coverage-v1": "dividend_coverage",
     "reit-price-to-ffo-v1": "price_to_ffo",
 }
-_PROFILE_ISSUERS = frozenset({"bank", "insurance"})
+_PROFILE_ISSUERS = frozenset({"bank", "insurance", "utility"})
 
 
 class ReportMetric(BaseModel):

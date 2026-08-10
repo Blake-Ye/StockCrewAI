@@ -275,3 +275,22 @@ REIT 采用以下稳定 reason code；缺失、无来源或未验证 Evidence �
 ### 8.4 报告和量化的数值边界
 
 量化与报告只读取 Profile 计算器返回的固定指标字典和 `PolicyDecision`；只展示适用且 `available` 的数值。P/E/P/B 必须同时满足对应来源可用、币种/期间一致和 point-in-time 条件，缺来源或条件不满足就不展示数值。LLM 不选择 Profile 指标、不计算比率、不年化、不补缺失，也不产生新的 Evidence、Calculation 或 formula ID；不增加 Agent 或依赖。
+
+## 9. WP12-S01 Utility 专用公式（`utility-profile:v1`）
+
+Utility 复用现有 quant operating profile，不新增因子。输入和结果均使用有限 `Decimal`，比例保持小数形式，不乘 100；所有派生结果都必须有已验证输入 Evidence、固定 formula ID、derived `source_reference`、`as_of` 和期间。
+
+| `metric_id` | 输入 | 固定公式 | `formula_id` | `CalculationRecord.unit` |
+| --- | --- | --- | --- | --- |
+| `utility_operating_margin` | `operating_income`、`revenue` | `operating_income / revenue` | `utility-operating-margin-v1` | `ratio` |
+| `rate_base` | 直接披露的 `rate_base` Evidence | 不计算，原样采用 direct value | `utility-rate-base-direct-v1` | 继承 Evidence unit；不创建 CalculationRecord |
+| `capex_intensity` | `capex`、`revenue` | `capex / revenue` | `utility-capex-intensity-v1` | `ratio` |
+| `interest_coverage` | `operating_income`、`interest_expense` | `operating_income / interest_expense` | `utility-interest-coverage-v1` | `ratio` |
+| `utility_roe` | `net_income`、`average_equity` | `net_income / average_equity` | `utility-roe-v1` | `ratio` |
+| `price_to_book` | valid 唯一行情 `price`、`book_value_per_share` | `price / book_value_per_share` | `utility-price-to-book-v1` | `multiple` |
+| `pe_ratio` | valid 唯一行情 `price`、`diluted_eps` | 仅 `diluted_eps > 0` 时 `price / diluted_eps` | `utility-pe-ratio-v1` | `multiple` |
+| `fcf_yield` | `free_cash_flow`、直接 Evidence 的 `market_cap` | `free_cash_flow / market_cap` | `utility-fcf-yield-v1` | `ratio` |
+
+CapEx 输入采用正数现金流出约定；如果来源值为负，`capex_intensity` 直接保留负结果，不能 clipping、取绝对值或补成零。负 `net_income` 同样保留负的 `utility_roe`。任一公式分母为零统一返回 `unavailable/zero_denominator`，不创建 CalculationRecord。P/E 的 EPS 小于或等于零返回 `unavailable/non-positive-eps`，不产生负或零 P/E。
+
+P/B 和 P/E 的市场价格只能来自一条 `MarketPriceRecord`，该记录必须 valid、唯一且 `price_timestamp <= profile as_of`；多条价格不得选择其中一条。FCF yield 不从价格与股数推测市值；缺少直接 `market_cap` Evidence 时返回 typed `unavailable/fcf_yield_missing`（或相应通用证据 reason），不创建派生记录。`rate_base` 只接受公司或监管直接披露值，普通资产、负债或固定资产字段不能替代它。

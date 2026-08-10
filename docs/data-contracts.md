@@ -400,3 +400,47 @@ def evaluate_<profile>_profile(
 ### 7.5 报告与量化边界
 
 后续报告和量化层只展示适用且 `status=available` 的指标；`not_applicable` 不进入数值展示，`unavailable` 只保留 typed reason code 和诊断。P/E、P/B 只有在对应 valid source、期间/币种/point-in-time 均满足时才展示；缺来源时不得输出占位数字。Profile 函数、固定 Policy 和 Python 计算器负责指标选择、公式和 Gate，LLM 只能解释已验证的 Evidence/Calculation，不能选择指标、计算数值或发明替代公式。
+
+## 8. WP12-S01 Utility Profile（`utility-profile:v1`）
+
+本节冻结 utility Profile 的第一阶段 typed adapter 契约。它只复用 WP00/WP01 已有的 `EvidenceRecord`、`MarketPriceRecord`、`CalculationRecord` 和 `PolicyDecision`，不新增 Pydantic 模型、依赖、网络采集、Registry、Flow、Crew 或 YAML。Utility 仍属于已有 quant operating profile；本阶段不发明新的 quant factor。
+
+### 8.1 固定接口与指标顺序
+
+```python
+def evaluate_utility_profile(
+    profile_input: Mapping[str, object],
+    evidence_records: Sequence[EvidenceRecord],
+    market_price_records: Sequence[MarketPriceRecord] = (),
+) -> tuple[
+    dict[str, Decimal | None],
+    tuple[PolicyDecision, ...],
+    tuple[CalculationRecord, ...],
+]:
+    ...
+```
+
+固定版本为 `profile_version=utility-profile:v1`、`policy_version=metric-policy:utility:v1`；返回字典、PolicyDecision 和计算结果的顺序均为：
+
+`utility_operating_margin`、`rate_base`、`capex_intensity`、`interest_coverage`、`utility_roe`、`price_to_book`、`pe_ratio`、`fcf_yield`。
+
+`profile_input.metric_inputs` 只保存下表列出的 Evidence ID（也可使用只含 `evidence_id` 的现有 typed envelope）；金额、价格、EPS 和比率只通过已验证的有限 `Decimal` 进入计算。所有 `EvidenceRecord` 必须有 `validation_status=valid` 且 `value` 非空。重复 Evidence/行情 ID、`filed_at` 或 Evidence `as_of` 晚于 profile `as_of`、缺少输入和零分母均 fail closed。
+
+### 8.2 Utility Metric Policy 矩阵
+
+| `metric_id` | `applicability` / `gate_effect` | 固定输入或来源规则 | 固定公式 / `formula_id` | 缺失或失败 reason code |
+| --- | --- | --- | --- | --- |
+| `utility_operating_margin` | `required` / `blocking` | `operating_income`、`revenue` Evidence | `operating_income / revenue` / `utility-operating-margin-v1` | `utility_operating_margin_missing`、`zero_denominator` 或通用证据 reason |
+| `rate_base` | `optional` / `non_blocking` | 公司或监管直接披露的 `rate_base` Evidence | 只接受 direct evidence，不从资产负债表猜测 / `utility-rate-base-direct-v1` | `rate_base_not_disclosed` 或通用证据 reason |
+| `capex_intensity` | `optional` / `non_blocking` | `capex`、`revenue` Evidence | `capex / revenue` / `utility-capex-intensity-v1` | `capex_intensity_missing`、`zero_denominator` 或通用证据 reason |
+| `interest_coverage` | `optional` / `non_blocking` | `operating_income`、`interest_expense` Evidence | `operating_income / interest_expense` / `utility-interest-coverage-v1` | `interest_coverage_missing`、`zero_denominator` 或通用证据 reason |
+| `utility_roe` | `optional` / `non_blocking` | `net_income`、`average_equity` Evidence | `net_income / average_equity` / `utility-roe-v1` | `utility_roe_missing`、`zero_denominator` 或通用证据 reason |
+| `price_to_book` | `optional` / `non_blocking` | 唯一、valid 且不晚于 profile `as_of` 的行情 `price` 与 `book_value_per_share` Evidence | `price / book_value_per_share` / `utility-price-to-book-v1` | `price_to_book_missing`、`market_price_missing`、`zero_denominator` 或通用证据 reason |
+| `pe_ratio` | `optional` / `non_blocking` | 同一唯一合格行情 `price` 与 `diluted_eps` Evidence | 仅 `diluted_eps > 0` 时 `price / diluted_eps` / `utility-pe-ratio-v1` | `pe_ratio_missing`、`market_price_missing`、`non-positive-eps` 或通用证据 reason |
+| `fcf_yield` | `optional` / `non_blocking` | `free_cash_flow`、直接 Evidence 的 `market_cap` | `free_cash_flow / market_cap` / `utility-fcf-yield-v1` | `fcf_yield_missing`、`zero_denominator` 或通用证据 reason |
+
+只有 `utility_operating_margin` 的缺失或不可用决定 `blocking=true`；其他七个指标始终 `blocking=false`。`rate_base` 可用时 `PolicyDecision.evidence_ids` 只引用 direct Evidence，`calculation_ids=[]`，不得伪造 direct CalculationRecord。所有派生可用值必须生成一条 `CalculationRecord`，其 `input_evidence_ids` 只能是传入且已验证的 Evidence/MarketPrice ID，`source_reference` 必须标识为 derived，并带自己的 `as_of`、期间、单位和固定 formula ID；不可用结果的 provenance 列表必须为空。
+
+行情只接受一条唯一、`validation_status=valid` 且 `price_timestamp <= profile as_of` 的 `MarketPriceRecord`；不在多条价格中择优或选择最近值。缺少 `market_cap` 时，`fcf_yield` 为 typed `unavailable`，不得用普通 `price * shares` 推测市值。
+
+通用失败 reason code 优先使用 `missing_input`、`unvalidated_evidence_id`、`duplicate_evidence_id`、`filed_after_as_of`、`market_price_missing`、`zero_denominator` 和 `non-positive-eps`，并保留上表的 utility 专属缺失码。负的 capex 或 net income 是合法经济值，保留原符号，不 clipping。

@@ -493,7 +493,12 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 self._reit_market_price_records = market_price_records
         issuer_profile = profile.get("issuer_profile", profile.get("issuer_type"))
         issuer_profile = getattr(issuer_profile, "value", issuer_profile)
-        if str(issuer_profile).strip().casefold() not in {"reit", "bank", "insurance"}:
+        if str(issuer_profile).strip().casefold() not in {
+            "reit",
+            "bank",
+            "insurance",
+            "utility",
+        }:
             return
         policy_context = pipeline_support.build_profile_policy_context(
             profile=profile,
@@ -1873,7 +1878,12 @@ class ResearchFlow(Flow[ResearchFlowState]):
             else None
         )
         active_issuer = getattr(active_issuer, "value", active_issuer)
-        if str(active_issuer).strip().casefold() in {"reit", "bank", "insurance"}:
+        if str(active_issuer).strip().casefold() in {
+            "reit",
+            "bank",
+            "insurance",
+            "utility",
+        }:
             source_metadata["facts"].update(
                 {
                     record.evidence_id: record.model_dump(mode="json")
