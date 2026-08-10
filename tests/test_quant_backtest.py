@@ -216,3 +216,29 @@ def test_terminal_no_snapshot_and_insufficient_history_are_typed() -> None:
 
     short = run(WalkForwardInput(universe, tuple(snapshots), tuple(periods[:5]), tuple(levels)))
     assert short.baseline_summary.strategy["cagr"].reason_code == "insufficient_history"
+
+
+def test_backtest_artifact_is_stable_and_validates_output_path(tmp_path: Path) -> None:
+    from stockcrewai.quant.backtest import write_backtest_artifact
+
+    result = _build()
+    output_path = tmp_path / "nested" / "backtest.json"
+    written = write_backtest_artifact(result, output_path)
+    first_bytes = written.read_bytes()
+    second_path = write_backtest_artifact(result, tmp_path / "nested" / "repeat.json")
+    second_bytes = second_path.read_bytes()
+    payload = json.loads(first_bytes.decode("utf-8"))
+
+    assert written == output_path
+    assert first_bytes == second_bytes
+    assert payload["artifact_hash"] == result.stable_hash
+    assert {key: payload[key] for key in result.to_dict()} == result.to_dict()
+    assert first_bytes.endswith(b"\n")
+    assert b"NaN" not in first_bytes and b"Infinity" not in first_bytes
+
+    with pytest.raises(ValueError):
+        write_backtest_artifact(result, "")
+    with pytest.raises(ValueError):
+        write_backtest_artifact(result, tmp_path)
+    with pytest.raises(ValueError):
+        write_backtest_artifact(object(), output_path)

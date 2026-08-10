@@ -8,6 +8,7 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal, localcontext
 import hashlib
 import json
+from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, cast
 
@@ -483,6 +484,20 @@ class WalkForwardResult:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
+    def to_artifact_dict(self) -> dict[str, object]:
+        payload = self.to_dict()
+        payload["artifact_hash"] = self.stable_hash
+        return payload
+
+    def to_artifact_json(self) -> str:
+        return json.dumps(
+            self.to_artifact_dict(),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+
 
 def _unavailable(reason_code: str) -> TypedValue:
     return TypedValue.unavailable(reason_code)
@@ -903,6 +918,25 @@ def run_walk_forward(inputs: WalkForwardInput) -> WalkForwardResult:
     )
 
 
+def write_backtest_artifact(result: WalkForwardResult, output_path: str | Path) -> Path:
+    """Write one deterministic, UTF-8 JSON backtest artifact."""
+    if not isinstance(result, WalkForwardResult):
+        raise ValueError("result must be a WalkForwardResult")
+    if not isinstance(output_path, (str, Path)):
+        raise ValueError("output_path must be a string or Path")
+    if isinstance(output_path, str) and not output_path.strip():
+        raise ValueError("output_path must not be empty")
+    path = Path(output_path)
+    if path.exists() and path.is_dir():
+        raise ValueError("output_path must be a file path")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(result.to_artifact_json().encode("utf-8"))
+    except OSError as exc:
+        raise ValueError("unable to write backtest artifact") from exc
+    return path
+
+
 __all__ = [
     "BacktestPeriod",
     "BaselineSummary",
@@ -915,4 +949,5 @@ __all__ = [
     "WalkForwardInput",
     "WalkForwardResult",
     "run_walk_forward",
+    "write_backtest_artifact",
 ]
