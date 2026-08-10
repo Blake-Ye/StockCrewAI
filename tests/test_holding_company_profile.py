@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_EVEN, localcontext
 import json
 from pathlib import Path
 from typing import Any
@@ -413,5 +413,197 @@ def test_invalid_evidence_and_values_fail_closed(
         )
     assert all(
         "ev_holding_a_ownership" not in calculation.input_evidence_ids
+        for calculation in calculations
+    )
+
+
+def test_parent_adjustment_evidence_ids_must_be_unique_across_roles() -> None:
+    fixture = _load_fixture("complete")
+    metric_inputs = fixture["profile_input"]["metric_inputs"]
+    metric_inputs["other_adjustments"]["evidence_id"] = metric_inputs[
+        "parent_net_debt"
+    ]["evidence_id"]
+
+    values, decisions, calculations = _evaluate(fixture)
+    decisions_by_metric = _decisions_by_metric(decisions)
+
+    assert values["holding_company_nav"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav"],
+        "holding_double_count_detected",
+        status="invalid",
+    )
+    assert values["holding_company_nav_discount"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav_discount"],
+        "holding_double_count_detected",
+        status="invalid",
+        blocking=False,
+    )
+    assert all(
+        calculation.formula_id
+        not in {"holding-company-nav-v1", "holding-company-nav-discount-v1"}
+        for calculation in calculations
+    )
+
+
+def test_holding_and_parent_adjustment_evidence_ids_must_be_unique_across_roles() -> None:
+    fixture = _load_fixture("complete")
+    metric_inputs = fixture["profile_input"]["metric_inputs"]
+    metric_inputs["parent_net_debt"]["evidence_id"] = metric_inputs["holdings"][0][
+        "fair_value_evidence_id"
+    ]
+
+    values, decisions, calculations = _evaluate(fixture)
+    decisions_by_metric = _decisions_by_metric(decisions)
+
+    assert values["holding_company_nav"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav"],
+        "holding_double_count_detected",
+        status="invalid",
+    )
+    assert values["holding_company_nav_discount"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav_discount"],
+        "holding_double_count_detected",
+        status="invalid",
+        blocking=False,
+    )
+    assert all(
+        calculation.formula_id
+        not in {"holding-company-nav-v1", "holding-company-nav-discount-v1"}
+        for calculation in calculations
+    )
+
+
+def test_holding_company_calculations_ignore_global_decimal_context() -> None:
+    fixture = _load_fixture("complete")
+
+    with localcontext() as context:
+        context.prec = 28
+        context.rounding = ROUND_HALF_EVEN
+        expected_values, _, _ = _evaluate(fixture)
+
+    with localcontext() as context:
+        context.prec = 6
+        context.rounding = ROUND_DOWN
+        actual_values, _, _ = _evaluate(fixture)
+
+    for metric_id in (
+        "holding_company_nav",
+        "holding_company_market_cap",
+        "holding_company_nav_discount",
+    ):
+        assert actual_values[metric_id] == expected_values[metric_id]
+
+
+def test_finite_extreme_nav_inputs_fail_closed_without_raising() -> None:
+    fixture = _load_fixture("complete")
+    extreme_value = "9.999999999999999999999999999e999999"
+    holding_value = next(
+        item
+        for item in fixture["evidence_records"]
+        if item["evidence_id"] == "ev_holding_a_fair_value"
+    )
+    other_adjustments = next(
+        item
+        for item in fixture["evidence_records"]
+        if item["evidence_id"] == "ev_other_adjustments"
+    )
+    holding_value["value"] = extreme_value
+    other_adjustments["value"] = extreme_value
+
+    values, decisions, calculations = _evaluate(fixture)
+    decisions_by_metric = _decisions_by_metric(decisions)
+
+    assert values["holding_company_nav"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav"],
+        "holding_decimal_arithmetic_failed",
+        status="unavailable",
+    )
+    assert values["holding_company_nav_discount"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav_discount"],
+        "holding_decimal_arithmetic_failed",
+        status="unavailable",
+        blocking=False,
+    )
+    assert all(
+        calculation.formula_id
+        not in {"holding-company-nav-v1", "holding-company-nav-discount-v1"}
+        for calculation in calculations
+    )
+
+
+def test_finite_extreme_market_cap_inputs_fail_closed_without_raising() -> None:
+    fixture = _load_fixture("complete")
+    extreme_value = "1e999999"
+    parent_shares = next(
+        item
+        for item in fixture["evidence_records"]
+        if item["evidence_id"] == "ev_parent_shares"
+    )
+    market_price = fixture["market_price_records"][0]
+    parent_shares["value"] = extreme_value
+    market_price["price"] = extreme_value
+
+    values, decisions, calculations = _evaluate(fixture)
+    decisions_by_metric = _decisions_by_metric(decisions)
+
+    assert values["holding_company_nav"] == Decimal("680")
+    assert values["holding_company_market_cap"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_market_cap"],
+        "holding_decimal_arithmetic_failed",
+        status="unavailable",
+        blocking=False,
+    )
+    assert values["holding_company_nav_discount"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav_discount"],
+        "holding_decimal_arithmetic_failed",
+        status="unavailable",
+        blocking=False,
+    )
+    assert all(
+        calculation.formula_id
+        not in {"holding-company-market-cap-v1", "holding-company-nav-discount-v1"}
+        for calculation in calculations
+    )
+
+
+@pytest.mark.parametrize(
+    "holding_evidence_key",
+    ["fair_value_evidence_id", "ownership_ratio_evidence_id"],
+)
+def test_parent_shares_evidence_conflict_blocks_market_cap(
+    holding_evidence_key: str,
+) -> None:
+    fixture = _load_fixture("complete")
+    metric_inputs = fixture["profile_input"]["metric_inputs"]
+    metric_inputs["parent_shares_outstanding"]["evidence_id"] = metric_inputs[
+        "holdings"
+    ][0][holding_evidence_key]
+
+    values, decisions, calculations = _evaluate(fixture)
+    decisions_by_metric = _decisions_by_metric(decisions)
+
+    assert values["holding_company_nav"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_nav"],
+        "holding_double_count_detected",
+        status="invalid",
+    )
+    assert values["holding_company_market_cap"] is None
+    _assert_unavailable_without_provenance(
+        decisions_by_metric["holding_company_market_cap"],
+        "holding_double_count_detected",
+        status="invalid",
+        blocking=False,
+    )
+    assert all(
+        calculation.formula_id != "holding-company-market-cap-v1"
         for calculation in calculations
     )

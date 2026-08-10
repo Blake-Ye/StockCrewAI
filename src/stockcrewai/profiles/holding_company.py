@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, DecimalException, ROUND_HALF_EVEN, localcontext
 from typing import Literal
 
 from stockcrewai.models.evidence import (
@@ -29,6 +29,8 @@ HOLDING_COMPANY_METRIC_IDS = (
 )
 
 _HOLDING_SCOPE = "standalone_equity_or_asset_value"
+_DECIMAL_CONTEXT_PRECISION = 28
+_DECIMAL_ARITHMETIC_FAILURE_REASON = "holding_decimal_arithmetic_failed"
 _INVALID_REASONS = frozenset(
     {
         "holding_double_count_detected",
@@ -279,6 +281,29 @@ def _holding_inputs(
     return holdings, None
 
 
+def _cross_role_evidence_reason(
+    metric_inputs: Mapping[str, object],
+    holdings: Sequence[tuple[str, str, str]],
+) -> str | None:
+    evidence_ids = [
+        evidence_id
+        for _, fair_value_id, ownership_id in holdings
+        for evidence_id in (fair_value_id, ownership_id)
+    ]
+    evidence_ids.extend(
+        evidence_id
+        for key in (
+            "parent_net_debt",
+            "other_adjustments",
+            "parent_shares_outstanding",
+        )
+        if (evidence_id := _input_id(metric_inputs, key)) is not None
+    )
+    if len(evidence_ids) != len(set(evidence_ids)):
+        return "holding_double_count_detected"
+    return None
+
+
 def _point_in_time_reason(
     records: Sequence[EvidenceRecord | MarketPriceRecord],
 ) -> str | None:
@@ -417,6 +442,12 @@ def evaluate_holding_company_profile(
     holding_flat_records: list[EvidenceRecord] = []
     holding_evidence_ids: list[str] = []
     nav_records_for_discount: list[EvidenceRecord | MarketPriceRecord] = []
+    cross_role_reason: str | None = None
+
+    if holding_reason is None:
+        cross_role_reason = _cross_role_evidence_reason(metric_inputs, holdings)
+        if cross_role_reason is not None:
+            holding_reason = cross_role_reason
 
     if holding_reason is None:
         for _, fair_value_id, ownership_id in holdings:
@@ -455,6 +486,24 @@ def evaluate_holding_company_profile(
         if holding_reason is None:
             holding_reason = _point_in_time_reason(holding_flat_records)
 
+    first_component_value: Decimal | None = None
+    if holding_reason is None:
+        try:
+            with localcontext() as context:
+                context.prec = _DECIMAL_CONTEXT_PRECISION
+                context.rounding = ROUND_HALF_EVEN
+                attributable_holdings_value = Decimal("0")
+                for fair_value, ownership in holding_records:
+                    if fair_value.value is not None and ownership.value is not None:
+                        component_value = fair_value.value * ownership.value
+                        if first_component_value is None:
+                            first_component_value = component_value
+                        attributable_holdings_value += component_value
+        except DecimalException:
+            holding_reason = _DECIMAL_ARITHMETIC_FAILURE_REASON
+    if holding_reason is None and first_component_value is None:
+        holding_reason = _DECIMAL_ARITHMETIC_FAILURE_REASON
+
     if holding_reason is not None:
         core_status = _failure_status(holding_reason)
         decisions["attributable_holdings_value"] = _decision(
@@ -470,20 +519,15 @@ def evaluate_holding_company_profile(
             True,
         )
     else:
-        attributable_holdings_value = Decimal("0")
-        for fair_value, ownership in holding_records:
-            if fair_value.value is not None and ownership.value is not None:
-                attributable_holdings_value += fair_value.value * ownership.value
-
         first_pair = next(iter(holding_records), None)
-        if first_pair is not None:
+        if first_pair is not None and first_component_value is not None:
             first_fair_value, first_ownership = first_pair
             calculations.append(
                 _calculation(
                     "calc_holding_attributable_component_value_v1",
                     "holding-attributable-component-value-v1",
                     [first_fair_value, first_ownership],
-                    first_fair_value.value * first_ownership.value,
+                    first_component_value,
                     valuation_currency or first_fair_value.unit,
                 )
             )
@@ -542,39 +586,52 @@ def evaluate_holding_company_profile(
                 True,
             )
         else:
-            holding_company_nav = (
-                attributable_holdings_value
-                - parent_net_debt.value
-                + other_adjustments.value
-            )
-            nav_records = [
-                *holding_flat_records,
-                parent_net_debt,
-                other_adjustments,
-            ]
-            nav_records_for_discount = nav_records
-            nav_calculation = _calculation(
-                "calc_holding_company_nav_v1",
-                "holding-company-nav-v1",
-                nav_records,
-                holding_company_nav,
-                valuation_currency or "USD",
-            )
-            calculations.append(nav_calculation)
-            values["holding_company_nav"] = holding_company_nav
-            nav_evidence_ids = [
-                *holding_evidence_ids,
-                parent_net_debt.evidence_id,
-                other_adjustments.evidence_id,
-            ]
-            decisions["holding_company_nav"] = _decision(
-                "holding_company_nav",
-                "available",
-                "calculated",
-                True,
-                evidence_ids=nav_evidence_ids,
-                calculation_ids=[nav_calculation.calculation_id],
-            )
+            try:
+                with localcontext() as context:
+                    context.prec = _DECIMAL_CONTEXT_PRECISION
+                    context.rounding = ROUND_HALF_EVEN
+                    holding_company_nav = (
+                        attributable_holdings_value
+                        - parent_net_debt.value
+                        + other_adjustments.value
+                    )
+            except DecimalException:
+                final_nav_reason = _DECIMAL_ARITHMETIC_FAILURE_REASON
+                decisions["holding_company_nav"] = _decision(
+                    "holding_company_nav",
+                    "unavailable",
+                    final_nav_reason,
+                    True,
+                )
+            else:
+                nav_records = [
+                    *holding_flat_records,
+                    parent_net_debt,
+                    other_adjustments,
+                ]
+                nav_records_for_discount = nav_records
+                nav_calculation = _calculation(
+                    "calc_holding_company_nav_v1",
+                    "holding-company-nav-v1",
+                    nav_records,
+                    holding_company_nav,
+                    valuation_currency or "USD",
+                )
+                calculations.append(nav_calculation)
+                values["holding_company_nav"] = holding_company_nav
+                nav_evidence_ids = [
+                    *holding_evidence_ids,
+                    parent_net_debt.evidence_id,
+                    other_adjustments.evidence_id,
+                ]
+                decisions["holding_company_nav"] = _decision(
+                    "holding_company_nav",
+                    "available",
+                    "calculated",
+                    True,
+                    evidence_ids=nav_evidence_ids,
+                    calculation_ids=[nav_calculation.calculation_id],
+                )
 
     parent_shares, shares_reason = _resolve_evidence(
         _input_id(metric_inputs, "parent_shares_outstanding"),
@@ -593,7 +650,9 @@ def evaluate_holding_company_profile(
         profile_as_of,
         valuation_currency,
     )
-    if shares_reason is not None:
+    if cross_role_reason is not None:
+        market_cap_reason = cross_role_reason
+    elif shares_reason is not None:
         market_cap_reason = shares_reason
     elif market_reason is not None:
         market_cap_reason = market_reason
@@ -604,6 +663,15 @@ def evaluate_holding_company_profile(
     else:
         market_cap_reason = None
 
+    if market_cap_reason is None:
+        try:
+            with localcontext() as context:
+                context.prec = _DECIMAL_CONTEXT_PRECISION
+                context.rounding = ROUND_HALF_EVEN
+                holding_company_market_cap = market_price.price * parent_shares.value
+        except DecimalException:
+            market_cap_reason = _DECIMAL_ARITHMETIC_FAILURE_REASON
+
     if market_cap_reason is not None:
         decisions["holding_company_market_cap"] = _decision(
             "holding_company_market_cap",
@@ -612,7 +680,6 @@ def evaluate_holding_company_profile(
             False,
         )
     else:
-        holding_company_market_cap = market_price.price * parent_shares.value
         market_cap_calculation = _calculation(
             "calc_holding_company_market_cap_v1",
             "holding-company-market-cap-v1",
@@ -655,23 +722,38 @@ def evaluate_holding_company_profile(
         )
     else:
         nav_records = [*nav_records_for_discount, market_price, parent_shares]
-        holding_company_nav_discount = (nav_value - market_cap_value) / nav_value
-        discount_calculation = _calculation(
-            "calc_holding_company_nav_discount_v1",
-            "holding-company-nav-discount-v1",
-            nav_records,
-            holding_company_nav_discount,
-            "ratio",
-        )
-        calculations.append(discount_calculation)
-        values["holding_company_nav_discount"] = holding_company_nav_discount
+        try:
+            with localcontext() as context:
+                context.prec = _DECIMAL_CONTEXT_PRECISION
+                context.rounding = ROUND_HALF_EVEN
+                holding_company_nav_discount = (nav_value - market_cap_value) / nav_value
+        except DecimalException:
+            discount_reason = _DECIMAL_ARITHMETIC_FAILURE_REASON
+        else:
+            discount_calculation = _calculation(
+                "calc_holding_company_nav_discount_v1",
+                "holding-company-nav-discount-v1",
+                nav_records,
+                holding_company_nav_discount,
+                "ratio",
+            )
+            calculations.append(discount_calculation)
+            values["holding_company_nav_discount"] = holding_company_nav_discount
+            decisions["holding_company_nav_discount"] = _decision(
+                "holding_company_nav_discount",
+                "available",
+                "calculated",
+                False,
+                evidence_ids=[record.evidence_id for record in nav_records],
+                calculation_ids=[discount_calculation.calculation_id],
+            )
+
+    if discount_reason is not None and "holding_company_nav_discount" not in decisions:
         decisions["holding_company_nav_discount"] = _decision(
             "holding_company_nav_discount",
-            "available",
-            "calculated",
+            _failure_status(discount_reason),
+            discount_reason,
             False,
-            evidence_ids=[record.evidence_id for record in nav_records],
-            calculation_ids=[discount_calculation.calculation_id],
         )
 
     not_applicable = {
