@@ -1,0 +1,194 @@
+{
+  "fixture_version": "wp10-s02-reit-profile-v1-missing-affo",
+  "synthetic": true,
+  "source_note": "Offline deterministic SEC-like test data; no network, Yahoo, LLM, CrewAI, Flow, or registry access.",
+  "profile_input": {
+    "profile_version": "reit-profile:v1",
+    "issuer_profile": "reit",
+    "security_profile": "common_stock",
+    "reporting_profile": "domestic_us_gaap",
+    "coverage_level": "full",
+    "classification_evidence_ids": ["ev_reit_missing_affo_classification"],
+    "us_gaap_tags": ["us-gaap:NetIncomeLoss", "us-gaap:DepreciationDepletionAndAmortization"],
+    "policy_version": "metric-policy:v2",
+    "ffo_reconciliation": {
+      "gaap_net_income": {
+        "line_type": "gaap_net_income",
+        "label": "Net income",
+        "signed_amount": "100",
+        "evidence_id": "ev_reit_missing_affo_net_income",
+        "unit": "USD",
+        "currency": "USD",
+        "period": {
+          "period_start": "2025-01-01",
+          "period_end": "2025-12-31",
+          "fiscal_year": "2025",
+          "fiscal_period": "FY",
+          "audited": true,
+          "basis": "annual"
+        },
+        "filed_at": "2026-02-15",
+        "as_of": "2026-02-15T00:00:00Z",
+        "source_reference": "fixture:sec-like/reit/missing-affo/net-income",
+        "validation_status": "valid"
+      },
+      "adjustments": [
+        {
+          "line_type": "ffo_adjustment",
+          "label": "Depreciation and amortization",
+          "signed_amount": "30",
+          "evidence_id": "ev_reit_missing_affo_depreciation",
+          "unit": "USD",
+          "currency": "USD",
+          "period": {
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "fiscal_year": "2025",
+            "fiscal_period": "FY",
+            "audited": true,
+            "basis": "annual"
+          },
+          "filed_at": "2026-02-15",
+          "as_of": "2026-02-15T00:00:00Z",
+          "source_reference": "fixture:sec-like/reit/missing-affo/depreciation",
+          "validation_status": "valid"
+        },
+        {
+          "line_type": "ffo_adjustment",
+          "label": "Other real estate adjustment",
+          "signed_amount": "20",
+          "evidence_id": "ev_reit_missing_affo_other_adjustment",
+          "unit": "USD",
+          "currency": "USD",
+          "period": {
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "fiscal_year": "2025",
+            "fiscal_period": "FY",
+            "audited": true,
+            "basis": "annual"
+          },
+          "filed_at": "2026-02-15",
+          "as_of": "2026-02-15T00:00:00Z",
+          "source_reference": "fixture:sec-like/reit/missing-affo/other-adjustment",
+          "validation_status": "valid"
+        }
+      ],
+      "disclosed_ffo_total": {
+        "line_type": "disclosed_ffo_total",
+        "label": "Funds from operations",
+        "signed_amount": "150",
+        "evidence_id": "ev_reit_missing_affo_ffo_total",
+        "unit": "USD",
+        "currency": "USD",
+        "period": {
+          "period_start": "2025-01-01",
+          "period_end": "2025-12-31",
+          "fiscal_year": "2025",
+          "fiscal_period": "FY",
+          "audited": true,
+          "basis": "annual"
+        },
+        "filed_at": "2026-02-15",
+        "as_of": "2026-02-15T00:00:00Z",
+        "source_reference": "fixture:sec-like/reit/missing-affo/ffo-total",
+        "validation_status": "valid"
+      }
+    },
+    "metric_inputs": {
+      "diluted_weighted_average_shares": {
+        "evidence_id": "ev_reit_missing_affo_diluted_shares"
+      }
+    }
+  },
+  "evidence_records": [
+    {
+      "evidence_id": "ev_reit_missing_affo_classification",
+      "source_reference": "fixture:sec-like/reit/missing-affo/classification",
+      "as_of": "2026-02-15T00:00:00Z",
+      "filed_at": "2026-02-15",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "sic",
+      "currency": "N/A",
+      "value": "6798",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_reit_missing_affo_net_income",
+      "source_reference": "fixture:sec-like/reit/missing-affo/net-income",
+      "as_of": "2026-02-15T00:00:00Z",
+      "filed_at": "2026-02-15",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD",
+      "currency": "USD",
+      "value": "100",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_reit_missing_affo_depreciation",
+      "source_reference": "fixture:sec-like/reit/missing-affo/depreciation",
+      "as_of": "2026-02-15T00:00:00Z",
+      "filed_at": "2026-02-15",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD",
+      "currency": "USD",
+      "value": "30",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_reit_missing_affo_other_adjustment",
+      "source_reference": "fixture:sec-like/reit/missing-affo/other-adjustment",
+      "as_of": "2026-02-15T00:00:00Z",
+      "filed_at": "2026-02-15",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD",
+      "currency": "USD",
+      "value": "20",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_reit_missing_affo_ffo_total",
+      "source_reference": "fixture:sec-like/reit/missing-affo/ffo-total",
+      "as_of": "2026-02-15T00:00:00Z",
+      "filed_at": "2026-02-15",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD",
+      "currency": "USD",
+      "value": "150",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_reit_missing_affo_diluted_shares",
+      "source_reference": "fixture:sec-like/reit/missing-affo/diluted-shares",
+      "as_of": "2026-02-15T00:00:00Z",
+      "filed_at": "2026-02-15",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "shares",
+      "currency": "N/A",
+      "value": "50",
+      "validation_status": "valid"
+    }
+  ],
+  "market_price_records": [],
+  "expected": {
+    "values": {
+      "ffo_total": "150",
+      "ffo_per_share": "3",
+      "affo": null
+    },
+    "affo_decision": {
+      "status": "unavailable",
+      "reason_code": "affo_reconciliation_not_disclosed",
+      "blocking": false,
+      "evidence_ids": [],
+      "calculation_ids": []
+    },
+    "absent_formula_id": "company-disclosed-affo-reconciliation-v1"
+  }
+}
