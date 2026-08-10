@@ -24,6 +24,7 @@ from stockcrewai.models.profile import (
 
 
 POLICY_VERSION = "metric-policy:v1"
+_REIT_POLICY_VERSION = "metric-policy:v2"
 
 
 class _MetricSpec(NamedTuple):
@@ -35,6 +36,7 @@ class _MetricSpec(NamedTuple):
     unit_policy: str
     gate_effect: GateEffect
     reason_code: str
+    policy_version: str = POLICY_VERSION
 
 
 def _spec(
@@ -44,16 +46,21 @@ def _spec(
     *,
     gate_effect: GateEffect,
     reason_code: str,
+    formula_id: str | None = None,
+    period_basis: str = "ttm_or_latest_fiscal_period",
+    unit_policy: str = "decimal_ratio_or_per_share",
+    policy_version: str = POLICY_VERSION,
 ) -> _MetricSpec:
     return _MetricSpec(
         metric_id,
         applicability,
         required_evidence,
-        f"{metric_id}:v1",
-        "ttm_or_latest_fiscal_period",
-        "decimal_ratio_or_per_share",
+        formula_id or f"{metric_id}:v1",
+        period_basis,
+        unit_policy,
         gate_effect,
         reason_code,
+        policy_version,
     )
 
 
@@ -150,25 +157,114 @@ _POLICY_TABLE: dict[IssuerProfile, tuple[_MetricSpec, ...]] = {
     ),
     IssuerProfile.REIT: (
         _spec(
+            "ffo_total",
+            _REQUIRED,
+            ("ffo_reconciliation",),
+            gate_effect=_BLOCKING,
+            reason_code="required_ffo_total",
+            formula_id="reit-ffo-reconciliation-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="currency_amount",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
             "ffo_per_share",
             _REQUIRED,
-            ("net_income", "real_estate_depreciation", "gains_on_sales"),
+            ("ffo_total", "diluted_weighted_average_shares"),
             gate_effect=_BLOCKING,
             reason_code="required_ffo_per_share",
+            formula_id="reit-ffo-per-share-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="currency_per_share",
+            policy_version=_REIT_POLICY_VERSION,
         ),
         _spec(
-            "affo_per_share",
-            _REQUIRED,
-            ("ffo", "maintenance_capex"),
-            gate_effect=_BLOCKING,
-            reason_code="required_affo_per_share",
-        ),
-        _spec(
-            "pe_ratio",
+            "affo",
             _OPTIONAL,
-            ("market_price", "diluted_eps"),
+            ("affo_reconciliation",),
             gate_effect=_NON_BLOCKING,
-            reason_code="optional_reit_pe_ratio",
+            reason_code="optional_affo",
+            formula_id="company-disclosed-affo-reconciliation-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="currency_amount",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
+            "same_store_noi",
+            _OPTIONAL,
+            ("same_store_noi",),
+            gate_effect=_NON_BLOCKING,
+            reason_code="optional_same_store_noi",
+            formula_id="company-disclosed-same-store-noi-v1",
+            period_basis="company_disclosed_period",
+            unit_policy="currency_amount",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
+            "occupancy",
+            _OPTIONAL,
+            ("occupancy",),
+            gate_effect=_NON_BLOCKING,
+            reason_code="optional_occupancy",
+            formula_id="company-disclosed-occupancy-v1",
+            period_basis="company_disclosed_period",
+            unit_policy="ratio_0_to_1",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
+            "net_debt_to_ebitda",
+            _OPTIONAL,
+            ("net_debt", "ebitda"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="optional_net_debt_to_ebitda",
+            formula_id="reit-net-debt-to-ebitda-v1",
+            period_basis="explicit_observation_period",
+            unit_policy="multiple",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
+            "dividend_coverage",
+            _OPTIONAL,
+            ("ffo_attributable_to_common", "common_dividends"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="optional_dividend_coverage",
+            formula_id="reit-dividend-coverage-v1",
+            period_basis="same_fiscal_period",
+            unit_policy="ratio",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
+            "price_to_ffo",
+            _OPTIONAL,
+            ("market_price", "ffo_per_share"),
+            gate_effect=_NON_BLOCKING,
+            reason_code="optional_price_to_ffo",
+            formula_id="reit-price-to-ffo-v1",
+            period_basis="market_price_at_or_after_financial_as_of",
+            unit_policy="multiple",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
+            "pe",
+            _NOT_APPLICABLE,
+            (),
+            gate_effect=_NON_BLOCKING,
+            reason_code="not_applicable_reit_pe",
+            formula_id="reit-pe-not-applicable-v1",
+            period_basis="not_applicable",
+            unit_policy="not_applicable",
+            policy_version=_REIT_POLICY_VERSION,
+        ),
+        _spec(
+            "fcf_yield",
+            _NOT_APPLICABLE,
+            (),
+            gate_effect=_NON_BLOCKING,
+            reason_code="not_applicable_reit_fcf_yield",
+            formula_id="reit-fcf-yield-not-applicable-v1",
+            period_basis="not_applicable",
+            unit_policy="not_applicable",
+            policy_version=_REIT_POLICY_VERSION,
         ),
     ),
     IssuerProfile.UTILITY: (
@@ -267,8 +363,16 @@ def _policy(profile: ProfileResult, spec: _MetricSpec) -> MetricPolicy:
         unit_policy=spec.unit_policy,
         gate_effect=spec.gate_effect,
         reason_code=spec.reason_code,
-        policy_version=POLICY_VERSION,
+        policy_version=spec.policy_version,
     )
+
+
+def policy_version_for_profile(profile: ProfileResult | IssuerProfile) -> str:
+    """Return the fixed metric policy version for a resolved issuer profile."""
+    issuer_profile = getattr(profile, "issuer_profile", profile)
+    if issuer_profile is IssuerProfile.REIT or issuer_profile == IssuerProfile.REIT.value:
+        return _REIT_POLICY_VERSION
+    return POLICY_VERSION
 
 
 def resolve_metric_policies(profile: ProfileResult) -> tuple[MetricPolicy, ...]:
@@ -409,5 +513,6 @@ def evaluate_policy_decisions(
 __all__ = [
     "POLICY_VERSION",
     "evaluate_policy_decisions",
+    "policy_version_for_profile",
     "resolve_metric_policies",
 ]

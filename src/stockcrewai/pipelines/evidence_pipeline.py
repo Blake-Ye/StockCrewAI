@@ -12,15 +12,17 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from stockcrewai.models.evidence import ValidationStatus
+from stockcrewai.models.evidence import EvidenceRecord, MarketPriceRecord, ValidationStatus
 from stockcrewai.models.policy import GateResult, PolicyDecision
-from stockcrewai.models.profile import ProfileResult
+from stockcrewai.models.profile import IssuerProfile, ProfileResult
 from stockcrewai.pipelines.metric_registry import (
     POLICY_VERSION,
     evaluate_policy_decisions,
+    policy_version_for_profile,
     resolve_metric_policies,
 )
 from stockcrewai.pipelines.profile_registry import classify_profiles
+from stockcrewai.profiles.reit import evaluate_reit_profile
 from stockcrewai.tools.edgar_tool import EdgarError, EdgarResult
 from stockcrewai.tools.validation_tool import sync_validation_status
 from stockcrewai.validators.analysis_gate import evaluate_analysis_gate
@@ -440,10 +442,57 @@ def build_profile_policy_context(
     calculations: Any = None,
     additional_evidence_ids: Sequence[str] = (),
     additional_calculations: Any = None,
+    evidence_records: Sequence[EvidenceRecord] = (),
+    market_price_records: Sequence[MarketPriceRecord] = (),
 ) -> dict[str, Any]:
     """构造 Flow 内唯一 JSON-safe 的 Profile/Policy/Gate 共享上下文。"""
     profile_result = _profile_result(profile, source_metadata)
     policies = resolve_metric_policies(profile_result)
+
+    if profile_result.issuer_profile is IssuerProfile.REIT:
+        reit_profile_input: Mapping[str, object]
+        if isinstance(profile, Mapping):
+            reit_profile_input = profile
+        else:
+            reit_profile_input = profile_result.model_dump(mode="json")
+        typed_evidence_records = (
+            evidence_records
+            if isinstance(evidence_records, Sequence)
+            and not isinstance(evidence_records, (str, bytes, bytearray))
+            and all(isinstance(record, EvidenceRecord) for record in evidence_records)
+            else ()
+        )
+        typed_market_price_records = (
+            market_price_records
+            if isinstance(market_price_records, Sequence)
+            and not isinstance(market_price_records, (str, bytes, bytearray))
+            and all(
+                isinstance(record, MarketPriceRecord) for record in market_price_records
+            )
+            else ()
+        )
+        values, decisions, calculation_records = evaluate_reit_profile(
+            reit_profile_input,
+            typed_evidence_records,
+            typed_market_price_records,
+        )
+        gate = _profile_policy_gate(profile_result, decisions)
+        return _json_safe(
+            {
+                "profile": profile_result.model_dump(mode="json"),
+                "coverage_level": profile_result.coverage_level.value,
+                "profile_registry_version": profile_result.registry_version,
+                "policies": [policy.model_dump(mode="json") for policy in policies],
+                "policy_decisions": [
+                    decision.model_dump(mode="json") for decision in decisions
+                ],
+                "policy_version": policy_version_for_profile(profile_result),
+                "gate": gate.model_dump(mode="json"),
+                "values": values,
+                "calculation_records": calculation_records,
+            }
+        )
+
     calculation_values: list[Any] = []
     for value in (calculations, additional_calculations):
         if isinstance(value, Mapping):

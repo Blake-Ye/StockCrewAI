@@ -5,7 +5,7 @@ from typing import Literal
 
 from stockcrewai.models.policy import GateResult, PolicyDecision
 from stockcrewai.models.profile import CoverageLevel, ProfileResult, SecurityProfile
-from stockcrewai.pipelines.metric_registry import POLICY_VERSION
+from stockcrewai.pipelines.metric_registry import policy_version_for_profile
 
 
 def _reason_codes(fixed_code: str, decisions: Sequence[PolicyDecision]) -> list[str]:
@@ -55,7 +55,7 @@ def evaluate_analysis_gate(
         blocking_decisions=blocking_decisions,
         non_blocking_decisions=non_blocking_decisions,
         reason_codes=_reason_codes(fixed_reason_code, decisions),
-        policy_version=POLICY_VERSION,
+        policy_version=policy_version_for_profile(profile),
     )
 
 
