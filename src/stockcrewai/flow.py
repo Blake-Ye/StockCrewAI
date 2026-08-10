@@ -95,6 +95,44 @@ _FOREIGN_FX_NOT_IMPLEMENTED_REASON = "foreign_currency_fx_not_implemented"
 _HOLDING_COMPANY_NAV_PRIMARY_REASON = "holding_company_nav_primary_valuation"
 
 
+def _holding_nav_policy_ready(
+    policy_context: Any,
+    valuation: Any,
+    historical_valuation: Any,
+    reverse_dcf: Any,
+) -> bool:
+    if not isinstance(policy_context, Mapping):
+        return False
+    profile = policy_context.get("profile")
+    issuer_profile = (
+        profile.get("issuer_profile", profile.get("issuer_type"))
+        if isinstance(profile, Mapping)
+        else None
+    )
+    issuer_profile = getattr(issuer_profile, "value", issuer_profile)
+    if str(issuer_profile).strip().casefold() != "holding_company":
+        return False
+    gate = policy_context.get("gate")
+    if not isinstance(gate, Mapping) or gate.get("status") != "ready":
+        return False
+    policy_decisions = policy_context.get("policy_decisions")
+    if not isinstance(policy_decisions, list) or not any(
+        isinstance(decision, Mapping)
+        and decision.get("metric_id") == "holding_company_nav"
+        and decision.get("status") == "available"
+        for decision in policy_decisions
+    ):
+        return False
+    return all(
+        isinstance(result, Mapping)
+        and result.get("status") == "not_applicable"
+        and result.get("readiness") == "not_applicable"
+        and result.get("validation_status") == "unvalidated"
+        and result.get("reason_code") == _HOLDING_COMPANY_NAV_PRIMARY_REASON
+        for result in (valuation, historical_valuation, reverse_dcf)
+    )
+
+
 def _allow_empty_foreign_valuation_claims(
     policy_context: Any,
     valuation: Any,
@@ -105,12 +143,6 @@ def _allow_empty_foreign_valuation_claims(
     if not isinstance(policy_context, Mapping):
         return False
     profile = policy_context.get("profile")
-    issuer_profile = (
-        profile.get("issuer_profile", profile.get("issuer_type"))
-        if isinstance(profile, Mapping)
-        else None
-    )
-    issuer_profile = getattr(issuer_profile, "value", issuer_profile)
     reporting_profile = (
         profile.get("reporting_profile") if isinstance(profile, Mapping) else None
     )
@@ -118,19 +150,11 @@ def _allow_empty_foreign_valuation_claims(
     gate = policy_context.get("gate")
     if not isinstance(gate, Mapping):
         return False
-    if str(issuer_profile).strip().casefold() == "holding_company":
-        if gate.get("status") != "ready":
-            return False
-        policy_decisions = policy_context.get("policy_decisions")
-        if not isinstance(policy_decisions, list) or not any(
-            isinstance(decision, Mapping)
-            and decision.get("metric_id") == "holding_company_nav"
-            and decision.get("status") == "available"
-            for decision in policy_decisions
-        ):
-            return False
-        expected_reason = _HOLDING_COMPANY_NAV_PRIMARY_REASON
-    elif (
+    if _holding_nav_policy_ready(
+        policy_context, valuation, historical_valuation, reverse_dcf
+    ):
+        return True
+    if (
         str(reporting_profile).strip().casefold() == "foreign_private_issuer_ifrs"
         and gate.get("status") == "evidence_only"
     ):
@@ -1868,7 +1892,12 @@ class ResearchFlow(Flow[ResearchFlowState]):
         claim_calculation_ids = list(
             valuation_input.get("validated_calculation_ids", [])
         )
-        if allow_empty_valuation_claims:
+        if _holding_nav_policy_ready(
+            self.state.policy_context,
+            self.state.valuation,
+            self.state.historical_valuation,
+            self.state.reverse_dcf,
+        ):
             profile_evidence_ids = [
                 record.get("evidence_id")
                 for record in self.state.policy_context.get("evidence_records", [])

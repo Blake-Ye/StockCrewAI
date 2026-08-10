@@ -47,23 +47,25 @@
 
 | factor_id | 固定公式 | 适用 `IssuerProfile` | 方向 |
 |---|---|---|---|
-| `value.earnings_yield` | `diluted_eps / price` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `value.fcf_yield` | `free_cash_flow / (price × shares)`；其中 `shares` 必须存在于 `market_features` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `value.price_to_book` | `price / book_value_per_share` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer`, `holding_company` | low |
-| `value.ev_to_ebitda` | `enterprise_value / ebitda` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | low |
-| `quality.roe` | `net_income / average_equity` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer`, `holding_company` | high |
-| `quality.roic` | `nopat / invested_capital` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `quality.operating_margin` | `operating_income / revenue` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `quality.fcf_margin` | `free_cash_flow / revenue` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `quality.cash_conversion` | `cash_from_operations / net_income` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `quality.debt_to_equity` | `total_debt / total_equity` | `standard_operating`, `reit`, `utility`, `commodity_producer`, `holding_company` | low |
-| `growth.revenue_cagr_3y` | `(revenue / revenue_3y_ago)^(1/3) - 1` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `growth.eps_growth_3y` | `(diluted_eps / eps_3y_ago)^(1/3) - 1` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
-| `growth.fcf_growth_3y` | `(free_cash_flow / fcf_3y_ago)^(1/3) - 1` | `standard_operating`, `utility`, `commodity_producer`, `holding_company` | high |
+| `value.earnings_yield` | `diluted_eps / price` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `value.fcf_yield` | `free_cash_flow / (price × shares)`；其中 `shares` 必须存在于 `market_features` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `value.price_to_book` | `price / book_value_per_share` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer` | low |
+| `value.ev_to_ebitda` | `enterprise_value / ebitda` | `standard_operating`, `utility`, `commodity_producer` | low |
+| `quality.roe` | `net_income / average_equity` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer` | high |
+| `quality.roic` | `nopat / invested_capital` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `quality.operating_margin` | `operating_income / revenue` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `quality.fcf_margin` | `free_cash_flow / revenue` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `quality.cash_conversion` | `cash_from_operations / net_income` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `quality.debt_to_equity` | `total_debt / total_equity` | `standard_operating`, `reit`, `utility`, `commodity_producer` | low |
+| `growth.revenue_cagr_3y` | `(revenue / revenue_3y_ago)^(1/3) - 1` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `growth.eps_growth_3y` | `(diluted_eps / eps_3y_ago)^(1/3) - 1` | `standard_operating`, `utility`, `commodity_producer` | high |
+| `growth.fcf_growth_3y` | `(free_cash_flow / fcf_3y_ago)^(1/3) - 1` | `standard_operating`, `utility`, `commodity_producer` | high |
 | `market.momentum_12_1` | `return_12m - return_1m` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer`, `holding_company` | high |
 | `risk.volatility_12m` | `volatility_12m` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer`, `holding_company` | low |
 | `risk.beta_12m` | `beta_12m` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer`, `holding_company` | low |
 | `risk.max_drawdown_12m` | `max_drawdown_12m` | `standard_operating`, `bank`, `insurance`, `reit`, `utility`, `commodity_producer`, `holding_company` | low |
+
+`holding_company` 的量化 Profile 只保留 holding 专用 NAV 边界以及当前 registry 列出的 `market.momentum_12_1`、`risk.volatility_12m`、`risk.beta_12m` 和 `risk.max_drawdown_12m`；普通企业的 value/quality/growth 因子均固定为 `status="not_applicable"`、`reason_code="profile_not_applicable"`、`blocking=false`。`not_applicable` 不阻断 Gate，也不得用持股公司的普通企业字段伪造 earnings yield、FCF yield、P/B、EV/EBITDA、ROE、ROIC、margin、cash conversion、debt-to-equity 或 3 年增长等比率；具体适用范围以 `src/stockcrewai/quant/factors.py` 当前 registry 为准。
 
 `value.fcf_yield` 的 `shares` 固定读取 `market_features["shares"]`，其单位必须与 `free_cash_flow` 和 `price` 的单位契约一致；缺失时不得退回 `market_cap` 或其他别名。`price_to_book`、`earnings_yield` 等比率不做百分数乘 100，内部结果保持小数形式。
 
