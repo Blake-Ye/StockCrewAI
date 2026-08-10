@@ -276,8 +276,15 @@ def test_invalid_or_duplicate_source_fails_closed() -> None:
     _, _, _, evaluate_bank_profile = _bank_api()
     affected_metrics = [
         metric_id
-        for metric_id, evidence_id in fixture["profile_input"]["metric_inputs"].items()
-        if evidence_id == bad_evidence_id
+        for metric_id, input_names in {
+            "bank_roa": ("net_income", "average_assets"),
+            "bank_roe": ("net_income", "average_equity"),
+        }.items()
+        if bad_evidence_id
+        in {
+            fixture["profile_input"]["metric_inputs"][input_name]
+            for input_name in input_names
+        }
     ]
     expected_affected_metrics = {"bank_roa", "bank_roe"}
     assert set(affected_metrics) == expected_affected_metrics
