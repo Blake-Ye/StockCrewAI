@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal, DecimalException, localcontext
 from typing import Literal
 
-from stockcrewai.models.profile import IssuerProfile
+from stockcrewai.models.profile import IssuerProfile, SecurityProfile
 from stockcrewai.models.quant import FactorObservation, PointInTimeSnapshot
 
 
@@ -352,6 +352,21 @@ def compute_factor_observations(
             calculation_ids,
             provenance_valid,
         )
+        if snapshot.security_profile is SecurityProfile.SPAC:
+            for factor_id in FACTOR_DIRECTIONS:
+                observations.append(
+                    _observation(
+                        snapshot,
+                        factor_id,
+                        formula_version,
+                        None,
+                        "not_applicable",
+                        "security_profile_not_applicable",
+                        [],
+                        [],
+                    )
+                )
+            continue
         profile = snapshot.issuer_profile
         for factor_id in FACTOR_DIRECTIONS:
             if not isinstance(profile, IssuerProfile):

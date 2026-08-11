@@ -407,9 +407,8 @@ def test_non_publishable_coverage_does_not_append_special_policy(
     assert resolve_metric_policies(profile) == ()
 
 
-@pytest.mark.parametrize("security", [SecurityProfile.ADR, SecurityProfile.SPAC])
-def test_adr_and_spac_do_not_publish_standard_policy(security: SecurityProfile) -> None:
-    profile = _profile(IssuerProfile.STANDARD_OPERATING, security=security)
+def test_adr_does_not_publish_standard_policy() -> None:
+    profile = _profile(IssuerProfile.STANDARD_OPERATING, security=SecurityProfile.ADR)
 
     assert resolve_metric_policies(profile) == ()
 

@@ -93,6 +93,24 @@ class DeterministicVerdictTool(BaseTool):
         )
         reporting_profile = getattr(reporting_profile, "value", reporting_profile)
         gate = policy_context.get("gate")
+        security_profile = (
+            profile.get("security_profile") if isinstance(profile, dict) else None
+        )
+        security_profile = getattr(security_profile, "value", security_profile)
+        if str(security_profile).strip().casefold() == "spac":
+            return VerdictResult(
+                status="insufficient_data",
+                policy_defined=False,
+                is_investment_rating=False,
+                business_quality="insufficient_data",
+                financial_trend="insufficient_data",
+                valuation="insufficient_data",
+                risk_level="insufficient_data",
+                overall_rating="insufficient_data",
+                summary_code="SPAC_EVIDENCE_ONLY",
+                triggered_rules=["spac_security_structure_evidence_only"],
+                reasons=["spac_security_structure_evidence_only"],
+            )
         if (
             str(reporting_profile).strip().casefold()
             == "foreign_private_issuer_ifrs"

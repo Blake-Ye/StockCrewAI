@@ -92,7 +92,14 @@ _REIT_FORMULA_TO_METRIC = {
     "reit-price-to-ffo-v1": "price_to_ffo",
 }
 _PROFILE_ISSUERS = frozenset(
-    {"bank", "insurance", "utility", "commodity_producer", "holding_company"}
+    {
+        "bank",
+        "insurance",
+        "utility",
+        "commodity_producer",
+        "holding_company",
+        "spac",
+    }
 )
 _FOREIGN_REPORTING_PROFILE = "foreign_private_issuer_ifrs"
 _FOREIGN_ADR_FORMULA_IDS = frozenset(
@@ -721,12 +728,19 @@ def build_report_context(
         if isinstance(policy_profile, Mapping)
         else None
     )
+    profile_security = (
+        _text(policy_profile.get("security_profile"))
+        if isinstance(policy_profile, Mapping)
+        else None
+    )
     is_reit_profile = (
         profile_issuer == "reit"
     )
     is_holding_profile = profile_issuer == "holding_company"
+    is_spac_profile = profile_security == "spac"
     is_financial_profile = (
         profile_issuer in _PROFILE_ISSUERS
+        or is_spac_profile
         or profile_reporting == _FOREIGN_REPORTING_PROFILE
     )
     policy_decisions = policy_payload.get("policy_decisions")
@@ -1012,7 +1026,9 @@ def build_report_context(
             if isinstance(policy_profile, Mapping)
             else None
         )
-        if is_holding_profile and not _text(profile_metrics_profile_version):
+        if (is_holding_profile or is_spac_profile) and not _text(
+            profile_metrics_profile_version
+        ):
             profile_metrics_profile_version = policy_payload.get("profile_version")
         profile_metrics_payload = {
             "profile_version": _json_safe_context(profile_metrics_profile_version),

@@ -55,6 +55,11 @@ from stockcrewai.profiles.holding_company import (
     evaluate_holding_company_profile,
 )
 from stockcrewai.profiles.reit import evaluate_reit_profile
+from stockcrewai.profiles.spac import (
+    POLICY_VERSION as SPAC_POLICY_VERSION,
+    PROFILE_VERSION as SPAC_PROFILE_VERSION,
+    evaluate_spac_profile,
+)
 from stockcrewai.profiles.utility import (
     PROFILE_VERSION as UTILITY_PROFILE_VERSION,
     evaluate_utility_profile,
@@ -835,6 +840,71 @@ def build_profile_policy_context(
     """构造 Flow 内唯一 JSON-safe 的 Profile/Policy/Gate 共享上下文。"""
     profile_result = _profile_result(profile, source_metadata)
     policies = resolve_metric_policies(profile_result)
+
+    if profile_result.security_profile is SecurityProfile.SPAC:
+        (
+            profile_input,
+            typed_evidence_records,
+            typed_market_price_records,
+            profile_input_valid,
+            evidence_types_valid,
+            market_types_valid,
+        ) = _typed_profile_envelope_sources(
+            profile_result=profile_result,
+            profile=profile,
+            facts=facts,
+            evidence_records=evidence_records,
+            market_price_records=market_price_records,
+            expected_profile_version=SPAC_PROFILE_VERSION,
+        )
+        envelope_valid = (
+            profile_input_valid
+            and isinstance(profile_input, Mapping)
+            and profile_input.get("policy_version") == SPAC_POLICY_VERSION
+            and evidence_types_valid
+            and market_types_valid
+            and bool(typed_evidence_records or typed_market_price_records)
+        )
+        if envelope_valid:
+            adapter_input: Mapping[str, object] = profile_input  # type: ignore[assignment]
+            values, decisions, calculation_records = evaluate_spac_profile(
+                adapter_input,
+                typed_evidence_records,
+                typed_market_price_records,
+            )
+            envelope = {"status": "valid", "reason_code": "typed_profile_envelope_valid"}
+        else:
+            values, decisions = _typed_profile_unavailable_decisions(policies)
+            calculation_records = ()
+            envelope = {
+                "status": "unavailable",
+                "reason_code": "typed_profile_envelope_required",
+            }
+        gate = _profile_policy_gate(profile_result, decisions)
+        return _json_safe(
+            {
+                "profile": profile_result.model_dump(mode="json"),
+                "coverage_level": profile_result.coverage_level.value,
+                "profile_registry_version": profile_result.registry_version,
+                "policies": [policy.model_dump(mode="json") for policy in policies],
+                "policy_decisions": [
+                    decision.model_dump(mode="json") for decision in decisions
+                ],
+                "policy_version": policy_version_for_profile(profile_result),
+                "profile_version": SPAC_PROFILE_VERSION,
+                "gate": gate.model_dump(mode="json"),
+                "values": values,
+                "calculation_records": calculation_records,
+                "evidence_records": [
+                    record.model_dump(mode="json") for record in typed_evidence_records
+                ],
+                "market_price_records": [
+                    record.model_dump(mode="json")
+                    for record in typed_market_price_records
+                ],
+                "profile_envelope": envelope,
+            }
+        )
 
     if profile_result.reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS:
         (

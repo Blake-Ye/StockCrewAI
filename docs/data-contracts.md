@@ -456,3 +456,47 @@ def evaluate_utility_profile(
 适配器只接受明确的 realized price、production、proved reserves、annual production、impairment charge、commodity revenue 和 diluted EPS Evidence，以及一条唯一有效的 MarketPriceRecord。资源量、probable/total reserves、普通 revenue、operating loss 和 restructuring charge 不得替代商品专用字段。商品输入必须能够映射到 `primary_commodity`；商品范围不明、重复/未验证/未来证据、单位/币种/期间不一致时 fail closed。
 
 直接指标只保留 Evidence ID；派生指标必须携带全部输入 Evidence ID 和有效 `CalculationRecord`。LLM 不选择商品指标、不把普通收入增长当作商品价格/产量变化，也不补造储量和减值数据。
+
+## 11. WP12-S05 SPAC Profile（`spac-profile:v1`）
+
+本节冻结当前 SPAC typed profile 核心接口。实现只复用已有的 `EvidenceRecord`、`MarketPriceRecord`、`CalculationRecord` 和 `PolicyDecision`，不新增模型、依赖、Registry、Flow、Gate、Report 或网络采集。
+
+### 11.1 接口、版本与边界
+
+```python
+def evaluate_spac_profile(
+    profile_input: Mapping[str, object],
+    evidence_records: Sequence[EvidenceRecord],
+    market_price_records: Sequence[MarketPriceRecord] = (),
+) -> tuple[
+    dict[str, Decimal | None],
+    tuple[PolicyDecision, ...],
+    tuple[CalculationRecord, ...],
+]:
+    ...
+```
+
+固定版本为 `profile_version=spac-profile:v1`、`policy_version=metric-policy:spac:v1`。返回字典和 `PolicyDecision` 的顺序固定为：
+
+`spac_trust_cash`、`spac_warrant_dilution_ratio`、`spac_pro_forma_shares`、`spac_cash_per_pro_forma_share`。
+
+`profile_input` 必须提供 `security_profile="spac"`、`transaction_status="pre_merger"|"post_merger"`、带时区的 `as_of`，以及 `metric_inputs`。Profile 对 `pre_merger` 和 `post_merger` 使用同一组 SPAC 专用指标；不会产生普通 `revenue`、P/E、FCF 或 operating 指标。`metric_inputs` 只读取固定键 `trust_cash`、`basic_shares`、`warrants_outstanding`；每个输入 envelope 必须只含一个非空 `evidence_id` 字段。缺失 envelope、非法 transaction status 或 malformed profile input 都返回 typed unavailable，不抛出未处理异常。
+
+`market_price_records` 在本阶段完全不参与计算、选择或 provenance；多条行情不会被择优，也不会把股票价格带入 SPAC 现金或稀释指标。
+
+### 11.2 SPAC Metric Policy 与 provenance
+
+| `metric_id` | 固定输入/直接来源 | 固定公式或来源规则 | 结果单位 | `PolicyDecision` gate 边界 |
+| --- | --- | --- | --- | --- |
+| `spac_trust_cash` | `trust_cash` 的 valid Evidence；`unit=USD`、`currency=USD`、值为正 | 直接采用 Evidence，不创建 CalculationRecord | `USD` | `available` 时保留该 Evidence ID；始终 `blocking=false` |
+| `spac_warrant_dilution_ratio` | `warrants_outstanding`、`basic_shares` 的 valid shares Evidence | `warrants_outstanding / basic_shares` / `spac-warrant-dilution-ratio-v1` | `ratio` | 始终 `blocking=false` |
+| `spac_pro_forma_shares` | `basic_shares`、`warrants_outstanding` 的 valid shares Evidence | `basic_shares + warrants_outstanding` / `spac-pro-forma-shares-v1` | `shares` | 始终 `blocking=false` |
+| `spac_cash_per_pro_forma_share` | `trust_cash`、`basic_shares`、`warrants_outstanding` 的 valid Evidence | `trust_cash / (basic_shares + warrants_outstanding)` / `spac-cash-per-pro-forma-share-v1` | `USD/share` | trust cash 缺失或 pro forma shares 分母无效时不计算；始终 `blocking=false` |
+
+shares Evidence 的 `unit` 与 `currency` 均必须为 `share` 或 `shares`，且 `basic_shares` 与 `warrants_outstanding` 必须为正数。参与计算的 Evidence 必须 `validation_status=valid`、有有限值，并满足 `filed_at <= profile_input.as_of.date()` 与 `EvidenceRecord.as_of <= profile_input.as_of`。`spac_trust_cash` 是唯一直接值；所有派生值都生成一条有效 `CalculationRecord`，其 `input_evidence_ids` 只能引用本次传入且通过上述时间/验证检查的真实 Evidence ID，`source_reference` 固定为 `derived:<formula_id>`，并带 `as_of`、期间和 `validation_status=valid`。派生记录的 `as_of` 使用输入 Evidence 的最晚 `as_of`，期间使用输入 Evidence 的最早 `period_start` 与最晚 `period_end`。
+
+可用直接指标的 `calculation_ids` 必须为空；可用派生指标必须同时带全部输入 Evidence ID 和对应 Calculation ID。任何 unavailable/invalid 决定的 `evidence_ids` 与 `calculation_ids` 都为空。所有决定均为 `blocking=false`，因为该 Profile 只提供证券结构、信托现金和稀释证据分析，不阻断普通 Flow。
+
+### 11.3 Fail-closed reason code
+
+缺失值保持 `value=None`，不得补零、取绝对值或使用行情替代。当前核心使用以下稳定 reason code：`spac_security_profile_invalid`、`spac_transaction_status_invalid`、`missing_input`、`unvalidated_evidence_id`、`duplicate_evidence_id`、`filed_after_as_of`、`unit_mismatch`、`zero_denominator` 和 `spac_trust_cash_invalid`。重复 Evidence ID、未验证/缺值 Evidence、未来 `filed_at` 或 `as_of`、非法单位/币种、零或负 shares、非正 trust cash 和非法分母均 fail closed；不会创建不完整的 CalculationRecord。市场价格不参与本阶段的失败判断或计算。

@@ -94,6 +94,10 @@ _REPORT_METRIC_LABELS = {
     "historical_valuation": "历史估值",
     "reverse_dcf": "反向 DCF",
     "reverse_dcf_implied_growth": "反向 DCF 隐含增长",
+    "spac_trust_cash": "SPAC 信托现金",
+    "spac_warrant_dilution_ratio": "SPAC 认股权证稀释率",
+    "spac_pro_forma_shares": "SPAC 备考股数",
+    "spac_cash_per_pro_forma_share": "SPAC 每备考股信托现金",
 }
 _REPORT_PERCENT_METRIC_IDS = frozenset(
     {
@@ -111,6 +115,7 @@ _REPORT_PERCENT_METRIC_IDS = frozenset(
         "impairment_to_commodity_revenue",
         "historical_percentile",
         "reverse_dcf_implied_growth",
+        "spac_warrant_dilution_ratio",
     }
 )
 _REPORT_AMOUNT_METRIC_IDS = frozenset(
@@ -159,6 +164,14 @@ _HOLDING_AMOUNT_METRIC_IDS = frozenset(
 )
 _HOLDING_NOT_APPLICABLE_METRIC_IDS = frozenset(
     {"pe_ratio", "fcf_yield", "historical_valuation", "reverse_dcf"}
+)
+_SPAC_METRIC_IDS = frozenset(
+    {
+        "spac_trust_cash",
+        "spac_warrant_dilution_ratio",
+        "spac_pro_forma_shares",
+        "spac_cash_per_pro_forma_share",
+    }
 )
 _REIT_METRIC_LABELS = {
     "ffo_total": "FFO 总额",
@@ -305,6 +318,9 @@ def build_narrative_context(
             isinstance(report_context.get("profile"), Mapping)
             and report_context["profile"].get("reporting_profile")
             == "foreign_private_issuer_ifrs"
+        ) or (
+            isinstance(report_context.get("profile"), Mapping)
+            and report_context["profile"].get("security_profile") == "spac"
         ):
             metric_sections.add("company_quality")
     source_metadata = report_context.get("source_metadata", {})
@@ -439,6 +455,12 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
     unit = _text(metric.get("unit")) or ""
     unit_lower = unit.lower()
     raw_text = _text(raw_value) or ""
+    if metric_id in {
+        "spac_trust_cash",
+        "spac_pro_forma_shares",
+        "spac_cash_per_pro_forma_share",
+    }:
+        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in {"current_ratio", "debt_to_equity"}:
         raw_numeric = metric.get("raw_result")
         ratio_value = _decimal_from_text(raw_numeric)
@@ -542,6 +564,13 @@ def _source_text(context: Mapping[str, Any]) -> str:
 def _term_definitions(
     *, reit: bool = False, profile: str | None = None
 ) -> tuple[str, ...]:
+    if profile == "spac":
+        return (
+            "### 术语说明",
+            "- SPAC evidence-only：仅呈现已验证的证券结构证据，不构成评级。",
+            "- 认股权证稀释率：认股权证数量除以基础股数。",
+            "- 备考股数：基础股数与认股权证数量之和。",
+        )
     definitions = [
         "### 术语说明",
         "- P/E（市盈率）：股价相对于每股收益的倍数，用于描述市场对盈利的定价。",
@@ -636,6 +665,7 @@ def _profile_metrics_markdown(
         "commodity_producer",
         "foreign_private_issuer_ifrs",
         "holding_company",
+        "spac",
     } or not isinstance(payload, Mapping):
         return ""
     metric_ids = payload.get("metric_ids", [])
@@ -648,6 +678,8 @@ def _profile_metrics_markdown(
     if profile == "holding_company":
         allowed_metric_ids = _HOLDING_METRIC_IDS | _HOLDING_NOT_APPLICABLE_METRIC_IDS
         metric_ids = [metric_id for metric_id in metric_ids if metric_id in allowed_metric_ids]
+    if profile == "spac":
+        metric_ids = [metric_id for metric_id in metric_ids if metric_id in _SPAC_METRIC_IDS]
     metric_map = {
         metric.get("metric_id"): metric
         for metric in metrics
@@ -661,6 +693,7 @@ def _profile_metrics_markdown(
         "commodity_producer": "### 商品生产商专用指标",
         "foreign_private_issuer_ifrs": "### 外国发行人/ADR 指标",
         "holding_company": "### 控股公司专用指标",
+        "spac": "### SPAC 证券结构指标",
     }[profile]
     lines = [heading]
     if profile == "foreign_private_issuer_ifrs":
@@ -1014,6 +1047,11 @@ def _render_report_from_context(
     profile_kind = profile_issuer
     if (
         isinstance(profile, Mapping)
+        and profile.get("security_profile") == "spac"
+    ):
+        profile_kind = "spac"
+    if (
+        isinstance(profile, Mapping)
         and profile.get("reporting_profile") == "foreign_private_issuer_ifrs"
     ):
         profile_kind = "foreign_private_issuer_ifrs"
@@ -1022,10 +1060,17 @@ def _render_report_from_context(
     if not isinstance(verdict, Mapping):
         verdict = {}
     rating_label, risk_label, rule_label, action_label = _verdict_display(verdict, status)
-    visuals = build_report_visuals(context=context_payload)
+    visuals = {} if profile_kind == "spac" else build_report_visuals(context=context_payload)
 
     sections: list[str] = ["# 投资研究报告", ""]
     for field, heading in _REPORT_SECTIONS:
+        if profile_kind == "spac" and field in {
+            "financial_trend",
+            "current_valuation",
+            "historical_valuation",
+            "reverse_dcf",
+        }:
+            continue
         if profile_kind == "holding_company" and field in {
             "historical_valuation",
             "reverse_dcf",
@@ -1057,6 +1102,11 @@ def _render_report_from_context(
                     "",
                 )
             )
+            if profile_kind == "spac":
+                sections.append(
+                    "SPAC evidence-only：仅呈现证券结构证据，不构成评级。"
+                )
+                sections.append("")
             profile = context_payload.get("profile", {})
             if isinstance(profile, Mapping):
                 profile_values = {

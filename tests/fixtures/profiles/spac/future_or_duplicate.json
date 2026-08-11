@@ -1,0 +1,68 @@
+{
+  "fixture_version": "wp12-s05-spac-profile-v1-future-or-duplicate",
+  "synthetic": true,
+  "offline": true,
+  "no_network": true,
+  "source_note": "Offline deterministic synthetic SPAC data; no network access.",
+  "profile_input": {
+    "security_profile": "spac",
+    "transaction_status": "post_merger",
+    "as_of": "2026-08-10T00:00:00Z",
+    "metric_inputs": {
+      "trust_cash": {"evidence_id": "ev_spac_trust_cash"},
+      "basic_shares": {"evidence_id": "ev_spac_basic_shares"},
+      "warrants_outstanding": {"evidence_id": "ev_spac_warrants"}
+    }
+  },
+  "evidence_records": [
+    {
+      "evidence_id": "ev_spac_trust_cash",
+      "source_reference": "fixture:spac/trust-cash-a",
+      "as_of": "2026-08-09T00:00:00Z",
+      "filed_at": "2026-08-08",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD",
+      "currency": "USD",
+      "value": "1200",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_spac_trust_cash",
+      "source_reference": "fixture:spac/trust-cash-b",
+      "as_of": "2026-08-09T00:00:00Z",
+      "filed_at": "2026-08-08",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "USD",
+      "currency": "USD",
+      "value": "1100",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_spac_basic_shares",
+      "source_reference": "fixture:spac/basic-shares",
+      "as_of": "2026-08-09T00:00:00Z",
+      "filed_at": "2026-08-08",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "shares",
+      "currency": "shares",
+      "value": "100",
+      "validation_status": "valid"
+    },
+    {
+      "evidence_id": "ev_spac_warrants",
+      "source_reference": "fixture:spac/warrants",
+      "as_of": "2026-08-11T00:00:00Z",
+      "filed_at": "2026-08-11",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "shares",
+      "currency": "shares",
+      "value": "25",
+      "validation_status": "valid"
+    }
+  ],
+  "market_price_records": []
+}

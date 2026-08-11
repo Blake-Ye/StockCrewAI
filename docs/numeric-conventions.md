@@ -310,3 +310,18 @@ P/B 和 P/E 的市场价格只能来自一条 `MarketPriceRecord`，该记录必
 | `pe_ratio` | `MarketPriceRecord.price / diluted_eps`，EPS 大于 0 | `commodity-pe-ratio-v1` | `multiple` |
 
 `realized_price`、`production`、`proved_reserves` 和 `impairment_charge` 是直接 Evidence，不创建 CalculationRecord。负值只在来源本身具有明确经济含义时保留；不对结果 clipping、取绝对值或补零。市场价格只能进入 P/E，不能替代 realized price；缺少 proved reserves、annual production、commodity revenue 或 impairment 时对应可选指标不可用，不把普通收入、资源量或经营亏损当作替代输入。
+
+## 11. WP12-S05 SPAC 专用公式（`spac-profile:v1`）
+
+SPAC 核心只分析证券结构，不套用普通企业的收入、P/E、FCF、operating 或其他经营指标。`pre_merger` 与 `post_merger` 的指标集合和公式相同；`market_price_records` 本阶段不参与任何计算、行情选择或 provenance。所有内部数值使用有限 `Decimal`，不使用 Python `float`，不补零、不取绝对值，结果缺失时保持 typed `None`。
+
+| `metric_id` | 输入 Evidence | 固定公式/来源规则 | `formula_id` | 结果 `unit` |
+| --- | --- | --- | --- | --- |
+| `spac_trust_cash` | `trust_cash` | `USD` 金额的直接 Evidence；只保留 Evidence provenance，不创建 CalculationRecord | direct evidence | `USD` |
+| `spac_warrant_dilution_ratio` | `warrants_outstanding`、`basic_shares` | `warrants_outstanding / basic_shares` | `spac-warrant-dilution-ratio-v1` | `ratio` |
+| `spac_pro_forma_shares` | `basic_shares`、`warrants_outstanding` | `basic_shares + warrants_outstanding` | `spac-pro-forma-shares-v1` | `shares` |
+| `spac_cash_per_pro_forma_share` | `trust_cash`、`basic_shares`、`warrants_outstanding` | `trust_cash / (basic_shares + warrants_outstanding)` | `spac-cash-per-pro-forma-share-v1` | `USD/share` |
+
+shares 输入的 `unit` 与 `currency` 必须是 `share`/`shares`，且两个股数都严格大于零；trust cash 的 `unit` 与 `currency` 必须是 `USD` 且严格大于零。参与派生公式的 Evidence 必须已验证、有限、唯一，并满足 `filed_at` 和 Evidence `as_of` 不晚于 profile `as_of`。每条派生结果都必须创建 `CalculationRecord`，带真实输入 Evidence ID、固定 `formula_id`、`source_reference=derived:<formula_id>`、输入 Evidence 的最晚 `as_of`、最早起始期间、最晚结束期间和 `validation_status=valid`。直接 trust cash 的 `calculation_ids=[]`；不可用结果的所有 provenance 列表为空。
+
+缺失、未验证/缺值、重复、未来 point-in-time、单位/币种错误、零或负 shares、非正 trust cash 或无效分母均 fail closed，使用稳定 reason code：`missing_input`、`unvalidated_evidence_id`、`duplicate_evidence_id`、`filed_after_as_of`、`unit_mismatch`、`zero_denominator`、`spac_trust_cash_invalid`，以及 profile 身份/状态错误的 `spac_security_profile_invalid`、`spac_transaction_status_invalid`。失败时不生成替代经营指标、行情计算或不完整 CalculationRecord。

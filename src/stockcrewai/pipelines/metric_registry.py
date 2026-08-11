@@ -26,6 +26,7 @@ from stockcrewai.profiles.foreign_issuer import POLICY_VERSION as FOREIGN_POLICY
 from stockcrewai.profiles.holding_company import (
     POLICY_VERSION as HOLDING_COMPANY_POLICY_VERSION,
 )
+from stockcrewai.profiles.spac import POLICY_VERSION as SPAC_POLICY_VERSION
 
 
 POLICY_VERSION = "metric-policy:v1"
@@ -793,6 +794,53 @@ _SPECIAL_SECURITY_POLICIES: dict[SecurityProfile, _MetricSpec] = {
     ),
 }
 
+_SPAC_SPECS = (
+    _MetricSpec(
+        "spac_trust_cash",
+        _OPTIONAL,
+        ("trust_cash",),
+        "spac-trust-cash-direct-v1",
+        "company_disclosed_period",
+        "USD",
+        _NON_BLOCKING,
+        "spac_trust_cash_missing",
+        SPAC_POLICY_VERSION,
+    ),
+    _MetricSpec(
+        "spac_warrant_dilution_ratio",
+        _OPTIONAL,
+        ("warrants_outstanding", "basic_shares"),
+        "spac-warrant-dilution-ratio-v1",
+        "company_disclosed_period",
+        "ratio",
+        _NON_BLOCKING,
+        "spac_warrant_dilution_ratio_missing",
+        SPAC_POLICY_VERSION,
+    ),
+    _MetricSpec(
+        "spac_pro_forma_shares",
+        _OPTIONAL,
+        ("basic_shares", "warrants_outstanding"),
+        "spac-pro-forma-shares-v1",
+        "company_disclosed_period",
+        "shares",
+        _NON_BLOCKING,
+        "spac_pro_forma_shares_missing",
+        SPAC_POLICY_VERSION,
+    ),
+    _MetricSpec(
+        "spac_cash_per_pro_forma_share",
+        _OPTIONAL,
+        ("trust_cash", "basic_shares", "warrants_outstanding"),
+        "spac-cash-per-pro-forma-share-v1",
+        "company_disclosed_period",
+        "USD/share",
+        _NON_BLOCKING,
+        "spac_cash_per_pro_forma_share_missing",
+        SPAC_POLICY_VERSION,
+    ),
+)
+
 _FOREIGN_ADR_SPECS = (
     _MetricSpec(
         "adr_ratio",
@@ -849,6 +897,9 @@ def _policy(profile: ProfileResult, spec: _MetricSpec) -> MetricPolicy:
 
 def policy_version_for_profile(profile: ProfileResult | IssuerProfile) -> str:
     """Return the fixed metric policy version for a resolved issuer profile."""
+    security_profile = getattr(profile, "security_profile", None)
+    if security_profile is SecurityProfile.SPAC or security_profile == SecurityProfile.SPAC.value:
+        return SPAC_POLICY_VERSION
     reporting_profile = getattr(profile, "reporting_profile", None)
     if (
         reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
@@ -894,11 +945,7 @@ def resolve_metric_policies(profile: ProfileResult) -> tuple[MetricPolicy, ...]:
         profile.coverage_level
         in {CoverageLevel.EVIDENCE_ONLY, CoverageLevel.UNSUPPORTED_SECURITY}
         or profile.issuer_profile is IssuerProfile.UNKNOWN
-        or profile.security_profile
-        in {
-            SecurityProfile.UNSUPPORTED_FUND_SECURITY,
-            SecurityProfile.SPAC,
-        }
+        or profile.security_profile is SecurityProfile.UNSUPPORTED_FUND_SECURITY
         or (
             profile.security_profile is SecurityProfile.ADR
             and not is_foreign_ifrs
@@ -913,6 +960,11 @@ def resolve_metric_policies(profile: ProfileResult) -> tuple[MetricPolicy, ...]:
         )
     ):
         return ()
+
+    if profile.security_profile is SecurityProfile.SPAC:
+        if profile.coverage_level not in {CoverageLevel.FULL, CoverageLevel.PARTIAL}:
+            return ()
+        return tuple(_policy(profile, spec) for spec in _SPAC_SPECS)
 
     specs = _POLICY_TABLE.get(profile.issuer_profile, ())
 
@@ -1059,6 +1111,7 @@ __all__ = [
     "HOLDING_COMPANY_POLICY_VERSION",
     "INSURANCE_POLICY_VERSION",
     "POLICY_VERSION",
+    "SPAC_POLICY_VERSION",
     "UTILITY_POLICY_VERSION",
     "evaluate_policy_decisions",
     "policy_version_for_profile",

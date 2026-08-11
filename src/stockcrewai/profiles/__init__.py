@@ -23,6 +23,12 @@ from stockcrewai.profiles.reit import (
     REIT_METRIC_IDS,
     evaluate_reit_profile,
 )
+from stockcrewai.profiles.spac import (
+    POLICY_VERSION as SPAC_POLICY_VERSION,
+    PROFILE_VERSION as SPAC_PROFILE_VERSION,
+    SPAC_METRIC_IDS,
+    evaluate_spac_profile,
+)
 from stockcrewai.profiles.utility import (
     POLICY_VERSION as UTILITY_POLICY_VERSION,
     PROFILE_VERSION as UTILITY_PROFILE_VERSION,
@@ -44,6 +50,9 @@ __all__ = [
     "POLICY_VERSION",
     "PROFILE_VERSION",
     "REIT_METRIC_IDS",
+    "SPAC_METRIC_IDS",
+    "SPAC_POLICY_VERSION",
+    "SPAC_PROFILE_VERSION",
     "UTILITY_METRIC_IDS",
     "UTILITY_POLICY_VERSION",
     "UTILITY_PROFILE_VERSION",
@@ -51,5 +60,6 @@ __all__ = [
     "evaluate_commodity_producer_profile",
     "evaluate_insurance_profile",
     "evaluate_reit_profile",
+    "evaluate_spac_profile",
     "evaluate_utility_profile",
 ]
