@@ -69,21 +69,7 @@ sed -n '1,95p' examples/reports/reit.md
 - **不要误解什么：** `coverage=full` 只表示这个离线 fixture 在适用指标上完整，不表示真实市场覆盖或实时可用。
 - **口播：** “这里的亮点不是数字看起来漂亮，而是每个数字能回到证据和公式，并且不适用项没有被补成零。”
 
-### 1:25–1:50：展示 Quant sample 的 partial 和幸存者偏差标记
-
-操作：打开 [`examples/quant/quant-research.md`](../examples/quant/quant-research.md)，再看固定 universe 的 bias 标记：
-
-```bash
-sed -n '1,35p' examples/quant/quant-research.md
-sed -n '1,20p' examples/universes/us-large-cap-v1.json
-```
-
-- **看到什么：** Quant 样例明确写出 `synthetic=true`、`offline=true`、`no_network=true`、`coverage=partial`、`survivorship_bias_known`；样例还保留 `as_of`、完整期数/总期数和 artifact ID。
-- **说明什么：** point-in-time/quant 结果是有时间边界和质量标签的研究旁证；部分数据和已知偏差必须进入报告。
-- **不要误解什么：** 回测或 CAGR 不是未来收益承诺，也不能由固定现存股票池推出无偏结论；`partial` 不能被展示成 `full`。
-- **口播：** “量化层强调可复现和限制披露，不能因为有一组回测数字就跳过数据质量审查。”
-
-### 1:50–2:15：最后展示真实 live failure 分类
+### 1:25–1:50：最后展示真实 live failure 分类
 
 操作：打开 [`examples/coverage-matrix.md`](../examples/coverage-matrix.md) 的 Matrix 和聚合小结：
 

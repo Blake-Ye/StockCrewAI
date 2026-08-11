@@ -105,6 +105,91 @@ def test_sic_has_priority_over_conflicting_filing_and_taxonomy_metadata(
     assert "profile_classification_partial" in result.reason_codes
 
 
+def test_edgartools_operating_company_category_maps_to_standard_operating() -> None:
+    result = classify_profiles(
+        {
+            "sec_business_category": "Operating Company",
+            "sic": "3571",
+            "filing_forms": ["10-K", "10-Q"],
+            "taxonomy": ["us-gaap"],
+            "security_type": "common_stock",
+            "security_class": "common_stock",
+        }
+    )
+
+    assert result.issuer_profile.value == "standard_operating"
+    assert "profile_classified_from_sec_metadata" in result.reason_codes
+
+
+def test_special_sic_remains_specialized_when_edgartools_says_operating_company() -> None:
+    result = classify_profiles(
+        {
+            "sec_business_category": "Operating Company",
+            "sic": "4931",
+            "filing_forms": ["10-K"],
+            "taxonomy": ["us-gaap"],
+        }
+    )
+
+    assert result.issuer_profile.value == "utility"
+    assert "profile_classified_from_sic" in result.reason_codes
+
+
+def test_valid_domestic_sic_and_filing_metadata_identify_standard_operating_without_category() -> None:
+    result = classify_profiles(
+        {
+            "sic": "3571",
+            "filing_forms": ["10-K", "10-Q"],
+            "taxonomy": ["us-gaap"],
+        }
+    )
+
+    assert result.issuer_profile.value == "standard_operating"
+
+
+@pytest.mark.parametrize(
+    ("business_category", "expected_security", "expected_issuer"),
+    [
+        ("ETF", "unsupported_fund_security", "unknown"),
+        ("Mutual Fund", "unsupported_fund_security", "unknown"),
+        ("Closed-End Fund", "unsupported_fund_security", "unknown"),
+        ("BDC", "unsupported_fund_security", "unknown"),
+        ("Investment Manager", "unknown", "unknown"),
+        ("SPAC", "spac", "unknown"),
+    ],
+)
+def test_edgartools_non_operating_categories_do_not_use_standard_stock_route(
+    business_category: str,
+    expected_security: str,
+    expected_issuer: str,
+) -> None:
+    result = classify_profiles(
+        {
+            "sec_business_category": business_category,
+            "filing_forms": ["10-K"],
+            "taxonomy": ["us-gaap"],
+        }
+    )
+
+    assert result.security_profile.value == expected_security
+    assert result.issuer_profile.value == expected_issuer
+
+
+def test_investment_manager_category_blocks_domestic_filing_fallback() -> None:
+    result = classify_profiles(
+        {
+            "sec_business_category": "Investment Manager",
+            "sic": "6282",
+            "filing_forms": ["10-K", "10-Q"],
+            "taxonomy": ["us-gaap"],
+            "security_type": "common_stock",
+        }
+    )
+
+    assert result.issuer_profile.value == "unknown"
+    assert result.security_profile.value == "common_stock"
+
+
 def test_classification_evidence_ids_keep_only_supplied_non_empty_string_ids(
     profile_fixture: dict[str, Any],
 ) -> None:

@@ -221,7 +221,6 @@ def test_analysis_tools_are_role_scoped_and_keep_audit_fields() -> None:
     assert financial_names == {
         "query_validated_evidence",
         "get_validated_calculations",
-        "get_quant_summary",
     }
     assert risk_names == {"search_validated_filing_sections"}
     assert not financial_names & risk_names

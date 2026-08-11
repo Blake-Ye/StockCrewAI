@@ -366,6 +366,7 @@ def profile_metadata_from_edgar(edgar_result: Any) -> dict[str, Any]:
     metadata = {
         key: payload[key]
         for key in (
+            "sec_business_category",
             "sec_registrant_profile",
             "sec_reporting_profile",
             "sec_security_profile",

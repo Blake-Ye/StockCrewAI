@@ -196,7 +196,6 @@ class AnalysisCrew:
         from stockcrewai.tools.filing_section_search_tool import (
             FilingSectionSearchTool,
         )
-        from stockcrewai.tools.quant_summary_tool import QuantSummaryTool
         from stockcrewai.tools.validated_calculation_tool import (
             ValidatedCalculationTool,
         )
@@ -206,7 +205,6 @@ class AnalysisCrew:
             financial_tools=[
                 ValidatedEvidenceTool(evidence_store=evidence_store),
                 ValidatedCalculationTool(evidence_store=evidence_store),
-                QuantSummaryTool(evidence_store=evidence_store),
             ],
             risk_tools=[FilingSectionSearchTool(evidence_store=evidence_store)],
         )

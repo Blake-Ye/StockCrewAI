@@ -1069,11 +1069,11 @@ def _render_report_from_context(
         validated_context = ReportContext.model_validate(_json_safe_context(context))
     except Exception as exc:
         raise ValueError("ReportContext 未通过本地来源和结构校验。") from exc
-    quant_present = "quant" in context
     context_payload = validated_context.model_dump(mode="json")
-    if not quant_present and context_payload.get("quant") is None:
+    if "quant" not in context and context_payload.get("quant") is None:
         context_payload.pop("quant", None)
     quant_payload = context_payload.get("quant")
+    quant_available = False
     if isinstance(quant_payload, Mapping) and quant_payload.get("status") == "available":
         quant_packet = quant_payload.get("packet")
         validated_quant_packet, quant_reason = _validated_quant_packet(quant_packet)
@@ -1090,6 +1090,7 @@ def _render_report_from_context(
             }
         else:
             quant_payload["packet"] = normalized_quant_packet
+            quant_available = True
     claims = _validated_claims(context_payload["claims"])
     status = context_payload["verdict_status"]
     metrics = context_payload["metrics"]
@@ -1131,7 +1132,7 @@ def _render_report_from_context(
             "reverse_dcf",
         }:
             continue
-        if field == "key_risks" and quant_present:
+        if field == "key_risks" and quant_available:
             sections.extend(
                 ("## 量化旁证", "", _quant_evidence_markdown(context_payload.get("quant")), "")
             )

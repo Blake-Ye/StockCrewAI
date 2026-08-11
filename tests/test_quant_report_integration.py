@@ -355,12 +355,8 @@ def test_missing_quant_field_provenance_is_unavailable_without_numbers(
         report_context=context,
         report_draft=build_deterministic_report_draft(),
     )
-    quant_section = _quant_section(report)
-    assert "quant_field_provenance_missing" in quant_section
-    for fragment in ("2/10", "88.89%", "12.34%", "-21.00%", "10 bps"):
-        assert fragment not in quant_section
-    assert FACTOR_ARTIFACT_ID not in quant_section
-    assert BACKTEST_ARTIFACT_ID not in quant_section
+    assert "## 量化旁证" not in report
+    assert "quant_field_provenance_missing" not in report
 
 
 def test_empty_quant_field_provenance_artifact_ids_are_unavailable(
@@ -379,9 +375,8 @@ def test_empty_quant_field_provenance_artifact_ids_are_unavailable(
         report_context=context,
         report_draft=build_deterministic_report_draft(),
     )
-    quant_section = _quant_section(report)
-    assert "2/10" not in quant_section
-    assert FACTOR_ARTIFACT_ID not in quant_section
+    assert "## 量化旁证" not in report
+    assert "quant_field_provenance_missing" not in report
 
 
 @pytest.mark.parametrize(
@@ -419,23 +414,9 @@ def test_renderer_rechecks_manually_tampered_available_quant_provenance(
         report_context=context,
         report_draft=build_deterministic_report_draft(),
     )
-    quant_section = _quant_section(report)
-
-    assert "status=unavailable" in quant_section
-    assert f"reason_code={reason_code}" in quant_section
-    assert "data:image/png;base64," not in quant_section
-    for fragment in (
-        "2/10",
-        "88.89%",
-        "12.34%",
-        "-21.00%",
-        "10 bps",
-        FACTOR_ARTIFACT_ID,
-        BACKTEST_ARTIFACT_ID,
-        RANKING_EVIDENCE_ID,
-        RANKING_CALCULATION_ID,
-    ):
-        assert fragment not in quant_section
+    assert "## 量化旁证" not in report
+    assert reason_code not in report
+    assert "data:image/png;base64," not in report
 
 
 def test_renderer_rejects_manually_incomplete_available_quant_packet(
@@ -448,25 +429,9 @@ def test_renderer_rejects_manually_incomplete_available_quant_packet(
         report_context=context,
         report_draft=build_deterministic_report_draft(),
     )
-    quant_section = _quant_section(report)
-
-    assert "status=unavailable" in quant_section
-    assert "reason_code=quant_packet_invalid" in quant_section
-    assert not re.search(r"\d", quant_section)
-    for fragment in (
-        "2/10",
-        "88.89%",
-        "12.34%",
-        "-21.00%",
-        "10 bps",
-        "999",
-        FACTOR_ARTIFACT_ID,
-        BACKTEST_ARTIFACT_ID,
-        RANKING_EVIDENCE_ID,
-        RANKING_CALCULATION_ID,
-    ):
-        assert fragment not in quant_section
-    assert "data:image/png;base64," not in quant_section
+    assert "## 量化旁证" not in report
+    assert "quant_packet_invalid" not in report
+    assert "data:image/png;base64," not in report
 
 
 @pytest.mark.parametrize("mutation", ("invalid_hash", "foreign_artifact"))
@@ -560,16 +525,23 @@ def test_explicit_missing_quant_packet_is_unavailable_without_fake_values() -> N
         report_context=context,
         report_draft=build_deterministic_report_draft(),
     )
-    quant_section = _quant_section(report)
+    assert "## 量化旁证" not in report
+    assert "quant_packet_missing" not in report
+    assert FACTOR_ARTIFACT_ID not in report
+    assert BACKTEST_ARTIFACT_ID not in report
 
-    assert "不可用" in quant_section
-    assert "quant_packet_missing" in quant_section
-    assert "0%" not in quant_section
-    assert "0.00%" not in quant_section
-    assert FACTOR_ARTIFACT_ID not in quant_section
-    assert BACKTEST_ARTIFACT_ID not in quant_section
-    assert "artifact_ids=[]" not in quant_section
-    assert "artifact_ids：[]" not in quant_section
+
+def test_unavailable_quant_packet_is_omitted_from_markdown() -> None:
+    """未完成的量化旁证只保留机器可读状态，不污染用户报告正文。"""
+    for quant_packet in (None, {"coverage": "not-a-coverage"}):
+        context = build_report_context(**_context_inputs(), quant_packet=quant_packet)
+        report = render_validated_report(
+            report_context=context,
+            report_draft=build_deterministic_report_draft(),
+        )
+
+        assert "## 量化旁证" not in report
+        assert "quant_packet_" not in report
 
 
 @pytest.mark.parametrize("quant_mode", ("explicit_missing", "omitted"))
@@ -586,10 +558,8 @@ def test_missing_or_omitted_quant_has_no_quant_png_data_uris(
         report_draft=build_deterministic_report_draft(),
     )
 
-    if quant_mode == "explicit_missing":
-        assert "data:image/png;base64," not in _quant_section(report)
-    else:
-        assert "## 量化旁证" not in report
+    assert "## 量化旁证" not in report
+    assert "quant_packet_missing" not in report
 
 
 def test_partial_quant_packet_keeps_unavailable_cagr_state_without_zero_fill(
@@ -682,8 +652,8 @@ def test_flow_missing_quant_packet_is_typed_unavailable_without_blocking() -> No
         "reason_code": "quant_packet_missing",
         "packet": None,
     }
-    assert "## 量化旁证" in result["report"]
-    assert "quant_packet_missing" in result["report"]
+    assert "## 量化旁证" not in result["report"]
+    assert "quant_packet_missing" not in result["report"]
 
 
 def test_flow_invalid_quant_packet_is_typed_unavailable_without_blocking() -> None:
@@ -699,8 +669,8 @@ def test_flow_invalid_quant_packet_is_typed_unavailable_without_blocking() -> No
         "reason_code": "quant_packet_invalid",
         "packet": None,
     }
-    assert "## 量化旁证" in result["report"]
-    assert "quant_packet_invalid" in result["report"]
+    assert "## 量化旁证" not in result["report"]
+    assert "quant_packet_invalid" not in result["report"]
 
 
 def test_flow_partial_or_evidence_only_quant_does_not_block_report(

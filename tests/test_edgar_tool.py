@@ -343,6 +343,7 @@ class OfflineCompany:
     cik = 320193
     name = "Apple Inc."
     tickers = ["AAPL"]
+    business_category = "Operating Company"
 
     def __init__(self, facts):
         self.facts = facts
@@ -402,6 +403,7 @@ class EdgarToolTTMTests(unittest.TestCase):
                     ).run(ticker="AAPL")
 
                 self.assertEqual(result.sic, expected_sic)
+                self.assertEqual(result.sec_business_category, "Operating Company")
                 self.assertIsNone(result.sec_registrant_profile)
                 self.assertIsNone(result.sec_security_profile)
                 self.assertIsNone(result.sec_reporting_profile)

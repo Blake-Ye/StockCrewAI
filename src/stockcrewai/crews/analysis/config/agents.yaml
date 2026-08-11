@@ -14,7 +14,6 @@ financial_quality_agent:
   allowed_tools:
     - query_validated_evidence
     - get_validated_calculations
-    - get_quant_summary
   prohibited_actions:
     - network_access
     - state_write

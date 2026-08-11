@@ -239,7 +239,7 @@ ResearchFlow 与 Quant Engine 共享同一套已验证 Evidence 和 Metric Regis
 - `foreign_private_issuer_ifrs`；
 - `investment_company_reporting`。
 
-分类必须优先使用 SEC 的 CIK、SIC、form、taxonomy、ticker/exchange 和证券元数据；只有结构化来源不足时返回 `unknown`，不得让 LLM 猜测。
+分类必须优先使用 SEC 的 CIK、SIC、form、taxonomy、ticker/exchange 和证券元数据；只有结构化来源不足时返回 `unknown`，不得让 LLM 猜测。当前 EDGAR 适配器还读取 `edgartools.Company.business_category`：`Operating Company` 可识别普通经营公司，`Bank`、`Insurance Company`、`REIT` 和 `Holding Company` 进入对应发行人 Profile；ETF、Mutual Fund、Closed-End Fund、BDC 进入不支持基金证券，SPAC 进入 SPAC 证券结构，`Investment Manager` 保持未知而不强行套用普通企业指标。SIC 专用范围优先于泛化的 `Operating Company` 标签。
 
 ### 7.2 Metric Policy
 
@@ -283,7 +283,7 @@ Gate 只读取 Metric Policy 和结构化状态，不解析 warning 文本，不
 
 ### 8.2 受限只读工具
 
-为展示真正的 Agent Tool Calling，同时控制风险，可以给 Analysis Crew 增加以下只读工具：
+为展示真正的 Agent Tool Calling，同时控制风险，工具按职责隔离：默认 FinancialQualityAgent 注入前两项，RiskAnalysisAgent 注入第三项；量化查询工具保留给独立量化实验，不进入默认基本面报告：
 
 ```text
 query_validated_evidence(metric_ids, periods, limit)

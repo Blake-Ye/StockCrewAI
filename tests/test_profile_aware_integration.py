@@ -227,6 +227,24 @@ def test_legacy_profile_is_adapted_to_shared_profile_policy_gate() -> None:
     assert all(item["metric_id"] and item["reason_code"] for item in blocking)
 
 
+def test_edgartools_business_category_survives_edgar_profile_adapter() -> None:
+    edgar_result = EdgarResult(
+        status="ok",
+        ticker="AAPL",
+        sic="3571",
+        sec_business_category="Operating Company",
+    )
+
+    metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
+
+    assert metadata["sec_business_category"] == "Operating Company"
+    assert pipeline_support.build_profile_policy_context(
+        source_metadata=metadata,
+        facts={},
+        calculations=[],
+    )["profile"]["issuer_profile"] == "standard_operating"
+
+
 def test_sec_sic_auto_profile_uses_bank_policy_gate_without_reverse_dcf_block() -> None:
     edgar_result = EdgarResult(status="ok", sic="6020")
     metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)

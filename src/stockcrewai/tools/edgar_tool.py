@@ -193,6 +193,7 @@ class EdgarResult(BaseModel):
     exchange: list[str] = Field(default_factory=list)
     cik: str | None = None
     sic: str | None = None
+    sec_business_category: str | None = None
     sec_registrant_profile: str | None = None
     sec_security_profile: str | None = None
     sec_reporting_profile: str | None = None
@@ -282,6 +283,10 @@ def _company_sec_metadata(company: Any) -> dict[str, Any]:
     for source in sources:
         for key, aliases in {
             "sic": ("sic", "sic_code"),
+            "sec_business_category": (
+                "sec_business_category",
+                "business_category",
+            ),
             "sec_registrant_profile": (
                 "sec_registrant_profile",
                 "registrant_profile",
@@ -1626,6 +1631,9 @@ class EdgarTool(BaseTool):
                 exchange=[str(exchange) for exchange in exchanges],
                 cik=company_cik,
                 sic=sic,
+                sec_business_category=_safe_metadata_string(
+                    sec_metadata.get("sec_business_category")
+                ),
                 sec_registrant_profile=_safe_metadata_string(
                     sec_metadata.get("sec_registrant_profile")
                 ),

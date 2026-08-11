@@ -63,7 +63,7 @@ WP01 在 `src/stockcrewai/models/` 中冻结共享 Pydantic 模型。以下字�
 
 ### 5.2 Profile/Policy
 
-Profile 和 Policy 模型只表达适用性、覆盖范围、策略决定及 Gate 结果，不执行 Profile resolver 或确定性 Policy/Gate。
+Profile 和 Policy 模型只表达适用性、覆盖范围、策略决定及 Gate 结果，不执行 Profile resolver 或确定性 Policy/Gate。Profile resolver 会保留 EDGAR `business_category` 的来源元数据；它只作为确定性分类输入，不由 LLM 猜测或改写。
 
 | Enum | 允许值 |
 | --- | --- |

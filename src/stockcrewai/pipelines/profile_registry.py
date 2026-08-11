@@ -36,6 +36,20 @@ _FILING_ISSUER_PROFILES = {
         IssuerProfile.HOLDING_COMPANY,
     )
 }
+_EDGARTOOLS_BUSINESS_CATEGORIES = {
+    "bank": IssuerProfile.BANK,
+    "insurance_company": IssuerProfile.INSURANCE,
+    "reit": IssuerProfile.REIT,
+    "holding_company": IssuerProfile.HOLDING_COMPANY,
+    "operating_company": IssuerProfile.STANDARD_OPERATING,
+}
+_EDGARTOOLS_FUND_CATEGORIES = frozenset(
+    {"etf", "mutual_fund", "closed_end_fund", "bdc"}
+)
+_EDGARTOOLS_NON_OPERATING_CATEGORIES = _EDGARTOOLS_FUND_CATEGORIES | {
+    "investment_manager",
+    "spac",
+}
 _FUND_SECURITY_VALUES = frozenset(
     {
         "etf",
@@ -115,6 +129,13 @@ def _issuer_from_sic(sic: int) -> IssuerProfile | None:
     return None
 
 
+def _issuer_from_business_category(
+    source_metadata: Mapping[str, Any],
+) -> IssuerProfile | None:
+    category = _normalized(source_metadata.get("sec_business_category"))
+    return _EDGARTOOLS_BUSINESS_CATEGORIES.get(category or "")
+
+
 def _issuer_from_filing_metadata(source_metadata: Mapping[str, Any]) -> IssuerProfile | None:
     values = _string_values(source_metadata, "taxonomy")
     normalized_values = {_normalized(value) for value in values}
@@ -142,9 +163,26 @@ def _classify_issuer(
     sic, has_sic_signal = _parse_sic(source_metadata.get("sic"))
     if has_sic_signal:
         sic_profile = _issuer_from_sic(sic) if sic is not None else None
-        return sic_profile or IssuerProfile.UNKNOWN, (
-            frozenset({"sic"}) if sic_profile is not None else frozenset()
-        )
+        if sic_profile is not None:
+            return sic_profile, frozenset({"sic"})
+
+        if _normalized(source_metadata.get("sec_business_category")) in _EDGARTOOLS_NON_OPERATING_CATEGORIES:
+            return IssuerProfile.UNKNOWN, frozenset({"sec"})
+
+        business_profile = _issuer_from_business_category(source_metadata)
+        if business_profile is not None:
+            return business_profile, frozenset({"sec"})
+
+        if _has_domestic_filing_signal(source_metadata):
+            return IssuerProfile.STANDARD_OPERATING, frozenset({"filing"})
+
+        return IssuerProfile.UNKNOWN, frozenset()
+
+    business_profile = _issuer_from_business_category(source_metadata)
+    if business_profile is not None:
+        return business_profile, frozenset({"sec"})
+    if _normalized(source_metadata.get("sec_business_category")) in _EDGARTOOLS_NON_OPERATING_CATEGORIES:
+        return IssuerProfile.UNKNOWN, frozenset({"sec"})
 
     filing_profile = _issuer_from_filing_metadata(source_metadata)
     if filing_profile is not None:
@@ -164,6 +202,8 @@ def _has_any_normalized(
 def _fund_security_sources(source_metadata: Mapping[str, Any]) -> frozenset[str]:
     sources: set[str] = set()
     if source_metadata.get("is_investment_company") is True:
+        sources.add("sec")
+    if _normalized(source_metadata.get("sec_business_category")) in _EDGARTOOLS_FUND_CATEGORIES:
         sources.add("sec")
     if any(
         _normalized(source_metadata.get(key)) in _FUND_SECURITY_VALUES
@@ -294,6 +334,9 @@ def _classify_security(
             profile if isinstance(profile, SecurityProfile) else SecurityProfile.UNKNOWN,
             frozenset({"sec"}) if profile is not None else frozenset(),
         )
+
+    if _normalized(source_metadata.get("sec_business_category")) == "spac":
+        return SecurityProfile.SPAC, frozenset({"sec"})
 
     if _recent_listing_signal(source_metadata):
         return SecurityProfile.RECENT_LISTING, frozenset({"security"})
