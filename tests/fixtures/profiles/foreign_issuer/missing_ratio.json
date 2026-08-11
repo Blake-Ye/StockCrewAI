@@ -1,0 +1,103 @@
+{
+  "fixture_version": "wp12-s03-foreign-issuer-v1-missing-ratio",
+  "synthetic": true,
+  "offline": true,
+  "no_network": true,
+  "source_note": "Synthetic offline foreign private issuer fixture with missing ADR ratio; no network access.",
+  "source_metadata": {
+    "sec_registrant_profile": "standard_operating",
+    "sec_reporting_profile": null,
+    "sec_security_profile": null,
+    "filing_forms": ["20-F", "6-K"],
+    "filing_envelopes": [
+      {
+        "form": "20-F",
+        "accession_number": "acc-foreign-20f",
+        "source_reference": "fixture:foreign_issuer/20-f",
+        "filed_at": "2026-02-20"
+      },
+      {
+        "form": "6-K",
+        "accession_number": "acc-foreign-6k",
+        "source_reference": "fixture:foreign_issuer/6-k",
+        "filed_at": "2026-03-01"
+      }
+    ],
+    "taxonomy": ["ifrs-full"],
+    "security_type": "ADR",
+    "security_class": "adr",
+    "is_foreign_private_issuer": true,
+    "is_investment_company": false,
+    "has_revenue": true,
+    "classification_evidence_ids": ["ev_foreign_registry"]
+  },
+  "profile_input": {
+    "profile_version": "foreign-issuer-profile:v1",
+    "policy_version": "metric-policy:foreign-issuer:v1",
+    "issuer_profile": "standard_operating",
+    "security_profile": "adr",
+    "reporting_profile": "foreign_private_issuer_ifrs",
+    "coverage_level": "full",
+    "as_of": "2026-08-08T12:00:00Z",
+    "metric_inputs": {
+      "ordinary_shares_outstanding": "ev_foreign_ordinary_shares"
+    }
+  },
+  "evidence_records": [
+    {
+      "evidence_id": "ev_foreign_ordinary_shares",
+      "source_reference": "fixture:foreign_issuer/ordinary-shares",
+      "as_of": "2026-08-08T12:00:00Z",
+      "filed_at": "2026-02-20",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "unit": "shares",
+      "currency": "shares",
+      "value": "1000",
+      "validation_status": "valid"
+    }
+  ],
+  "market_price_records": [
+    {
+      "evidence_id": "ev_foreign_adr_price",
+      "ticker": "FPI",
+      "price": "100",
+      "currency": "USD",
+      "price_timestamp": "2026-08-08T12:00:00Z",
+      "source_reference": "fixture:foreign_issuer/adr-price",
+      "adjustment_basis": "raw",
+      "validation_status": "valid"
+    }
+  ],
+  "expected": {
+    "registry": {
+      "issuer_profile": "standard_operating",
+      "security_profile": "adr",
+      "reporting_profile": "foreign_private_issuer_ifrs",
+      "coverage_level": "full",
+      "classification_evidence_ids": ["ev_foreign_registry"],
+      "reason_codes": [
+        "profile_classified_from_sec_metadata",
+        "profile_classified_from_filing_metadata",
+        "profile_classified_from_security_metadata"
+      ],
+      "registry_version": "profile-registry:v1"
+    },
+    "values": {
+      "adr_ratio": null,
+      "adr_equivalent_shares": null,
+      "adr_market_cap": null
+    },
+    "statuses": {
+      "adr_ratio": "unavailable",
+      "adr_equivalent_shares": "unavailable",
+      "adr_market_cap": "unavailable"
+    },
+    "reason_codes": {
+      "adr_ratio": "adr_ratio_missing",
+      "adr_equivalent_shares": "adr_ratio_missing_or_invalid",
+      "adr_market_cap": "adr_ratio_missing_or_invalid"
+    },
+    "calculation_ids": []
+  }
+}
