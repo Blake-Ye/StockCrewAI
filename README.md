@@ -97,12 +97,15 @@ Profile policy 会先判断发行人、证券结构和申报制度，再决定�
 
 ## 离线演示与验证
 
-以下命令是默认离线门禁，不调用 SEC、Yahoo、DeepSeek 或付费 API；live 测试只有显式传入 `--run-live` 才会运行，下面的命令不包含该开关：
+以下命令是默认离线门禁，不调用 SEC、Yahoo、DeepSeek 或付费 API；live 测试只有显式传入 `--run-live` 才会运行，下面的命令不包含该开关。`unittest` 命令中的环境变量只将 SQLite 存储和 uv 缓存放到 `/private/tmp`，并关闭 tracing/telemetry；这些变量不访问外部服务：
 
 ```bash
 uv run --no-sync pytest -q
-CREWAI_STORAGE_DIR="$(mktemp -d)" \
-  uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
+CREWAI_STORAGE_DIR=/private/tmp/stockcrewai-flow-storage \
+CREWAI_TRACING_ENABLED=false \
+OTEL_SDK_DISABLED=true \
+UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache \
+  uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -q
 uv run --no-sync python -m compileall -q src tests
 uv run --no-sync ruff check src tests
 ```
