@@ -76,3 +76,24 @@
 - 这是单次 live smoke 快照，不是离线测试，也不构成覆盖率或收益结论。
 - 本矩阵不把网络失败、SEC/Yahoo/LLM 失败、Gate 阻断或 runtime 异常计为代码通过。
 - 结果只反映本次请求实际返回的 typed 状态；没有猜测缺失的 stage、profile、coverage 或 reason_code。
+
+## P1 代表性 live smoke
+
+这是 2026-08-11 执行的代表性真实链路 smoke，独立于上面的 30 ticker 历史矩阵。每个 ticker 仅执行一次显式的 `python -m stockcrewai.evals.live_smoke --ticker ...` 调用；首次观察到的 `unable to open database file` 是运行目录配置问题，不是最终业务结果，也不记录为 SEC/Yahoo 限流。显式将 `CREWAI_STORAGE_DIR` 设置为临时目录后，才开始真实请求。
+
+字段缺失统一记录为 `unavailable`；不根据结果推断 `profile` 或 `coverage`。
+
+| ticker | status | stage | profile | coverage | error.category | error.reason_code |
+|---|---|---|---|---|---|---|
+| AAPL | ok | report | unavailable | unavailable | unavailable | unavailable |
+| O | error | unavailable | unavailable | unavailable | gate | reverse_dcf_required |
+| JPM | error | unavailable | unavailable | unavailable | gate | net_interest_margin_missing_required_evidence |
+
+O 和 JPM 均没有 report。AAPL 证明普通企业至少有一条真实闭环；O/JPM 的阻断是 profile/Gate 的真实缺口。本节不是宣称所有美国股票都已覆盖。
+
+可复现命令模板（不包含真实密钥；`<TICKER>` 替换为一个 ticker）：
+
+```bash
+CREWAI_STORAGE_DIR="$(mktemp -d)" \
+  uv run --env-file .env python -m stockcrewai.evals.live_smoke --ticker <TICKER>
+```
