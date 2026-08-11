@@ -1,0 +1,84 @@
+name: Offline tests
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Offline tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    # Offline-only placeholders; these are not production credentials.
+    env:
+      DEEPSEEK_API_KEY: "test-deepseek-key"
+      DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1"
+      EDGAR_IDENTITY: "offline-test@example.com"
+      CREWAI_STORAGE_DIR: "${{ runner.temp }}/stockcrewai-crewai-storage"
+      CREWAI_TRACING_ENABLED: "false"
+      OTEL_SDK_DISABLED: "true"
+      UV_CACHE_DIR: "${{ runner.temp }}/stockcrewai-uv-cache"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify uv.lock
+        run: uv lock --check
+
+      - name: Install locked development dependencies
+        run: uv sync --locked --group dev
+
+      - name: Run Ruff
+        run: uv run --locked --no-sync ruff check src tests
+
+      - name: Run offline tests
+        run: uv run --locked --no-sync pytest -q
+
+  typecheck:
+    name: Typecheck clean models (Python 3.12 only)
+    runs-on: ubuntu-latest
+    env:
+      MYPYPATH: src
+      UV_CACHE_DIR: "${{ runner.temp }}/stockcrewai-uv-cache"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify uv.lock
+        run: uv lock --check
+
+      - name: Install locked development dependencies
+        run: uv sync --locked --group dev
+
+      - name: Typecheck src/stockcrewai/models with mypy
+        run: >-
+          uv run --locked --no-sync mypy --python-version 3.12
+          --explicit-package-bases --no-incremental src/stockcrewai/models
