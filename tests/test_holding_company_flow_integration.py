@@ -21,6 +21,7 @@ from stockcrewai.profiles.holding_company import (
     POLICY_VERSION as HOLDING_COMPANY_POLICY_VERSION,
     PROFILE_VERSION as HOLDING_COMPANY_PROFILE_VERSION,
 )
+from stockcrewai.reporting.renderer import build_deterministic_report_draft
 from stockcrewai.tools.calculator_tool import CalculationBatch, CalculationResult
 from stockcrewai.tools.edgar_tool import (
     EdgarFact,
@@ -633,8 +634,24 @@ def test_foreign_ifrs_holding_flow_prioritizes_evidence_only_across_stages() -> 
     assert result["verdict"]["reasons"] == ["foreign_profile_evidence_only"]
 
 
-def test_holding_generate_report_uses_nav_only_verdict_and_report_context() -> None:
-    flow, _ = _ready_holding_flow()
+def test_holding_generate_report_includes_all_available_profile_metrics() -> None:
+    flow, _ = _holding_flow()
+    evidence_state = flow.prepare_evidence(
+        {"company_name_guess": "Synthetic Holding Company", "ticker_guess": "HOLD"}
+    )
+    valuation_state = flow.prepare_valuation(evidence_state)
+    assert flow.route_analysis(valuation_state) == "analysis_ready"
+    expected_holding_metric_ids = {
+        "attributable_holdings_value",
+        "holding_company_nav",
+        "holding_company_market_cap",
+        "holding_company_nav_discount",
+    }
+    assert {
+        decision["metric_id"]
+        for decision in flow.state.policy_context["policy_decisions"]
+        if decision["status"] == "available"
+    } == expected_holding_metric_ids
     assert flow.route_claims(_holding_analysis_result(flow)) == "claims_ready"
     flow_module = __import__("stockcrewai.flow", fromlist=["build_report_context"])
     captured: dict[str, Any] = {}
@@ -646,7 +663,9 @@ def test_holding_generate_report_uses_nav_only_verdict_and_report_context() -> N
         return context
 
     report_crew = Mock(name="report_crew")
-    report_crew.kickoff.return_value = SimpleNamespace(raw="ignored by patched parser")
+    report_crew.kickoff.return_value = SimpleNamespace(
+        raw=build_deterministic_report_draft().model_dump_json()
+    )
     report_factory = Mock(name="ReportCrew")
     report_factory.return_value.crew.return_value = report_crew
 
@@ -655,12 +674,18 @@ def test_holding_generate_report_uses_nav_only_verdict_and_report_context() -> N
         patch.object(
             flow_module, "build_report_context", side_effect=capture_report_context
         ),
-        patch.object(flow_module, "parse_report_draft", return_value=object()),
-        patch.object(flow_module, "render_validated_report", return_value="# report"),
-        patch.object(flow_module, "validate_rendered_report", return_value=(True, "")),
     ):
         result = flow.generate_report()
 
+    assert result["status"] == "ok"
+    report = result["report"]
+    for label in (
+        "归属持仓价值",
+        "控股公司 NAV（净资产价值）",
+        "控股公司市值",
+        "NAV 折价/溢价",
+    ):
+        assert label in report
     assert result["verdict"] == {
         "status": "insufficient_data",
         "policy_defined": False,
@@ -683,6 +708,19 @@ def test_holding_generate_report_uses_nav_only_verdict_and_report_context() -> N
         metric["metric_id"] == "holding_company_nav"
         and metric["status"] == "available"
         for metric in context["metrics"]
+    )
+    reported_metrics = {
+        metric["metric_id"]: metric for metric in context["metrics"]
+    }
+    assert expected_holding_metric_ids <= reported_metrics.keys()
+    assert all(
+        reported_metrics[metric_id]["status"] == "available"
+        and reported_metrics[metric_id]["validation_status"] == "valid"
+        for metric_id in expected_holding_metric_ids
+    )
+    assert (
+        context["source_metadata"]["market_price"]["evidence_id"]
+        == "ev_parent_market_price"
     )
     ordinary_ids = {
         "pe_ratio",

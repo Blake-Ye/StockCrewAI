@@ -2223,6 +2223,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             "insurance",
             "utility",
             "commodity_producer",
+            "holding_company",
             }
             or str(active_reporting).strip().casefold()
             == "foreign_private_issuer_ifrs"
