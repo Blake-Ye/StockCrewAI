@@ -1,0 +1,57 @@
+{
+  "artifacts": [
+    {
+      "as_of": "2026-08-10T00:00:00Z",
+      "coverage": "partial",
+      "limitations": [
+        "synthetic fixture inputs only",
+        "coverage=partial",
+        "survivorship_bias_known",
+        "QuantResearchPacket exposes artifact-level rather than per-field evidence/calculation IDs",
+        "not real-time data or investment advice"
+      ],
+      "path": "examples/quant/quant-research.md",
+      "sha256": "ec557a55f029e4813d242eda08c459788f25b6e4471e1ba7d6cee2dc3a29e021",
+      "source_fixture": "tests/test_quant_report_integration.py::quant_packet + _context_inputs"
+    },
+    {
+      "as_of": "2026-03-02T21:00:00Z",
+      "coverage": "full",
+      "limitations": [
+        "synthetic fixture inputs only",
+        "no live SEC, Yahoo, LLM, or CrewAI access",
+        "ordinary enterprise FCF is not applicable to this bank profile",
+        "not real-time data or investment advice"
+      ],
+      "path": "examples/reports/bank.md",
+      "sha256": "15b6952fe060e8c051a4510ab1b571a263f6a54a377c46f674cf5a02938c92e2",
+      "source_fixture": "tests/fixtures/profiles/bank/complete.json"
+    },
+    {
+      "as_of": "2026-02-16T00:00:00Z",
+      "coverage": "full",
+      "limitations": [
+        "synthetic fixture inputs only",
+        "no live SEC, Yahoo, LLM, or CrewAI access",
+        "REIT P/E and ordinary FCF Yield remain not_applicable by policy",
+        "not real-time data or investment advice"
+      ],
+      "path": "examples/reports/reit.md",
+      "sha256": "bfae03b7c8b3370cf163b69d1caf790f62f064cd2b4daa52b7b4294949ff2e16",
+      "source_fixture": "tests/fixtures/profiles/reit/complete.json"
+    },
+    {
+      "as_of": "2026-08-06T15:30:00Z",
+      "coverage": "full",
+      "limitations": [
+        "synthetic fixture inputs only",
+        "source labels are fixture references rather than real SEC or market sources",
+        "not real-time data or investment advice"
+      ],
+      "path": "examples/reports/standard-operating.md",
+      "sha256": "6152d37ec45ac89cee8d163b831cd531728a9114f671286d6051b9c6ce34e2c8",
+      "source_fixture": "tests/test_reporting_modules.py::_reader_focused_inputs + VALID_REPORT_DRAFT"
+    }
+  ],
+  "generation_route_version": "wp13-s03-v1"
+}
