@@ -36,7 +36,7 @@ uv sync --group dev
 | `EDGAR_IDENTITY` | SEC EDGAR 请求的身份/User-Agent 联系信息 | 必需 |
 | `EDGAR_HTTP_TIMEOUT` | 单次 SEC 请求超时；按需设置 | 可选 |
 
-离线测试不需要真实模型、SEC 或市场凭据；测试会使用 dummy key、fixture 或依赖注入。
+离线测试不需要真实模型、SEC 或市场凭据；离线验证命令会显式设置非秘密占位值，测试使用 fixture 或依赖注入。真实运行仍按上面的 `.env` 配置执行。
 
 ## 3 个 Crew、4 个 Agent
 
@@ -97,15 +97,19 @@ Profile policy 会先判断发行人、证券结构和申报制度，再决定�
 
 ## 离线演示与验证
 
-以下命令是默认离线门禁，不调用 SEC、Yahoo、DeepSeek 或付费 API；live 测试只有显式传入 `--run-live` 才会运行，下面的命令不包含该开关。`unittest` 命令中的环境变量只将 SQLite 存储和 uv 缓存放到 `/private/tmp`，并关闭 tracing/telemetry；这些变量不访问外部服务：
+以下命令是默认离线门禁；命令块中的环境变量均为离线测试占位值，不是用户真实凭据。clean checkout 没有 `.env` 时也能按本 README 复现。测试不会调用 DeepSeek、SEC、Yahoo 或付费 API；live 测试只有显式传入 `--run-live` 才会运行，下面的命令不包含该开关。`CREWAI_STORAGE_DIR` 和 `UV_CACHE_DIR` 仅将运行时存储与缓存放到 `/tmp`，并关闭 tracing/telemetry：
 
 ```bash
+export DEEPSEEK_API_KEY=test-deepseek-key
+export DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+export EDGAR_IDENTITY=offline-test@example.com
+export CREWAI_STORAGE_DIR=/tmp/stockcrewai-flow-storage
+export CREWAI_TRACING_ENABLED=false
+export OTEL_SDK_DISABLED=true
+export UV_CACHE_DIR=/tmp/stockcrewai-uv-cache
+
 uv run --no-sync pytest -q
-CREWAI_STORAGE_DIR=/private/tmp/stockcrewai-flow-storage \
-CREWAI_TRACING_ENABLED=false \
-OTEL_SDK_DISABLED=true \
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache \
-  uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -q
+uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -q
 uv run --no-sync python -m compileall -q src tests
 uv run --no-sync ruff check src tests
 ```
