@@ -44,6 +44,12 @@ def evaluate_analysis_gate(
         fixed_reason_code = "unsupported_security"
     elif (
         profile.reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
+        and profile.issuer_profile is IssuerProfile.HOLDING_COMPANY
+    ):
+        status = "evidence_only"
+        fixed_reason_code = "foreign_profile_evidence_only"
+    elif (
+        profile.reporting_profile is ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS
         and (
             profile.issuer_profile is IssuerProfile.UNKNOWN
             or profile.security_profile is SecurityProfile.UNKNOWN

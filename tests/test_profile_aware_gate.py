@@ -127,6 +127,44 @@ def test_evidence_only_and_unsupported_security_have_dedicated_gate_statuses() -
     assert unsupported.coverage_level is CoverageLevel.UNSUPPORTED_SECURITY
 
 
+@pytest.mark.parametrize(
+    ("reporting", "expected_status", "expected_reason"),
+    [
+        (
+            ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS,
+            "evidence_only",
+            "foreign_profile_evidence_only",
+        ),
+        (ReportingProfile.DOMESTIC_US_GAAP, "blocked", "analysis_blocked"),
+    ],
+)
+def test_holding_gate_respects_foreign_evidence_only_boundary(
+    reporting: ReportingProfile,
+    expected_status: str,
+    expected_reason: str,
+) -> None:
+    decisions = [
+        _decision(
+            "holding_company_nav",
+            "unavailable",
+            reason_code="holding_company_nav_missing",
+            blocking=True,
+        )
+    ]
+    profile = ProfileResult(
+        issuer_profile=IssuerProfile.HOLDING_COMPANY,
+        security_profile=SecurityProfile.COMMON_STOCK,
+        reporting_profile=reporting,
+        coverage_level=CoverageLevel.FULL,
+        registry_version="profile-registry:caller-version",
+    )
+
+    gate = evaluate_analysis_gate(profile, decisions)
+
+    assert gate.status == expected_status
+    assert gate.reason_codes[0] == expected_reason
+
+
 @pytest.mark.parametrize("security", [SecurityProfile.ADR, SecurityProfile.SPAC])
 def test_adr_and_spac_without_policy_are_evidence_only(security: SecurityProfile) -> None:
     gate = evaluate_analysis_gate(_profile(CoverageLevel.FULL, security=security), [])

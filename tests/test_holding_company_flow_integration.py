@@ -593,7 +593,8 @@ def test_foreign_ifrs_holding_flow_prioritizes_evidence_only_across_stages() -> 
         "foreign_private_issuer_ifrs"
     )
     assert valuation_state["reason_code"] == "foreign_currency_fx_not_implemented"
-    flow.state.policy_context["gate"] = {"status": "evidence_only"}
+    assert flow.route_analysis(valuation_state) == "analysis_ready"
+    assert flow.state.policy_context["gate"]["status"] == "evidence_only"
 
     flow._analysis_inputs = {
         "financial_analysis_input": {
@@ -721,10 +722,14 @@ def _holding_nav_policy_context() -> dict[str, Any]:
                 "status": "available"
                 if metric_id == "holding_company_nav"
                 else "not_applicable",
+                "evidence_ids": [],
+                "calculation_ids": [],
             }
             for metric_id in HOLDING_COMPANY_METRIC_IDS
         ],
         "gate": {"status": "ready"},
+        "evidence_records": [],
+        "calculation_records": [],
     }
 
 
@@ -833,6 +838,67 @@ def test_incomplete_holding_policy_context_blocks_claim_route() -> None:
         flow.route_claims(
             _claim_gate_analysis_result(
                 "ev_flow_financial", "calc_flow_net_margin", "ev_flow_filing"
+            )
+        )
+        == "claims_blocked"
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("decision", "evidence_ids", None),
+        ("decision", "calculation_ids", None),
+        ("context", "evidence_records", None),
+        ("context", "calculation_records", None),
+        ("context", "evidence_records", "malformed"),
+        ("context", "calculation_records", "malformed"),
+        ("context", "evidence_records", 1),
+        ("context", "calculation_records", 1),
+    ],
+)
+def test_malformed_holding_policy_context_fails_closed(
+    target: str,
+    field: str,
+    value: Any,
+) -> None:
+    flow, _ = _holding_flow()
+    policy_context = _holding_nav_policy_context()
+    if target == "decision":
+        next(
+            item
+            for item in policy_context["policy_decisions"]
+            if item["metric_id"] == "holding_company_nav"
+        )[field] = value
+    else:
+        policy_context[field] = value
+    flow.state.policy_context = policy_context
+    holding_nav_payload = _holding_nav_payload()
+    flow.state.valuation = dict(holding_nav_payload)
+    flow.state.historical_valuation = dict(holding_nav_payload)
+    flow.state.reverse_dcf = dict(holding_nav_payload)
+    flow._analysis_inputs = {
+        "financial_analysis_input": {
+            "validated_evidence_ids": [],
+            "validated_calculation_ids": [],
+        }
+    }
+    flow._valuation_analysis_input = {
+        "validated_evidence_ids": [],
+        "validated_calculation_ids": [],
+    }
+    flow._risk_input = {"validated_filing_ids": ["ev_flow_filing"]}
+
+    assert not _holding_nav_policy_ready(
+        policy_context,
+        flow.state.valuation,
+        flow.state.historical_valuation,
+        flow.state.reverse_dcf,
+    )
+    assert (
+        flow.route_claims(
+            _claim_gate_analysis_result(
+                "ev_profile_only", "calc_profile_only", "ev_flow_filing"
             )
         )
         == "claims_blocked"

@@ -158,6 +158,25 @@ def _holding_nav_policy_ready(
         )
     ):
         return False
+    if not all(
+        isinstance(decision.get(key), list)
+        and all(
+            isinstance(item, str) and bool(item.strip())
+            for item in decision[key]
+        )
+        for decision in policy_decisions
+        for key in ("evidence_ids", "calculation_ids")
+    ):
+        return False
+    evidence_records = policy_context.get("evidence_records")
+    calculation_records = policy_context.get("calculation_records")
+    if not (
+        isinstance(evidence_records, list)
+        and all(isinstance(record, Mapping) for record in evidence_records)
+        and isinstance(calculation_records, list)
+        and all(isinstance(record, Mapping) for record in calculation_records)
+    ):
+        return False
     return all(
         isinstance(result, Mapping)
         and result.get("status") == "not_applicable"
