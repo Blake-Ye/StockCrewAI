@@ -8,6 +8,7 @@ from typing import Any
 
 from .context import (
     _CLAIM_CATEGORY_TO_SECTION,
+    _QUANT_PROVENANCE_FIELD_PATHS,
     _REPORT_NARRATIVE_CATEGORIES,
     _REPORT_NARRATIVE_CATEGORY_MAP,
     _REPORT_QUALITY_METRIC_IDS,
@@ -872,6 +873,33 @@ def _quant_bps(value: Any) -> str | None:
     return f"{number} bps" if number is not None else None
 
 
+def _quant_id_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [item_text for item in value if (item_text := _text(item))]
+
+
+def _quant_field_provenance_markdown(packet: Mapping[str, Any]) -> list[str]:
+    field_provenance = packet.get("field_provenance")
+    if not isinstance(field_provenance, Mapping):
+        return []
+    lines = ["字段级追溯："]
+    for field_path in _QUANT_PROVENANCE_FIELD_PATHS:
+        provenance = field_provenance.get(field_path)
+        if not isinstance(provenance, Mapping):
+            continue
+        artifact_ids = _quant_id_list(provenance.get("artifact_ids"))
+        if not artifact_ids:
+            continue
+        line = f"- {field_path}：artifact_ids={', '.join(artifact_ids)}"
+        for label, key in (("evidence_ids", "evidence_ids"), ("calculation_ids", "calculation_ids")):
+            ids = _quant_id_list(provenance.get(key))
+            if ids:
+                line += f"；{label}={', '.join(ids)}"
+        lines.append(line)
+    return lines if len(lines) > 1 else []
+
+
 def _quant_status_line(
     payload: Mapping[str, Any], prefix: str, *, typed: bool
 ) -> str | None:
@@ -991,6 +1019,8 @@ def _quant_evidence_markdown(quant: Mapping[str, Any] | None) -> str:
                 label=label,
             )
         )
+    if provenance_lines := _quant_field_provenance_markdown(packet):
+        lines.extend(("", *provenance_lines))
     coverage = _text(packet.get("coverage"))
     lines.extend(
         (

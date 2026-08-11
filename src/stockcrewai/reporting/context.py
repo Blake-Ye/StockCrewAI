@@ -109,6 +109,23 @@ _FOREIGN_ADR_FORMULA_IDS = frozenset(
         "foreign-adr-market-cap-v1",
     }
 )
+_QUANT_PROVENANCE_FIELD_PATHS = (
+    "ranking_summary.rank",
+    "ranking_summary.peer_count",
+    "ranking_summary.industry_percentile",
+    "ranking_summary.score",
+    "backtest_summary.strategy_cagr",
+    "backtest_summary.strategy_max_drawdown",
+    "backtest_summary.average_turnover",
+    "backtest_summary.annualized_turnover",
+    "backtest_summary.net_cost_bps",
+    "benchmark_summary.spy_cagr",
+    "benchmark_summary.spy_max_drawdown",
+    "benchmark_summary.universe_cagr",
+    "benchmark_summary.universe_max_drawdown",
+    "data_quality.complete_period_count",
+    "data_quality.period_count",
+)
 
 
 class ReportMetric(BaseModel):
@@ -239,6 +256,77 @@ def _ids(value: Any) -> list[str]:
         if item_text and item_text not in result:
             result.append(item_text)
     return result
+
+
+def _quant_field_provenance_missing(packet: QuantResearchPacket) -> bool:
+    field_provenance = getattr(packet, "field_provenance", None)
+    if not isinstance(field_provenance, Mapping) or not field_provenance:
+        return True
+    for field_path in _QUANT_PROVENANCE_FIELD_PATHS:
+        provenance = field_provenance.get(field_path)
+        artifact_ids = (
+            provenance.get("artifact_ids")
+            if isinstance(provenance, Mapping)
+            else getattr(provenance, "artifact_ids", None)
+        )
+        if not isinstance(artifact_ids, Sequence) or isinstance(
+            artifact_ids, (str, bytes)
+        ) or not any(_text(item) for item in artifact_ids):
+            return True
+    return False
+
+
+def _quant_field_provenance_input(value: Any) -> Any:
+    if isinstance(value, QuantResearchPacket):
+        return getattr(value, "field_provenance", None)
+    if isinstance(value, Mapping):
+        return value.get("field_provenance")
+    return None
+
+
+def _quant_field_provenance_has_empty_artifact_ids(value: Any) -> bool:
+    field_provenance = _quant_field_provenance_input(value)
+    if field_provenance is None:
+        return True
+    if not isinstance(field_provenance, Mapping):
+        return False
+    for field_path in _QUANT_PROVENANCE_FIELD_PATHS:
+        provenance = field_provenance.get(field_path)
+        if not isinstance(provenance, Mapping):
+            continue
+        artifact_ids = provenance.get("artifact_ids")
+        if artifact_ids is None:
+            return True
+        if isinstance(artifact_ids, Sequence) and not isinstance(
+            artifact_ids, (str, bytes)
+        ) and not any(_text(item) for item in artifact_ids):
+            return True
+    return False
+
+
+def _quant_packet_without_field_provenance(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, QuantResearchPacket):
+        try:
+            payload = value.model_dump(mode="python")
+        except (TypeError, ValueError):
+            return None
+    elif isinstance(value, Mapping):
+        payload = dict(value)
+    else:
+        return None
+    payload.pop("field_provenance", None)
+    return payload
+
+
+def _quant_packet_shape_valid_without_field_provenance(value: Any) -> bool:
+    payload = _quant_packet_without_field_provenance(value)
+    if payload is None:
+        return False
+    try:
+        QuantResearchPacket.model_validate(payload)
+    except (TypeError, ValueError, ValidationError):
+        return False
+    return True
 
 
 def _evidence_index(source_metadata: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -767,17 +855,30 @@ def build_report_context(
             try:
                 validated_quant_packet = QuantResearchPacket.model_validate(quant_packet)
             except (TypeError, ValueError, ValidationError):
+                reason_code = "quant_packet_invalid"
+                if (
+                    _quant_field_provenance_has_empty_artifact_ids(quant_packet)
+                    and _quant_packet_shape_valid_without_field_provenance(quant_packet)
+                ):
+                    reason_code = "quant_field_provenance_missing"
                 quant_payload = {
                     "status": "unavailable",
-                    "reason_code": "quant_packet_invalid",
+                    "reason_code": reason_code,
                     "packet": None,
                 }
             else:
-                quant_payload = {
-                    "status": "available",
-                    "reason_code": "quant_packet_validated",
-                    "packet": validated_quant_packet.model_dump(mode="json"),
-                }
+                if _quant_field_provenance_missing(validated_quant_packet):
+                    quant_payload = {
+                        "status": "unavailable",
+                        "reason_code": "quant_field_provenance_missing",
+                        "packet": None,
+                    }
+                else:
+                    quant_payload = {
+                        "status": "available",
+                        "reason_code": "quant_packet_validated",
+                        "packet": validated_quant_packet.model_dump(mode="json"),
+                    }
 
     profile_evidence_records = policy_payload.get("evidence_records", [])
     if isinstance(profile_evidence_records, Sequence) and not isinstance(

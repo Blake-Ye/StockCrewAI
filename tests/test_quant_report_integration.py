@@ -34,6 +34,8 @@ from tests.test_main_flow import _flow_dependencies, _offline_flow_patches, _run
 
 FACTOR_ARTIFACT_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 BACKTEST_ARTIFACT_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+RANKING_EVIDENCE_ID = "evidence-ranking"
+RANKING_CALCULATION_ID = "calculation-ranking"
 _FLOW_UNSET = object()
 _FLOW_VERDICT = {
     "status": "ready",
@@ -56,6 +58,43 @@ EXPECTED_QUANT_REPORT_FRAGMENTS = (
     FACTOR_ARTIFACT_ID,
     BACKTEST_ARTIFACT_ID,
 )
+
+
+def _quant_field_provenance() -> dict[str, dict[str, list[str]]]:
+    field_provenance = {
+        field_path: {"artifact_ids": [FACTOR_ARTIFACT_ID]}
+        for field_path in (
+            "ranking_summary.rank",
+            "ranking_summary.peer_count",
+            "ranking_summary.industry_percentile",
+            "ranking_summary.score",
+        )
+    }
+    field_provenance.update(
+        {
+            field_path: {"artifact_ids": [BACKTEST_ARTIFACT_ID]}
+            for field_path in (
+                "backtest_summary.strategy_cagr",
+                "backtest_summary.strategy_max_drawdown",
+                "backtest_summary.average_turnover",
+                "backtest_summary.annualized_turnover",
+                "backtest_summary.net_cost_bps",
+                "benchmark_summary.spy_cagr",
+                "benchmark_summary.spy_max_drawdown",
+                "benchmark_summary.universe_cagr",
+                "benchmark_summary.universe_max_drawdown",
+                "data_quality.complete_period_count",
+                "data_quality.period_count",
+            )
+        }
+    )
+    field_provenance["ranking_summary.rank"].update(
+        {
+            "evidence_ids": [RANKING_EVIDENCE_ID],
+            "calculation_ids": [RANKING_CALCULATION_ID],
+        }
+    )
+    return field_provenance
 
 
 @pytest.fixture
@@ -109,6 +148,7 @@ def quant_packet() -> QuantResearchPacket:
             "period_count": Decimal("61"),
             "survivorship_bias_known": True,
         },
+        field_provenance=_quant_field_provenance(),
         limitations=["survivorship_bias_known"],
         artifact_ids=[FACTOR_ARTIFACT_ID, BACKTEST_ARTIFACT_ID],
     )
@@ -256,6 +296,76 @@ def test_quant_packet_rendering_uses_fixture_literals(
     quant_section = _quant_section(report)
     for fragment in EXPECTED_QUANT_REPORT_FRAGMENTS:
         assert fragment in quant_section
+
+
+def test_quant_packet_rendering_includes_field_level_provenance(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    context = build_report_context(**_context_inputs(), quant_packet=quant_packet)
+    report = render_validated_report(
+        report_context=context,
+        report_draft=build_deterministic_report_draft(),
+    )
+
+    quant_section = _quant_section(report)
+    assert "字段级追溯" in quant_section
+    for field_path in quant_packet.field_provenance:
+        assert field_path in quant_section
+    assert FACTOR_ARTIFACT_ID in quant_section
+    assert BACKTEST_ARTIFACT_ID in quant_section
+    assert RANKING_EVIDENCE_ID in quant_section
+    assert RANKING_CALCULATION_ID in quant_section
+
+
+@pytest.mark.parametrize("provenance_mode", ("missing", "empty"))
+def test_missing_quant_field_provenance_is_unavailable_without_numbers(
+    quant_packet: QuantResearchPacket,
+    provenance_mode: str,
+) -> None:
+    packet_payload = quant_packet.model_dump(mode="python")
+    if provenance_mode == "missing":
+        packet_payload.pop("field_provenance")
+    else:
+        packet_payload["field_provenance"] = {}
+
+    context = build_report_context(**_context_inputs(), quant_packet=packet_payload)
+    assert context["quant"] == {
+        "status": "unavailable",
+        "reason_code": "quant_field_provenance_missing",
+        "packet": None,
+    }
+
+    report = render_validated_report(
+        report_context=context,
+        report_draft=build_deterministic_report_draft(),
+    )
+    quant_section = _quant_section(report)
+    assert "quant_field_provenance_missing" in quant_section
+    for fragment in ("2/10", "88.89%", "12.34%", "-21.00%", "10 bps"):
+        assert fragment not in quant_section
+    assert FACTOR_ARTIFACT_ID not in quant_section
+    assert BACKTEST_ARTIFACT_ID not in quant_section
+
+
+def test_empty_quant_field_provenance_artifact_ids_are_unavailable(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    packet_payload = quant_packet.model_dump(mode="python")
+    packet_payload["field_provenance"]["ranking_summary.rank"]["artifact_ids"] = []
+
+    context = build_report_context(**_context_inputs(), quant_packet=packet_payload)
+    assert context["quant"] == {
+        "status": "unavailable",
+        "reason_code": "quant_field_provenance_missing",
+        "packet": None,
+    }
+    report = render_validated_report(
+        report_context=context,
+        report_draft=build_deterministic_report_draft(),
+    )
+    quant_section = _quant_section(report)
+    assert "2/10" not in quant_section
+    assert FACTOR_ARTIFACT_ID not in quant_section
 
 
 def test_quant_packet_rendering_embeds_exactly_three_quant_png_data_uris(
