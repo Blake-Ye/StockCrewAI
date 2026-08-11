@@ -22,6 +22,8 @@ from stockcrewai.models.quant import (
 
 AS_OF = datetime(2026, 8, 10, tzinfo=timezone.utc)
 TARGET_TICKER = "AURX"
+PROVENANCE_ARTIFACT_A = "a" * 64
+PROVENANCE_ARTIFACT_B = "b" * 64
 FACTOR_ARTIFACT_SCHEMA_VERSION = "quant-factor-artifact-v1"
 BACKTEST_ARTIFACT_SCHEMA_VERSION = "quant-backtest-artifact-v1"
 INTEGRATION_FIXTURE = Path(__file__).parent / "fixtures" / "quant" / "integration" / "snapshots.json"
@@ -414,18 +416,34 @@ def test_explicit_packet_identity_overrides_are_preserved(
 def test_quant_field_provenance_normalizes_id_lists() -> None:
     provenance = QuantFieldProvenance.model_validate(
         {
-            "artifact_ids": ["artifact-b", "artifact-a", "artifact-b"],
+            "artifact_ids": [
+                PROVENANCE_ARTIFACT_B,
+                PROVENANCE_ARTIFACT_A,
+                PROVENANCE_ARTIFACT_B,
+            ],
             "evidence_ids": ["evidence-z", "evidence-a", "evidence-z"],
             "calculation_ids": ["calculation-2", "calculation-1", "calculation-2"],
         }
     )
 
-    assert provenance.artifact_ids == ["artifact-a", "artifact-b"]
+    assert provenance.artifact_ids == [PROVENANCE_ARTIFACT_A, PROVENANCE_ARTIFACT_B]
     assert provenance.evidence_ids == ["evidence-a", "evidence-z"]
     assert provenance.calculation_ids == ["calculation-1", "calculation-2"]
 
 
-@pytest.mark.parametrize("bad_artifact_ids", [None, [], [""], ["  "]])
+@pytest.mark.parametrize(
+    "bad_artifact_ids",
+    [
+        None,
+        [],
+        [""],
+        ["  "],
+        ["artifact-a"],
+        ["A" * 64],
+        ["g" * 64],
+        ["a" * 63],
+    ],
+)
 def test_quant_field_provenance_requires_nonempty_artifact_ids(
     bad_artifact_ids: object,
 ) -> None:
@@ -453,6 +471,16 @@ def test_quant_packet_rejects_invalid_field_provenance_structure(
     with pytest.raises(ValueError):
         QuantResearchPacket.model_validate(payload)
 
+    foreign_artifact = hashlib.sha256(b"foreign-quant-artifact").hexdigest()
+    assert foreign_artifact not in packet.artifact_ids
+    payload["field_provenance"]["ranking_summary.score"] = {
+        "artifact_ids": [foreign_artifact],
+        "evidence_ids": [],
+        "calculation_ids": [],
+    }
+    with pytest.raises(ValueError):
+        QuantResearchPacket.model_validate(payload)
+
     payload["field_provenance"]["ranking_summary.score"] = {
         "artifact_ids": [valid_artifacts[0]["artifact_hash"]],
         "evidence_ids": [],
@@ -461,6 +489,17 @@ def test_quant_packet_rejects_invalid_field_provenance_structure(
     }
     with pytest.raises(ValueError):
         QuantResearchPacket.model_validate(payload)
+
+
+def test_quant_packet_accepts_empty_field_provenance_for_compatibility(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    payload = _build_packet(*valid_artifacts).model_dump(mode="python")
+    payload["field_provenance"] = {}
+
+    packet = QuantResearchPacket.model_validate(payload)
+
+    assert packet.field_provenance == {}
 
 
 def test_target_ticker_must_exist_in_factor_rankings(
@@ -751,7 +790,7 @@ def test_packet_hash_is_stable_content_addressed_sha256(
 
     changed_payload = packet.model_dump(mode="python")
     changed_payload["field_provenance"]["ranking_summary.score"]["artifact_ids"] = [
-        "different-artifact"
+        valid_artifacts[1]["artifact_hash"]
     ]
     changed_provenance = QuantResearchPacket.model_validate(changed_payload)
     assert quant_packet_hash(changed_provenance) != first

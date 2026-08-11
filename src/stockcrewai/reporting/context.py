@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
@@ -126,6 +127,9 @@ _QUANT_PROVENANCE_FIELD_PATHS = (
     "data_quality.complete_period_count",
     "data_quality.period_count",
 )
+_QUANT_ARTIFACT_HASH_RE = re.compile(r"[0-9a-f]{64}")
+_QUANT_FIELD_PROVENANCE_MISSING = "quant_field_provenance_missing"
+_QUANT_FIELD_PROVENANCE_INVALID = "quant_field_provenance_invalid"
 
 
 class ReportMetric(BaseModel):
@@ -258,50 +262,61 @@ def _ids(value: Any) -> list[str]:
     return result
 
 
-def _quant_field_provenance_missing(packet: QuantResearchPacket) -> bool:
-    field_provenance = getattr(packet, "field_provenance", None)
-    if not isinstance(field_provenance, Mapping) or not field_provenance:
-        return True
-    for field_path in _QUANT_PROVENANCE_FIELD_PATHS:
-        provenance = field_provenance.get(field_path)
-        artifact_ids = (
-            provenance.get("artifact_ids")
-            if isinstance(provenance, Mapping)
-            else getattr(provenance, "artifact_ids", None)
-        )
-        if not isinstance(artifact_ids, Sequence) or isinstance(
-            artifact_ids, (str, bytes)
-        ) or not any(_text(item) for item in artifact_ids):
-            return True
-    return False
-
-
-def _quant_field_provenance_input(value: Any) -> Any:
+def quant_field_provenance_reason(value: Any) -> str | None:
+    """返回量化字段追溯的确定性失败原因；合法时返回 None。"""
     if isinstance(value, QuantResearchPacket):
-        return getattr(value, "field_provenance", None)
-    if isinstance(value, Mapping):
-        return value.get("field_provenance")
-    return None
+        try:
+            packet = value.model_dump(mode="python")
+        except (TypeError, ValueError):
+            return _QUANT_FIELD_PROVENANCE_INVALID
+    elif isinstance(value, Mapping):
+        packet = value
+    else:
+        return _QUANT_FIELD_PROVENANCE_INVALID
 
-
-def _quant_field_provenance_has_empty_artifact_ids(value: Any) -> bool:
-    field_provenance = _quant_field_provenance_input(value)
-    if field_provenance is None:
-        return True
+    field_provenance = packet.get("field_provenance")
+    if field_provenance is None or (
+        isinstance(field_provenance, Mapping) and not field_provenance
+    ):
+        return _QUANT_FIELD_PROVENANCE_MISSING
     if not isinstance(field_provenance, Mapping):
-        return False
+        return _QUANT_FIELD_PROVENANCE_INVALID
+
+    packet_artifact_ids = packet.get("artifact_ids")
+    if not isinstance(packet_artifact_ids, Sequence) or isinstance(
+        packet_artifact_ids, (str, bytes)
+    ) or not packet_artifact_ids or any(
+        not isinstance(item, str) or not item.strip() for item in packet_artifact_ids
+    ):
+        return _QUANT_FIELD_PROVENANCE_INVALID
+    packet_artifact_id_set = set(packet_artifact_ids)
+
     for field_path in _QUANT_PROVENANCE_FIELD_PATHS:
-        provenance = field_provenance.get(field_path)
+        if field_path not in field_provenance:
+            return _QUANT_FIELD_PROVENANCE_MISSING
+
+    for provenance in field_provenance.values():
         if not isinstance(provenance, Mapping):
-            continue
+            return _QUANT_FIELD_PROVENANCE_INVALID
         artifact_ids = provenance.get("artifact_ids")
         if artifact_ids is None:
-            return True
-        if isinstance(artifact_ids, Sequence) and not isinstance(
+            return _QUANT_FIELD_PROVENANCE_MISSING
+        if not isinstance(artifact_ids, Sequence) or isinstance(
             artifact_ids, (str, bytes)
-        ) and not any(_text(item) for item in artifact_ids):
-            return True
-    return False
+        ):
+            return _QUANT_FIELD_PROVENANCE_INVALID
+        if not artifact_ids:
+            return _QUANT_FIELD_PROVENANCE_MISSING
+        if not any(_text(item) for item in artifact_ids):
+            return _QUANT_FIELD_PROVENANCE_MISSING
+        for artifact_id in artifact_ids:
+            if not isinstance(artifact_id, str) or _QUANT_ARTIFACT_HASH_RE.fullmatch(
+                artifact_id
+            ) is None:
+                return _QUANT_FIELD_PROVENANCE_INVALID
+            if artifact_id not in packet_artifact_id_set:
+                return _QUANT_FIELD_PROVENANCE_INVALID
+    return None
 
 
 def _quant_packet_without_field_provenance(value: Any) -> Mapping[str, Any] | None:
@@ -856,21 +871,22 @@ def build_report_context(
                 validated_quant_packet = QuantResearchPacket.model_validate(quant_packet)
             except (TypeError, ValueError, ValidationError):
                 reason_code = "quant_packet_invalid"
-                if (
-                    _quant_field_provenance_has_empty_artifact_ids(quant_packet)
-                    and _quant_packet_shape_valid_without_field_provenance(quant_packet)
-                ):
-                    reason_code = "quant_field_provenance_missing"
+                if _quant_packet_shape_valid_without_field_provenance(quant_packet):
+                    reason_code = (
+                        quant_field_provenance_reason(quant_packet)
+                        or _QUANT_FIELD_PROVENANCE_INVALID
+                    )
                 quant_payload = {
                     "status": "unavailable",
                     "reason_code": reason_code,
                     "packet": None,
                 }
             else:
-                if _quant_field_provenance_missing(validated_quant_packet):
+                reason_code = quant_field_provenance_reason(validated_quant_packet)
+                if reason_code:
                     quant_payload = {
                         "status": "unavailable",
-                        "reason_code": "quant_field_provenance_missing",
+                        "reason_code": reason_code,
                         "packet": None,
                     }
                 else:
@@ -1193,4 +1209,9 @@ def build_report_context(
     return context_payload
 
 
-__all__ = ["ReportContext", "ReportMetric", "build_report_context"]
+__all__ = [
+    "ReportContext",
+    "ReportMetric",
+    "build_report_context",
+    "quant_field_provenance_reason",
+]

@@ -30,6 +30,11 @@ _NonEmptyString = Annotated[
     Strict(),
     StringConstraints(strip_whitespace=True, min_length=1),
 ]
+_ArtifactHash = Annotated[
+    str,
+    Strict(),
+    StringConstraints(min_length=64, max_length=64, pattern=r"[0-9a-f]{64}"),
+]
 _NumericMapping = dict[_NonEmptyString, _OptionalFiniteDecimal]
 
 
@@ -99,7 +104,7 @@ class FactorObservation(BaseModel):
 class QuantFieldProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    artifact_ids: list[_NonEmptyString] = Field(min_length=1)
+    artifact_ids: list[_ArtifactHash] = Field(min_length=1)
     evidence_ids: list[_NonEmptyString] = Field(default_factory=list)
     calculation_ids: list[_NonEmptyString] = Field(default_factory=list)
 
@@ -135,6 +140,18 @@ class QuantResearchPacket(BaseModel):
         cls, values: dict[str, QuantFieldProvenance]
     ) -> dict[str, QuantFieldProvenance]:
         return dict(sorted(values.items()))
+
+    @model_validator(mode="after")
+    def _field_provenance_artifacts_must_belong_to_packet(
+        self,
+    ) -> "QuantResearchPacket":
+        packet_artifact_ids = set(self.artifact_ids)
+        for provenance in self.field_provenance.values():
+            if not set(provenance.artifact_ids).issubset(packet_artifact_ids):
+                raise ValueError(
+                    "field_provenance.artifact_ids 必须是 packet.artifact_ids 的子集"
+                )
+        return self
 
 
 class UniverseManifest(BaseModel):

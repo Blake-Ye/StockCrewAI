@@ -368,6 +368,89 @@ def test_empty_quant_field_provenance_artifact_ids_are_unavailable(
     assert FACTOR_ARTIFACT_ID not in quant_section
 
 
+@pytest.mark.parametrize(
+    ("mutation", "reason_code"),
+    (
+        ("missing", "quant_field_provenance_missing"),
+        ("invalid_hash", "quant_field_provenance_invalid"),
+        ("foreign_artifact", "quant_field_provenance_invalid"),
+    ),
+)
+def test_renderer_rechecks_manually_tampered_available_quant_provenance(
+    quant_packet: QuantResearchPacket,
+    mutation: str,
+    reason_code: str,
+) -> None:
+    context = build_report_context(**_context_inputs(), quant_packet=quant_packet)
+    quant = context["quant"]
+    assert quant["status"] == "available"
+    packet = quant["packet"]
+    if mutation == "missing":
+        packet.pop("field_provenance")
+    elif mutation == "invalid_hash":
+        packet["field_provenance"]["ranking_summary.score"]["artifact_ids"] = [
+            "not-a-sha256"
+        ]
+    else:
+        foreign_artifact = hashlib.sha256(b"foreign-render-artifact").hexdigest()
+        assert foreign_artifact not in packet["artifact_ids"]
+        packet["field_provenance"]["ranking_summary.score"]["artifact_ids"] = [
+            foreign_artifact
+        ]
+    quant["status"] = "available"
+
+    report = render_validated_report(
+        report_context=context,
+        report_draft=build_deterministic_report_draft(),
+    )
+    quant_section = _quant_section(report)
+
+    assert "status=unavailable" in quant_section
+    assert f"reason_code={reason_code}" in quant_section
+    assert "data:image/png;base64," not in quant_section
+    for fragment in (
+        "2/10",
+        "88.89%",
+        "12.34%",
+        "-21.00%",
+        "10 bps",
+        FACTOR_ARTIFACT_ID,
+        BACKTEST_ARTIFACT_ID,
+        RANKING_EVIDENCE_ID,
+        RANKING_CALCULATION_ID,
+    ):
+        assert fragment not in quant_section
+
+
+@pytest.mark.parametrize("mutation", ("invalid_hash", "foreign_artifact"))
+def test_build_report_context_returns_stable_invalid_quant_provenance_reason(
+    quant_packet: QuantResearchPacket,
+    mutation: str,
+) -> None:
+    packet_payload = quant_packet.model_dump(mode="python")
+    if mutation == "invalid_hash":
+        packet_payload["field_provenance"]["ranking_summary.score"]["artifact_ids"] = [
+            "not-a-sha256"
+        ]
+    else:
+        foreign_artifact = hashlib.sha256(b"foreign-context-artifact").hexdigest()
+        assert foreign_artifact not in packet_payload["artifact_ids"]
+        packet_payload["field_provenance"]["ranking_summary.score"]["artifact_ids"] = [
+            foreign_artifact
+        ]
+
+    first = build_report_context(**_context_inputs(), quant_packet=packet_payload)
+    second = build_report_context(**_context_inputs(), quant_packet=packet_payload)
+
+    expected = {
+        "status": "unavailable",
+        "reason_code": "quant_field_provenance_invalid",
+        "packet": None,
+    }
+    assert first["quant"] == expected
+    assert second["quant"] == expected
+
+
 def test_quant_packet_rendering_embeds_exactly_three_quant_png_data_uris(
     quant_packet: QuantResearchPacket,
 ) -> None:

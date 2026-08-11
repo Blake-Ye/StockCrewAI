@@ -22,6 +22,7 @@ from .context import (
     ReportContext,
     ReportMetric,
     build_report_context,
+    quant_field_provenance_reason,
 )
 from .validator import (
     ReportDraft,
@@ -974,6 +975,8 @@ def _quant_evidence_markdown(quant: Mapping[str, Any] | None) -> str:
     packet = quant.get("packet")
     if not isinstance(packet, Mapping):
         return _quant_unavailable_markdown("unavailable", "quant_packet_invalid")
+    if reason_code := quant_field_provenance_reason(packet):
+        return _quant_unavailable_markdown("unavailable", reason_code)
 
     ranking = packet.get("ranking_summary")
     ranking = ranking if isinstance(ranking, Mapping) else {}
@@ -1065,6 +1068,20 @@ def _render_report_from_context(
     context_payload = validated_context.model_dump(mode="json")
     if not quant_present and context_payload.get("quant") is None:
         context_payload.pop("quant", None)
+    quant_payload = context_payload.get("quant")
+    if isinstance(quant_payload, Mapping) and quant_payload.get("status") == "available":
+        quant_packet = quant_payload.get("packet")
+        quant_reason = (
+            "quant_packet_invalid"
+            if not isinstance(quant_packet, Mapping)
+            else quant_field_provenance_reason(quant_packet)
+        )
+        if quant_reason:
+            context_payload["quant"] = {
+                "status": "unavailable",
+                "reason_code": quant_reason,
+                "packet": None,
+            }
     claims = _validated_claims(context_payload["claims"])
     status = context_payload["verdict_status"]
     metrics = context_payload["metrics"]
