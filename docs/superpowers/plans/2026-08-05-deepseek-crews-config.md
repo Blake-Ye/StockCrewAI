@@ -91,7 +91,7 @@ def test_report_crew_has_one_deepseek_agent_and_bound_task(monkeypatch):
 Run:
 
 ~~~
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache /Users/yeziqing/.local/bin/uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
+UV_CACHE_DIR="${TMPDIR:-/tmp}/stockcrewai-uv-cache" uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
 ~~~
 
 Expected: collection fails because `stockcrewai.crews.analysis`, `report`, and `request_parser` do not exist yet. Do not change the test to make this failure disappear.
@@ -202,7 +202,7 @@ The task must consume `{validated_claims}`, `{deterministic_verdict}`, `{calcula
 Run:
 
 ~~~
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache /Users/yeziqing/.local/bin/uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
+UV_CACHE_DIR="${TMPDIR:-/tmp}/stockcrewai-uv-cache" uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
 ~~~
 
 Expected: 3 tests pass, with no network request or real API charge.
@@ -291,7 +291,7 @@ Expected: no output.
 Run:
 
 ~~~
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache /Users/yeziqing/.local/bin/uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
+UV_CACHE_DIR="${TMPDIR:-/tmp}/stockcrewai-uv-cache" uv run --no-sync python -m unittest discover -s tests -p 'test_*.py' -v
 ~~~
 
 Expected: all collected tests pass and no real API request occurs.
@@ -301,7 +301,7 @@ Expected: all collected tests pass and no real API request occurs.
 Run:
 
 ~~~
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache /Users/yeziqing/.local/bin/uv run --no-sync python -m compileall -q src tests
+UV_CACHE_DIR="${TMPDIR:-/tmp}/stockcrewai-uv-cache" uv run --no-sync python -m compileall -q src tests
 ~~~
 
 Expected: exit code 0.
@@ -311,7 +311,7 @@ Expected: exit code 0.
 Run:
 
 ~~~
-UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache /Users/yeziqing/.local/bin/uv run --no-sync ruff check src tests
+UV_CACHE_DIR="${TMPDIR:-/tmp}/stockcrewai-uv-cache" uv run --no-sync ruff check src tests
 ~~~
 
 If Ruff is unavailable in the existing environment, report that exact result and do not install it.
