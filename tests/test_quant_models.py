@@ -187,6 +187,7 @@ def test_quant_models_accept_valid_payloads_and_json_dump() -> None:
                 "backtest_summary",
                 "benchmark_summary",
                 "data_quality",
+                "field_provenance",
                 "limitations",
                 "artifact_ids",
             },
