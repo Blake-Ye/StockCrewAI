@@ -3,6 +3,11 @@
 Evidence、Analysis、Valuation 和 Claim Gate 的确定性实现分别位于
 pipelines/* 与 validators/claim_gate.py。本模块只保留请求解析、CrewAI
 运行时和 Crew 注入等尚未迁移的小工具，并 re-export 旧名称。
+
+WP13-S06 兼容边界记录：canonical 实现已经在 pipelines/validators，当前保留
+legacy re-export 是因为 main/flow 和测试仍有直接调用或 patch；只有未来
+`rg -n 'pipeline_support' src tests` 为零且迁移测试通过，才可由独立任务删除。
+本次不清理 `.env`、运行产物或 ignored cache。
 """
 
 # This module intentionally re-exports the legacy public surface.
