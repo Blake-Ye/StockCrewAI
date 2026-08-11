@@ -2578,7 +2578,7 @@ class CrewConfigurationTests(unittest.TestCase):
             self.assertIsNone(agent.planning_config)
 
     def _build_crew(self, crew_factory):
-        with TemporaryDirectory(prefix="stockcrewai-crewai-", dir="/private/tmp") as storage_dir:
+        with TemporaryDirectory(prefix="stockcrewai-crewai-") as storage_dir:
             with self._deepseek_environment(), patch(
                 "crewai.memory.storage.kickoff_task_outputs_storage.db_storage_path",
                 return_value=storage_dir,

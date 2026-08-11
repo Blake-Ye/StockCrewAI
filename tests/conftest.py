@@ -7,7 +7,7 @@ import pytest
 from hypothesis import settings
 
 
-_TEST_FLOW_STORAGE = tempfile.TemporaryDirectory(prefix="stockcrewai-wp00-", dir="/private/tmp")
+_TEST_FLOW_STORAGE = tempfile.TemporaryDirectory(prefix="stockcrewai-wp00-")
 os.environ.setdefault("CREWAI_STORAGE_DIR", _TEST_FLOW_STORAGE.name)
 
 
