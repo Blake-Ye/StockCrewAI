@@ -106,6 +106,22 @@ _HOLDING_COMPANY_NAV_PRIMARY_REASON = "holding_company_nav_primary_valuation"
 _SPAC_SECURITY_STRUCTURE_REASON = "spac_security_structure_not_applicable"
 
 
+def _is_unsupported_security_profile(profile: Any) -> bool:
+    if not isinstance(profile, Mapping):
+        return False
+    return any(
+        str(getattr(profile.get(field), "value", profile.get(field)))
+        .strip()
+        .casefold()
+        == expected
+        for field, expected in (
+            ("coverage_level", "unsupported_security"),
+            ("security_profile", "unsupported_fund_security"),
+            ("reporting_profile", "investment_company_reporting"),
+        )
+    )
+
+
 def _spac_evidence_only_policy_ready(
     policy_context: Any,
     valuation: Any,
@@ -702,6 +718,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
         security_profile = profile.get("security_profile")
         security_profile = getattr(security_profile, "value", security_profile)
         is_spac = str(security_profile).strip().casefold() == "spac"
+        is_unsupported_security = _is_unsupported_security_profile(profile)
         is_foreign_ifrs = (
             str(reporting_profile).strip().casefold()
             == "foreign_private_issuer_ifrs"
@@ -717,6 +734,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             }
             and not is_foreign_ifrs
             and not is_spac
+            and not is_unsupported_security
         ):
             return
         current_context = self.state.policy_context
@@ -1343,11 +1361,14 @@ class ResearchFlow(Flow[ResearchFlowState]):
             str(policy_reporting_profile).strip().casefold()
             == "foreign_private_issuer_ifrs"
         )
+        is_unsupported_security = _is_unsupported_security_profile(policy_profile)
         policy_context["policy_activation"] = (
             "explicit_profile"
             if explicit_profile is not None
             else "sec_metadata"
-            if policy_context.get("policies") or is_foreign_ifrs
+            if policy_context.get("policies")
+            or is_foreign_ifrs
+            or is_unsupported_security
             else "legacy_analysis_gate"
         )
         self.state.profile = _json_safe(policy_context.get("profile", {}))
@@ -1432,6 +1453,10 @@ class ResearchFlow(Flow[ResearchFlowState]):
             == "spac"
             for candidate in profile_candidates
         )
+        is_unsupported_security = any(
+            _is_unsupported_security_profile(candidate)
+            for candidate in profile_candidates
+        )
         if is_spac:
             unavailable_valuation = {
                 "status": "not_applicable",
@@ -1466,6 +1491,42 @@ class ResearchFlow(Flow[ResearchFlowState]):
                         "security_profile=spac; "
                         f"reason_code={_SPAC_SECURITY_STRUCTURE_REASON}"
                     ),
+                    next_step="Analysis Gate",
+                )
+            )
+            return dict(unavailable_valuation)
+
+        if is_unsupported_security:
+            unavailable_valuation = {
+                "status": "not_applicable",
+                "readiness": "not_applicable",
+                "validation_status": "unvalidated",
+                "reason_code": "unsupported_security",
+                "calculations": [],
+            }
+            self._market_price_data = _json_safe(self._market_price_data)
+            self._trusted_valuation_evidence_ids = set()
+            self._historical_financial_snapshots = []
+            self.state.market_price_data = _json_safe(self._market_price_data)
+            self.state.valuation = dict(unavailable_valuation)
+            self.state.historical_valuation = dict(unavailable_valuation)
+            self.state.reverse_dcf = dict(unavailable_valuation)
+            self.state.stage = "analysis"
+            self._refresh_profile_policy_context(self._market_price_data)
+            snapshot = self._stage_snapshot()
+            self._emit_stage(
+                RunStageEvent(
+                    step=3,
+                    title="市场价格与估值",
+                    actor="Python：Unsupported Security Gate",
+                    status="completed",
+                    input_summary=snapshot["identity"],
+                    output_summary=(
+                        "unsupported security; ordinary valuation tools skipped; "
+                        "valuation=not_applicable"
+                    ),
+                    decision="SKIPPED",
+                    reason="reason_code=unsupported_security",
                     next_step="Analysis Gate",
                 )
             )
