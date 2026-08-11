@@ -14,6 +14,7 @@ from .context import (
     _REPORT_QUALITY_METRIC_IDS,
     _REPORT_SECTIONS,
     _REPORT_TREND_METRIC_IDS,
+    _validated_quant_packet,
     _currency_display,
     _json_safe_context,
     _percent_display,
@@ -973,8 +974,12 @@ def _quant_evidence_markdown(quant: Mapping[str, Any] | None) -> str:
             status or "unavailable", reason_code or "quant_packet_invalid"
         )
     packet = quant.get("packet")
-    if not isinstance(packet, Mapping):
-        return _quant_unavailable_markdown("unavailable", "quant_packet_invalid")
+    validated_packet, packet_reason = _validated_quant_packet(packet)
+    if validated_packet is None:
+        return _quant_unavailable_markdown(
+            "unavailable", packet_reason or "quant_packet_invalid"
+        )
+    packet = validated_packet.model_dump(mode="json")
     if reason_code := quant_field_provenance_reason(packet):
         return _quant_unavailable_markdown("unavailable", reason_code)
 
@@ -1071,17 +1076,20 @@ def _render_report_from_context(
     quant_payload = context_payload.get("quant")
     if isinstance(quant_payload, Mapping) and quant_payload.get("status") == "available":
         quant_packet = quant_payload.get("packet")
-        quant_reason = (
-            "quant_packet_invalid"
-            if not isinstance(quant_packet, Mapping)
-            else quant_field_provenance_reason(quant_packet)
-        )
-        if quant_reason:
+        validated_quant_packet, quant_reason = _validated_quant_packet(quant_packet)
+        if validated_quant_packet is not None:
+            normalized_quant_packet = validated_quant_packet.model_dump(mode="json")
+            quant_reason = quant_field_provenance_reason(normalized_quant_packet)
+        else:
+            normalized_quant_packet = None
+        if normalized_quant_packet is None or quant_reason:
             context_payload["quant"] = {
                 "status": "unavailable",
-                "reason_code": quant_reason,
+                "reason_code": quant_reason or "quant_packet_invalid",
                 "packet": None,
             }
+        else:
+            quant_payload["packet"] = normalized_quant_packet
     claims = _validated_claims(context_payload["claims"])
     status = context_payload["verdict_status"]
     metrics = context_payload["metrics"]

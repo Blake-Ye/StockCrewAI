@@ -262,16 +262,24 @@ def _ids(value: Any) -> list[str]:
     return result
 
 
+def _quant_packet_mapping(value: Any) -> dict[str, Any] | None:
+    """把量化 packet 变成普通 dict，避免复用未经验证的模型实例。"""
+    try:
+        if isinstance(value, QuantResearchPacket):
+            payload = value.model_dump(mode="python", warnings=False)
+        elif isinstance(value, Mapping):
+            payload = dict(value)
+        else:
+            return None
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def quant_field_provenance_reason(value: Any) -> str | None:
     """返回量化字段追溯的确定性失败原因；合法时返回 None。"""
-    if isinstance(value, QuantResearchPacket):
-        try:
-            packet = value.model_dump(mode="python")
-        except (TypeError, ValueError):
-            return _QUANT_FIELD_PROVENANCE_INVALID
-    elif isinstance(value, Mapping):
-        packet = value
-    else:
+    packet = _quant_packet_mapping(value)
+    if packet is None:
         return _QUANT_FIELD_PROVENANCE_INVALID
 
     field_provenance = packet.get("field_provenance")
@@ -320,14 +328,8 @@ def quant_field_provenance_reason(value: Any) -> str | None:
 
 
 def _quant_packet_without_field_provenance(value: Any) -> Mapping[str, Any] | None:
-    if isinstance(value, QuantResearchPacket):
-        try:
-            payload = value.model_dump(mode="python")
-        except (TypeError, ValueError):
-            return None
-    elif isinstance(value, Mapping):
-        payload = dict(value)
-    else:
+    payload = _quant_packet_mapping(value)
+    if payload is None:
         return None
     payload.pop("field_provenance", None)
     return payload
@@ -339,9 +341,28 @@ def _quant_packet_shape_valid_without_field_provenance(value: Any) -> bool:
         return False
     try:
         QuantResearchPacket.model_validate(payload)
-    except (TypeError, ValueError, ValidationError):
+    except Exception:
         return False
     return True
+
+
+def _validated_quant_packet(
+    value: Any,
+) -> tuple[QuantResearchPacket | None, str | None]:
+    """完整校验量化 packet，并保留稳定的 provenance 失败原因。"""
+    payload = _quant_packet_mapping(value)
+    if payload is None:
+        return None, "quant_packet_invalid"
+    try:
+        packet = QuantResearchPacket.model_validate(payload)
+    except Exception:
+        if _quant_packet_shape_valid_without_field_provenance(payload):
+            return None, quant_field_provenance_reason(payload) or _QUANT_FIELD_PROVENANCE_INVALID
+        return None, "quant_packet_invalid"
+    reason_code = quant_field_provenance_reason(packet)
+    if reason_code:
+        return None, reason_code
+    return packet, None
 
 
 def _evidence_index(source_metadata: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -867,34 +888,19 @@ def build_report_context(
                 "packet": None,
             }
         else:
-            try:
-                validated_quant_packet = QuantResearchPacket.model_validate(quant_packet)
-            except (TypeError, ValueError, ValidationError):
-                reason_code = "quant_packet_invalid"
-                if _quant_packet_shape_valid_without_field_provenance(quant_packet):
-                    reason_code = (
-                        quant_field_provenance_reason(quant_packet)
-                        or _QUANT_FIELD_PROVENANCE_INVALID
-                    )
+            validated_quant_packet, reason_code = _validated_quant_packet(quant_packet)
+            if validated_quant_packet is None:
                 quant_payload = {
                     "status": "unavailable",
-                    "reason_code": reason_code,
+                    "reason_code": reason_code or "quant_packet_invalid",
                     "packet": None,
                 }
             else:
-                reason_code = quant_field_provenance_reason(validated_quant_packet)
-                if reason_code:
-                    quant_payload = {
-                        "status": "unavailable",
-                        "reason_code": reason_code,
-                        "packet": None,
-                    }
-                else:
-                    quant_payload = {
-                        "status": "available",
-                        "reason_code": "quant_packet_validated",
-                        "packet": validated_quant_packet.model_dump(mode="json"),
-                    }
+                quant_payload = {
+                    "status": "available",
+                    "reason_code": "quant_packet_validated",
+                    "packet": validated_quant_packet.model_dump(mode="json"),
+                }
 
     profile_evidence_records = policy_payload.get("evidence_records", [])
     if isinstance(profile_evidence_records, Sequence) and not isinstance(

@@ -12,7 +12,7 @@
         "not real-time data or investment advice"
       ],
       "path": "examples/quant/quant-research.md",
-      "sha256": "57bc247d53322d072f5a80cdd89fe46c42dd695de541abc38212ef43b28db4e6",
+      "sha256": "94e389fda9868f9d30ad99044c9b6747c0ab8a800d10870188ab6f17cbfc0c51",
       "source_fixture": "tests/test_quant_report_integration.py::quant_packet + _context_inputs"
     },
     {

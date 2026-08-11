@@ -284,6 +284,22 @@ def test_quant_packet_context_matches_json_dump_and_keeps_decimal_strings(
     json.dumps(context["quant"], ensure_ascii=False, allow_nan=False)
 
 
+def test_model_construct_incomplete_quant_packet_is_unavailable(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    packet_payload = quant_packet.model_dump(mode="python")
+    packet_payload.pop("factor_summary")
+    unvalidated_packet = QuantResearchPacket.model_construct(**packet_payload)
+
+    context = build_report_context(**_context_inputs(), quant_packet=unvalidated_packet)
+
+    assert context["quant"] == {
+        "status": "unavailable",
+        "reason_code": "quant_packet_invalid",
+        "packet": None,
+    }
+
+
 def test_quant_packet_rendering_uses_fixture_literals(
     quant_packet: QuantResearchPacket,
 ) -> None:
@@ -420,6 +436,37 @@ def test_renderer_rechecks_manually_tampered_available_quant_provenance(
         RANKING_CALCULATION_ID,
     ):
         assert fragment not in quant_section
+
+
+def test_renderer_rejects_manually_incomplete_available_quant_packet(
+    quant_packet: QuantResearchPacket,
+) -> None:
+    context = build_report_context(**_context_inputs(), quant_packet=quant_packet)
+    context["quant"]["packet"].pop("factor_summary")
+
+    report = render_validated_report(
+        report_context=context,
+        report_draft=build_deterministic_report_draft(),
+    )
+    quant_section = _quant_section(report)
+
+    assert "status=unavailable" in quant_section
+    assert "reason_code=quant_packet_invalid" in quant_section
+    assert not re.search(r"\d", quant_section)
+    for fragment in (
+        "2/10",
+        "88.89%",
+        "12.34%",
+        "-21.00%",
+        "10 bps",
+        "999",
+        FACTOR_ARTIFACT_ID,
+        BACKTEST_ARTIFACT_ID,
+        RANKING_EVIDENCE_ID,
+        RANKING_CALCULATION_ID,
+    ):
+        assert fragment not in quant_section
+    assert "data:image/png;base64," not in quant_section
 
 
 @pytest.mark.parametrize("mutation", ("invalid_hash", "foreign_artifact"))
