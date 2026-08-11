@@ -1,5 +1,6 @@
 .env
 .venv/
+.worktrees/
 __pycache__/
 lib/
 .DS_Store
