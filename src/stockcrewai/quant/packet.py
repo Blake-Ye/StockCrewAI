@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from stockcrewai.models.profile import CoverageLevel
-from stockcrewai.models.quant import QuantResearchPacket
+from stockcrewai.models.quant import QuantFieldProvenance, QuantResearchPacket
 
 
 _ARTIFACT_HASH = re.compile(r"[0-9a-f]{64}")
@@ -137,6 +137,51 @@ def _string_sequence(value: object, name: str, *, allow_empty: bool = False) -> 
         _nonempty_string(item, f"{name}[{index}]")
         for index, item in enumerate(values)
     ]
+
+
+def _target_observation_provenance(
+    factor: Mapping[str, Any], ticker: str
+) -> tuple[list[str], list[str]]:
+    evidence_ids: set[str] = set()
+    calculation_ids: set[str] = set()
+    observations = _required_sequence(
+        factor, "observations_normalized", "factor.observations_normalized"
+    )
+    for index, item in enumerate(observations):
+        observation = _mapping(item, f"factor.observations_normalized[{index}]")
+        if observation.get("ticker") != ticker:
+            continue
+        for field, target in (
+            ("evidence_ids", evidence_ids),
+            ("calculation_ids", calculation_ids),
+        ):
+            values = observation.get(field)
+            if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
+                continue
+            target.update(
+                value.strip()
+                for value in values
+                if isinstance(value, str) and value.strip()
+            )
+    return sorted(evidence_ids), sorted(calculation_ids)
+
+
+def _numeric_field_provenance(
+    summary_name: str,
+    field_names: Sequence[str],
+    artifact_hash: str,
+    *,
+    evidence_ids: Sequence[str] = (),
+    calculation_ids: Sequence[str] = (),
+) -> dict[str, QuantFieldProvenance]:
+    return {
+        f"{summary_name}.{field_name}": QuantFieldProvenance(
+            artifact_ids=[artifact_hash],
+            evidence_ids=list(evidence_ids),
+            calculation_ids=list(calculation_ids),
+        )
+        for field_name in field_names
+    }
 
 
 def _typed_result(
@@ -533,6 +578,9 @@ def build_quant_research_packet(
     factor, target_summary, _, factor_counts = _validate_factor(
         factor_artifact, target_ticker
     )
+    target_evidence_ids, target_calculation_ids = _target_observation_provenance(
+        factor, target_ticker
+    )
     backtest, backtest_details, known_biases, baseline_available = _validate_backtest(
         backtest_artifact
     )
@@ -591,6 +639,56 @@ def build_quant_research_packet(
         "period_count": Decimal(backtest_details["period_count"]),
         "survivorship_bias_known": backtest_details["survivorship_bias_known"],
     }
+    factor_hash = _nonempty_string(factor["artifact_hash"], "factor.artifact_hash")
+    backtest_hash = _nonempty_string(backtest["artifact_hash"], "backtest.artifact_hash")
+    field_provenance = {
+        **_numeric_field_provenance(
+            "factor_summary",
+            ("snapshot_count", "observation_count"),
+            factor_hash,
+        ),
+        **_numeric_field_provenance("ranking_summary", ("ranking_count",), factor_hash),
+        **_numeric_field_provenance(
+            "ranking_summary",
+            (
+                "score",
+                "rank",
+                "peer_count",
+                "industry_percentile",
+                "target_available_factor_count",
+            ),
+            factor_hash,
+            evidence_ids=target_evidence_ids,
+            calculation_ids=target_calculation_ids,
+        ),
+        **_numeric_field_provenance(
+            "backtest_summary",
+            (
+                "complete_period_count",
+                "net_cost_bps",
+                "strategy_cagr",
+                "strategy_max_drawdown",
+                "average_turnover",
+                "annualized_turnover",
+            ),
+            backtest_hash,
+        ),
+        **_numeric_field_provenance(
+            "benchmark_summary",
+            ("spy_cagr", "spy_max_drawdown", "universe_cagr", "universe_max_drawdown"),
+            backtest_hash,
+        ),
+        **_numeric_field_provenance(
+            "data_quality",
+            ("factor_snapshot_count", "factor_observation_count"),
+            factor_hash,
+        ),
+        **_numeric_field_provenance(
+            "data_quality",
+            ("complete_period_count", "period_count"),
+            backtest_hash,
+        ),
+    }
 
     return QuantResearchPacket(
         as_of=as_of,
@@ -602,6 +700,7 @@ def build_quant_research_packet(
         backtest_summary=backtest_details["summary"],
         benchmark_summary=backtest_details["benchmark_summary"],
         data_quality=data_quality,
+        field_provenance=field_provenance,
         limitations=sorted(known_biases),
         artifact_ids=sorted(
             (

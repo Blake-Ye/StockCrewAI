@@ -13,7 +13,11 @@ from typing import Any
 import pytest
 
 from stockcrewai.models.profile import CoverageLevel
-from stockcrewai.models.quant import PointInTimeSnapshot, QuantResearchPacket
+from stockcrewai.models.quant import (
+    PointInTimeSnapshot,
+    QuantFieldProvenance,
+    QuantResearchPacket,
+)
 
 
 AS_OF = datetime(2026, 8, 10, tzinfo=timezone.utc)
@@ -200,6 +204,22 @@ def _target_peer_count(factor: Mapping[str, Any], target: Mapping[str, Any]) -> 
     return sum(item["peer_group"] == target["peer_group"] for item in factor["rankings"])
 
 
+def _target_observation_ids(factor: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    observations = [
+        item for item in factor["observations_normalized"] if item["ticker"] == TARGET_TICKER
+    ]
+    return (
+        sorted({item for observation in observations for item in observation["evidence_ids"]}),
+        sorted(
+            {
+                item
+                for observation in observations
+                for item in observation["calculation_ids"]
+            }
+        ),
+    )
+
+
 def _industry_percentile(rank: int, peer_count: int) -> Decimal:
     # 冻结行业百分位：rank=1 为 1，rank=n 为 0；n=1 时为 1。
     if peer_count == 1:
@@ -258,6 +278,50 @@ def test_complete_offline_artifacts_build_an_auditable_partial_packet(
     assert packet.coverage is CoverageLevel.PARTIAL
     assert packet.limitations == sorted(backtest["known_biases"])
     assert packet.artifact_ids == sorted([factor["artifact_hash"], backtest["artifact_hash"]])
+
+    target_evidence_ids, target_calculation_ids = _target_observation_ids(factor)
+    expected_field_provenance = {
+        "factor_summary.snapshot_count": factor["artifact_hash"],
+        "factor_summary.observation_count": factor["artifact_hash"],
+        "ranking_summary.ranking_count": factor["artifact_hash"],
+        "ranking_summary.score": factor["artifact_hash"],
+        "ranking_summary.rank": factor["artifact_hash"],
+        "ranking_summary.peer_count": factor["artifact_hash"],
+        "ranking_summary.industry_percentile": factor["artifact_hash"],
+        "ranking_summary.target_available_factor_count": factor["artifact_hash"],
+        "backtest_summary.complete_period_count": backtest["artifact_hash"],
+        "backtest_summary.net_cost_bps": backtest["artifact_hash"],
+        "backtest_summary.strategy_cagr": backtest["artifact_hash"],
+        "backtest_summary.strategy_max_drawdown": backtest["artifact_hash"],
+        "backtest_summary.average_turnover": backtest["artifact_hash"],
+        "backtest_summary.annualized_turnover": backtest["artifact_hash"],
+        "benchmark_summary.spy_cagr": backtest["artifact_hash"],
+        "benchmark_summary.spy_max_drawdown": backtest["artifact_hash"],
+        "benchmark_summary.universe_cagr": backtest["artifact_hash"],
+        "benchmark_summary.universe_max_drawdown": backtest["artifact_hash"],
+        "data_quality.factor_snapshot_count": factor["artifact_hash"],
+        "data_quality.factor_observation_count": factor["artifact_hash"],
+        "data_quality.complete_period_count": backtest["artifact_hash"],
+        "data_quality.period_count": backtest["artifact_hash"],
+    }
+    assert packet.field_provenance
+    assert list(packet.field_provenance) == sorted(packet.field_provenance)
+    assert set(packet.field_provenance) == set(expected_field_provenance)
+    for field_path, artifact_hash in expected_field_provenance.items():
+        provenance = packet.field_provenance[field_path]
+        assert provenance.artifact_ids == [artifact_hash]
+        if field_path.startswith("ranking_summary.") and field_path.rsplit(".", 1)[-1] in {
+            "score",
+            "rank",
+            "peer_count",
+            "industry_percentile",
+            "target_available_factor_count",
+        }:
+            assert provenance.evidence_ids == target_evidence_ids
+            assert provenance.calculation_ids == target_calculation_ids
+        else:
+            assert provenance.evidence_ids == []
+            assert provenance.calculation_ids == []
 
     assert packet.factor_summary == {
         "artifact_schema_version": factor["artifact_schema_version"],
@@ -345,6 +409,58 @@ def test_explicit_packet_identity_overrides_are_preserved(
         _build_packet(factor, backtest, universe_id="offline-universe-v2")
     with pytest.raises(ValueError):
         _build_packet(factor, backtest, strategy_version="strategy-v2")
+
+
+def test_quant_field_provenance_normalizes_id_lists() -> None:
+    provenance = QuantFieldProvenance.model_validate(
+        {
+            "artifact_ids": ["artifact-b", "artifact-a", "artifact-b"],
+            "evidence_ids": ["evidence-z", "evidence-a", "evidence-z"],
+            "calculation_ids": ["calculation-2", "calculation-1", "calculation-2"],
+        }
+    )
+
+    assert provenance.artifact_ids == ["artifact-a", "artifact-b"]
+    assert provenance.evidence_ids == ["evidence-a", "evidence-z"]
+    assert provenance.calculation_ids == ["calculation-1", "calculation-2"]
+
+
+@pytest.mark.parametrize("bad_artifact_ids", [None, [], [""], ["  "]])
+def test_quant_field_provenance_requires_nonempty_artifact_ids(
+    bad_artifact_ids: object,
+) -> None:
+    with pytest.raises(ValueError):
+        QuantFieldProvenance.model_validate(
+            {
+                "artifact_ids": bad_artifact_ids,
+                "evidence_ids": [],
+                "calculation_ids": [],
+            }
+        )
+
+
+def test_quant_packet_rejects_invalid_field_provenance_structure(
+    valid_artifacts: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    packet = _build_packet(*valid_artifacts)
+    payload = packet.model_dump(mode="python")
+
+    payload["field_provenance"]["ranking_summary.score"] = {
+        "artifact_ids": [],
+        "evidence_ids": [],
+        "calculation_ids": [],
+    }
+    with pytest.raises(ValueError):
+        QuantResearchPacket.model_validate(payload)
+
+    payload["field_provenance"]["ranking_summary.score"] = {
+        "artifact_ids": [valid_artifacts[0]["artifact_hash"]],
+        "evidence_ids": [],
+        "calculation_ids": [],
+        "unexpected": "rejected",
+    }
+    with pytest.raises(ValueError):
+        QuantResearchPacket.model_validate(payload)
 
 
 def test_target_ticker_must_exist_in_factor_rankings(
@@ -632,3 +748,10 @@ def test_packet_hash_is_stable_content_addressed_sha256(
 
     changed = packet.model_copy(update={"strategy_version": "different-strategy-v1"})
     assert quant_packet_hash(changed) != first
+
+    changed_payload = packet.model_dump(mode="python")
+    changed_payload["field_provenance"]["ranking_summary.score"]["artifact_ids"] = [
+        "different-artifact"
+    ]
+    changed_provenance = QuantResearchPacket.model_validate(changed_payload)
+    assert quant_packet_hash(changed_provenance) != first

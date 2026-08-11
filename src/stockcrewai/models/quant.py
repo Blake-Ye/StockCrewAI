@@ -96,6 +96,19 @@ class FactorObservation(BaseModel):
     _as_of_must_be_aware = field_validator("as_of")(_aware_datetime)
 
 
+class QuantFieldProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_ids: list[_NonEmptyString] = Field(min_length=1)
+    evidence_ids: list[_NonEmptyString] = Field(default_factory=list)
+    calculation_ids: list[_NonEmptyString] = Field(default_factory=list)
+
+    @field_validator("artifact_ids", "evidence_ids", "calculation_ids")
+    @classmethod
+    def _ids_must_be_stable(cls, values: list[str]) -> list[str]:
+        return sorted(set(values))
+
+
 class QuantResearchPacket(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -108,10 +121,20 @@ class QuantResearchPacket(BaseModel):
     backtest_summary: _JsonMapping
     benchmark_summary: _JsonMapping
     data_quality: _JsonMapping
+    field_provenance: dict[_NonEmptyString, QuantFieldProvenance] = Field(
+        default_factory=dict
+    )
     limitations: list[_NonEmptyString]
     artifact_ids: list[_NonEmptyString]
 
     _as_of_must_be_aware = field_validator("as_of")(_aware_datetime)
+
+    @field_validator("field_provenance")
+    @classmethod
+    def _field_provenance_keys_must_be_stable(
+        cls, values: dict[str, QuantFieldProvenance]
+    ) -> dict[str, QuantFieldProvenance]:
+        return dict(sorted(values.items()))
 
 
 class UniverseManifest(BaseModel):
@@ -137,6 +160,7 @@ class UniverseManifest(BaseModel):
 __all__ = [
     "FactorObservation",
     "PointInTimeSnapshot",
+    "QuantFieldProvenance",
     "QuantResearchPacket",
     "UniverseManifest",
 ]
