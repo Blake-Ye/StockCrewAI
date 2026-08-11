@@ -5,13 +5,14 @@
       "coverage": "partial",
       "limitations": [
         "synthetic fixture inputs only",
+        "offline/no_network sample",
         "coverage=partial",
         "survivorship_bias_known",
-        "QuantResearchPacket exposes artifact-level rather than per-field evidence/calculation IDs",
+        "field-level provenance included in this sample",
         "not real-time data or investment advice"
       ],
       "path": "examples/quant/quant-research.md",
-      "sha256": "ec557a55f029e4813d242eda08c459788f25b6e4471e1ba7d6cee2dc3a29e021",
+      "sha256": "57bc247d53322d072f5a80cdd89fe46c42dd695de541abc38212ef43b28db4e6",
       "source_fixture": "tests/test_quant_report_integration.py::quant_packet + _context_inputs"
     },
     {

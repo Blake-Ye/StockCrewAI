@@ -6,7 +6,7 @@
 - source fixture: `tests/test_quant_report_integration.py::quant_packet + _context_inputs`
 - as_of: `2026-08-10T00:00:00Z`
 - coverage: `partial`
-- limitations: synthetic fixture inputs only; coverage=partial; survivorship_bias_known; QuantResearchPacket exposes artifact-level rather than per-field evidence/calculation IDs; not real-time data or investment advice
+- limitations: synthetic fixture inputs only; offline/no_network; coverage=partial; survivorship_bias_known; field-level provenance included in this sample; not real-time data or investment advice
 - 说明：这是可审计的离线演示样例，不是实时行情或投资建议。
 
 ## 证据与计算追溯
@@ -17,7 +17,13 @@
 |---|---|---|---|---|---|---|
 | validated claim | claim_quality | validated | evidence_quality | calculation_quality | — | — |
 
-量化包数值字段保留其固定 artifact_id：aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa、bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb。固定 QuantResearchPacket 没有逐字段 evidence_id/calculation_id，本样例不新增伪造 ID。
+量化旁证的字段级追溯来自 fixture 的 `field_provenance`：`artifact_id` 取自对应字段的 `artifact_ids`，`evidence_id` 与 `calculation_id` 只在 fixture 明确提供时展示；缺失项统一标为“本样例未提供”。
+
+| 字段类别 | 字段路径 | artifact_id | evidence_id | calculation_id |
+|---|---|---|---|---|
+| ranking/factor | `ranking_summary.rank`、`ranking_summary.peer_count`、`ranking_summary.industry_percentile`、`ranking_summary.score`；`factor_summary.snapshot_count`、`factor_summary.observation_count` | ranking 字段：`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`；factor 字段：本样例未提供（未进入 `field_provenance`） | `ranking_summary.rank`：`evidence-ranking`；其余：本样例未提供 | `ranking_summary.rank`：`calculation-ranking`；其余：本样例未提供 |
+| backtest | `backtest_summary.strategy_cagr`、`backtest_summary.strategy_max_drawdown`、`backtest_summary.average_turnover`、`backtest_summary.annualized_turnover`、`backtest_summary.net_cost_bps` | `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` | 本样例未提供 | 本样例未提供 |
+| benchmark/data_quality | `benchmark_summary.spy_cagr`、`benchmark_summary.spy_max_drawdown`、`benchmark_summary.universe_cagr`、`benchmark_summary.universe_max_drawdown`；`data_quality.complete_period_count`、`data_quality.period_count` | `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` | 本样例未提供 | 本样例未提供 |
 # 投资研究报告
 
 ## 执行摘要
