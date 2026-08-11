@@ -863,7 +863,7 @@ def build_profile_policy_context(
             and profile_input.get("policy_version") == SPAC_POLICY_VERSION
             and evidence_types_valid
             and market_types_valid
-            and bool(typed_evidence_records or typed_market_price_records)
+            and bool(typed_evidence_records)
         )
         if envelope_valid:
             adapter_input: Mapping[str, object] = profile_input  # type: ignore[assignment]

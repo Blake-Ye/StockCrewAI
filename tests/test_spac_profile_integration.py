@@ -83,6 +83,12 @@ def _policy_context(fixture: dict[str, Any] | None = None) -> dict[str, Any]:
     )
 
 
+def _market_only_fixture() -> dict[str, Any]:
+    fixture = _fixture()
+    fixture["evidence_records"] = []
+    return fixture
+
+
 @pytest.mark.parametrize("coverage", [CoverageLevel.FULL, CoverageLevel.PARTIAL])
 def test_spac_registry_publishes_only_typed_structure_policies(
     coverage: CoverageLevel,
@@ -156,6 +162,19 @@ def test_spac_typed_pipeline_is_evidence_only_and_preserves_provenance() -> None
         "ev_spac_basic_shares",
         "ev_spac_warrants",
     }
+    assert len(context["market_price_records"]) == 2
+
+
+def test_spac_market_only_profile_envelope_is_unavailable() -> None:
+    context = _policy_context(_market_only_fixture())
+
+    assert context["profile_envelope"] == {
+        "status": "unavailable",
+        "reason_code": "typed_profile_envelope_required",
+    }
+    assert all(value is None for value in context["values"].values())
+    assert context["calculation_records"] == []
+    assert context["evidence_records"] == []
     assert len(context["market_price_records"]) == 2
 
 
