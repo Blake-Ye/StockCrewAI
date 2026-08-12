@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from stockcrewai.models.evidence import EvidenceRecord, MarketPriceRecord
 from stockcrewai.pipelines.evidence_pipeline import build_profile_policy_context
 from stockcrewai.reporting.context import ReportContext, build_report_context
@@ -11,6 +13,7 @@ from stockcrewai.reporting.renderer import (
     build_deterministic_report_draft,
     render_validated_report,
 )
+from stockcrewai.reporting.validator import validate_rendered_report
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "profiles" / "holding_company" / "complete.json"
@@ -226,3 +229,36 @@ def test_holding_report_omits_or_marks_ordinary_valuation_sections() -> None:
         assert "控股公司" in section
         assert reason_code in section
         assert "缺少已验证" not in section
+
+
+@pytest.mark.parametrize(
+    "fact",
+    ("持有公司", "持有资产", "公司持有资产", "Synthetic Holding Company（HOLD）"),
+)
+def test_rendered_report_allows_holding_facts_and_ticker_identifier(fact: str) -> None:
+    report = f"# 报告\n确定性状态：status=ready\n## 公司质量\n{fact}\n"
+
+    assert validate_rendered_report(report, "ready")[0] is True
+
+
+@pytest.mark.parametrize(
+    "advice",
+    (
+        "建议买入",
+        "建议卖出",
+        "建议持有",
+        "买入推荐",
+        "卖出评级",
+        "持有仓位",
+        "减持操作",
+        "buy",
+        "sell",
+        "hold",
+        "HOLD",
+        "hold the stock",
+    ),
+)
+def test_rendered_report_rejects_explicit_trading_advice(advice: str) -> None:
+    report = f"# 报告\n确定性状态：status=ready\n## 公司质量\n{advice}\n"
+
+    assert validate_rendered_report(report, "ready")[0] is False

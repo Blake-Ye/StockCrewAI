@@ -5,25 +5,24 @@ import re
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlsplit
 
 from .context import (
     _CLAIM_CATEGORY_TO_SECTION,
-    _QUANT_PROVENANCE_FIELD_PATHS,
     _REPORT_NARRATIVE_CATEGORIES,
     _REPORT_NARRATIVE_CATEGORY_MAP,
     _REPORT_QUALITY_METRIC_IDS,
     _REPORT_SECTIONS,
     _REPORT_TREND_METRIC_IDS,
-    _validated_quant_packet,
     _currency_display,
     _json_safe_context,
+    _normalized_amount,
     _percent_display,
     _text,
     _validated_claims,
     ReportContext,
     ReportMetric,
     build_report_context,
-    quant_field_provenance_reason,
 )
 from .validator import (
     ReportDraft,
@@ -34,6 +33,12 @@ from .visuals import build_report_visuals
 
 _REPORT_METRIC_LABELS = {
     "market_price": "市场价格",
+    "revenue": "营业收入",
+    "operating_income": "营业利润",
+    "net_income": "净利润",
+    "operating_cash_flow": "经营现金流",
+    "capex": "资本开支",
+    "diluted_eps": "稀释后每股收益",
     "revenue_growth": "营业收入同比增长",
     "operating_margin": "营业利润率",
     "net_margin": "净利率",
@@ -220,6 +225,23 @@ _VERDICT_ACTION_LABELS = {
 _REPORT_NUMBER_RE = re.compile(
     r"(?<![A-Za-z])[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:\s*(?:[%％]|[xX]))?"
 )
+_MARKDOWN_CONTROL_TRANSLATION = str.maketrans(
+    {character: " " for character in r"\\`*_[]()>#|~"}
+)
+_SHARE_ADJUSTMENT_BASES = frozenset({"raw", "split_adjusted"})
+_FINANCIAL_BASIS_METRIC_IDS = frozenset(
+    {
+        "revenue_growth",
+        "operating_margin",
+        "net_margin",
+        "free_cash_flow_margin",
+        "cash_conversion",
+        "share_dilution",
+    }
+)
+_SOURCE_METHOD_NOTE = (
+    "来源口径：SEC 申报中的年度及季度数据、已验证计算和市场数据；季度数据可能未经审计。"
+)
 
 
 def build_deterministic_report_draft() -> ReportDraft:
@@ -232,7 +254,7 @@ def build_deterministic_report_draft() -> ReportDraft:
         historical_valuation="历史估值部分由确定性 Renderer 注入已验证内容。",
         reverse_dcf="反向 DCF 部分由确定性 Renderer 注入已验证内容。",
         key_risks="主要风险部分由确定性 Renderer 注入已验证内容。",
-        sources_and_method="来源与方法部分由确定性 Renderer 注入已验证内容。",
+        sources_and_method="结论仅基于已验证数据和 Claim；缺失输入不作推断。",
         non_investment_disclaimer="本文不构成任何投资建议。",
     )
 
@@ -255,6 +277,198 @@ def _verdict_display(verdict: Mapping[str, Any], status: str) -> tuple[str, str,
     rule_label = "、".join(dict.fromkeys(rules)) or "无触发规则"
     action_label = _VERDICT_ACTION_LABELS.get(rating, _VERDICT_ACTION_LABELS["insufficient_data"])
     return rating_label, risk_label, rule_label, action_label
+
+
+def _report_title(company: Mapping[str, Any]) -> str:
+    """为正式报告注入公司身份，避免不同运行结果在预览中混淆。"""
+    def plain_text(value: Any) -> str | None:
+        text = _text(value)
+        if not text:
+            return None
+        text = "".join(character if character.isprintable() else " " for character in text)
+        return " ".join(text.translate(_MARKDOWN_CONTROL_TRANSLATION).split()) or None
+
+    name = plain_text(company.get("name")) or plain_text(company.get("company"))
+    ticker = plain_text(company.get("ticker"))
+    if name and ticker:
+        return f"# 投资研究报告：{name}（{ticker}）"
+    if name:
+        return f"# 投资研究报告：{name}"
+    if ticker:
+        return f"# 投资研究报告：{ticker}"
+    return "# 投资研究报告"
+
+
+def _build_chart_context(report_context: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """从已验证指标投影无数字的图表关系事实。"""
+    unavailable = {"available": False, "observations": []}
+
+    def records(value: Any) -> dict[str, Mapping[str, Any]]:
+        if isinstance(value, Mapping):
+            value = value.get("metrics", value)
+        if isinstance(value, Mapping):
+            value = list(value.values())
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            return {}
+        result: dict[str, Mapping[str, Any]] = {}
+        for record in value:
+            if isinstance(record, Mapping) and (metric_id := _text(record.get("metric_id"))):
+                result[metric_id] = record
+        return result
+
+    def verified(record: Mapping[str, Any], *, ttm: bool = False) -> bool:
+        return (
+            record.get("status") == "available"
+            and record.get("validation_status") == "valid"
+            and (not ttm or record.get("period_basis") == "TTM")
+        )
+
+    def ratio_value(record: Mapping[str, Any]) -> Decimal | None:
+        raw = record.get("display_value", record.get("raw_result"))
+        value = _decimal_from_text(raw)
+        if value is None:
+            return None
+        unit = (_text(record.get("unit")) or "").lower()
+        raw_text = _text(raw) or ""
+        if "%" not in raw_text and unit in {"ratio", "percent", "percentage"}:
+            value *= Decimal("100")
+        return value
+
+    def amount_value(record: Mapping[str, Any]) -> Decimal | None:
+        return _normalized_amount(
+            record.get("raw_result", record.get("display_value")), record.get("unit")
+        )
+
+    financial_records = records(report_context.get("metrics", []))
+    financial_required = (
+        "revenue_growth",
+        "operating_margin",
+        "net_margin",
+        "free_cash_flow_margin",
+        "cash_conversion",
+    )
+    if all(
+        metric_id in financial_records
+        and verified(financial_records[metric_id])
+        and ratio_value(financial_records[metric_id]) is not None
+        for metric_id in financial_required
+    ):
+        observations: list[str] = []
+        revenue_growth = ratio_value(financial_records["revenue_growth"])
+        if revenue_growth is not None and revenue_growth != 0:
+            observations.append(
+                "收入同比保持正增长" if revenue_growth > 0 else "收入同比出现负增长"
+            )
+        share_dilution = financial_records.get("share_dilution")
+        if share_dilution is not None and verified(share_dilution):
+            share_value = ratio_value(share_dilution)
+            if (
+                share_value is not None
+                and share_dilution.get("adjustment_basis") in _SHARE_ADJUSTMENT_BASES
+                and share_value != 0
+            ):
+                observations.append(
+                    "股份数量同比减少" if share_value < 0 else "股份数量同比增加"
+                )
+        operating_margin = ratio_value(financial_records["operating_margin"])
+        net_margin = ratio_value(financial_records["net_margin"])
+        if (
+            operating_margin is not None
+            and net_margin is not None
+            and operating_margin > 0
+            and net_margin > 0
+        ):
+            observations.append("营业利润率和净利率均为正")
+        cash_conversion = ratio_value(financial_records["cash_conversion"])
+        if cash_conversion is not None and cash_conversion > 100:
+            observations.append("经营现金流高于净利润")
+        financial_chart = {"available": True, "observations": observations}
+    else:
+        financial_chart = unavailable.copy()
+
+    ttm_records = records(report_context.get("ttm", {}))
+    ttm_required = (
+        "revenue",
+        "operating_income",
+        "net_income",
+        "operating_cash_flow",
+        "free_cash_flow",
+    )
+    if all(
+        metric_id in ttm_records
+        and verified(ttm_records[metric_id], ttm=True)
+        and amount_value(ttm_records[metric_id]) is not None
+        for metric_id in ttm_required
+    ):
+        operating_cash_flow = amount_value(ttm_records["operating_cash_flow"])
+        net_income = amount_value(ttm_records["net_income"])
+        free_cash_flow = amount_value(ttm_records["free_cash_flow"])
+        ttm_observations: list[str] = []
+        if operating_cash_flow is not None and net_income is not None:
+            if operating_cash_flow > net_income:
+                ttm_observations.append("经营现金流高于净利润")
+            elif operating_cash_flow < net_income:
+                ttm_observations.append("经营现金流低于净利润")
+        if free_cash_flow is not None and free_cash_flow > 0:
+            ttm_observations.append("自由现金流保持为正")
+        if (
+            free_cash_flow is not None
+            and operating_cash_flow is not None
+            and free_cash_flow < operating_cash_flow
+        ):
+            ttm_observations.append("自由现金流低于经营现金流")
+        ttm_chart = {"available": True, "observations": ttm_observations}
+    else:
+        ttm_chart = unavailable.copy()
+
+    historical = report_context.get("historical_valuation", {})
+    historical = historical if isinstance(historical, Mapping) else {}
+    historical_values = {
+        key: _decimal_from_text(historical.get(key))
+        for key in (
+            "current_value",
+            "five_year_median",
+            "percentile_25",
+            "percentile_75",
+            "current_percentile",
+        )
+    }
+    if (
+        historical.get("status") == "ok"
+        and historical.get("validation_status") == "valid"
+        and all(value is not None for value in historical_values.values())
+    ):
+        current_value = historical_values["current_value"]
+        median = historical_values["five_year_median"]
+        percentile_25 = historical_values["percentile_25"]
+        percentile_75 = historical_values["percentile_75"]
+        current_percentile = historical_values["current_percentile"]
+        historical_observations: list[str] = []
+        if current_value is not None and median is not None:
+            if current_value > median:
+                historical_observations.append("当前市盈率高于五年中位数")
+            elif current_value < median:
+                historical_observations.append("当前市盈率低于五年中位数")
+        if (
+            current_value is not None
+            and percentile_25 is not None
+            and percentile_75 is not None
+        ):
+            if current_value >= percentile_75:
+                historical_observations.append("当前市盈率位于或高于历史上四分位")
+            elif percentile_25 < current_value < percentile_75:
+                historical_observations.append("当前市盈率位于历史中间区间")
+        if current_percentile is not None and current_percentile > 50:
+            historical_observations.append("当前估值位于历史样本上半区")
+        historical_chart = {"available": True, "observations": historical_observations}
+    else:
+        historical_chart = unavailable.copy()
+
+    return {
+        "financial_kpis": financial_chart,
+        "ttm_scale": ttm_chart,
+        "historical_pe": historical_chart,
+    }
 
 
 def build_narrative_context(
@@ -361,6 +575,7 @@ def build_narrative_context(
             "action": action[:128],
         },
         "accepted_claim_summaries": summaries,
+        "chart_context": _build_chart_context(report_context),
         "counts": counts,
         "available_sections": available_sections,
     }
@@ -415,24 +630,16 @@ def _json_text(value: Mapping[str, Any]) -> str:
 def _claim_text(claims: list[dict[str, Any]], category: str) -> str:
     """渲染已验证 Claim 的解释文本，跳过有规范化指标的数字原文。"""
     statements = []
-    saw_claim = False
-    skipped_numeric = False
     for claim in claims:
         if claim["category"] != category:
             continue
-        saw_claim = True
         statement = claim["statement"]
         if claim["calculation_ids"] and _REPORT_NUMBER_RE.search(statement):
-            skipped_numeric = True
             continue
         statements.append(statement)
     if statements:
         return "\n".join(f"- {statement}" for statement in statements)
-    if skipped_numeric:
-        return "数字已由规范化指标展示。"
-    if saw_claim:
-        return "已验证 Claim 没有可单独展示的文字内容。"
-    return "未提供可单独展示的文字 Claim。"
+    return ""
 
 
 def _decimal_from_text(value: Any) -> Decimal | None:
@@ -504,9 +711,15 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
         return f"{decimal_value:.2f}x"
     if metric_id in _HOLDING_AMOUNT_METRIC_IDS:
         return f"{decimal_value:.2f} {unit}".strip()
-    if metric_id in _REPORT_AMOUNT_METRIC_IDS or unit_lower in {"currency", "usd"}:
+    normalized_unit = unit_lower.replace(" ", "")
+    is_currency_amount = metric_id in _REPORT_AMOUNT_METRIC_IDS or (
+        normalized_unit == "currency"
+        or ("/" not in normalized_unit and ("usd" in normalized_unit or "美元" in normalized_unit))
+    )
+    if is_currency_amount:
         if metric_id == "market_price":
             return f"{decimal_value:.2f} {unit}".strip()
+        decimal_value = _normalized_amount(decimal_value, unit) or decimal_value
         absolute_value = abs(decimal_value)
         if absolute_value >= Decimal("1000000000000"):
             return f"{decimal_value / Decimal('1000000000000'):.2f} 万亿美元"
@@ -516,7 +729,15 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
 
 def _metric_text(metric: Mapping[str, Any]) -> str:
     """把一个 ReportMetric 渲染成带时间和来源的可读行。"""
-    label = _REPORT_METRIC_LABELS.get(metric["metric_id"], metric["metric_id"])
+    metric_id = metric["metric_id"]
+    if (
+        metric_id == "share_dilution"
+        and metric.get("adjustment_basis") not in _SHARE_ADJUSTMENT_BASES
+    ):
+        return ""
+    label = _REPORT_METRIC_LABELS.get(metric_id, metric_id)
+    if metric_id == "share_dilution" and metric.get("adjustment_basis") == "split_adjusted":
+        label += "（拆分调整）"
     value = _formatted_metric_value(metric)
     unit = metric["unit"]
     if unit and unit not in value and metric["metric_id"] == "market_price":
@@ -546,6 +767,10 @@ def _metric_text_for_section(
         for metric in metrics
         if metric["section"] == section
         and (metric_ids is None or metric["metric_id"] in metric_ids)
+        and (
+            metric["metric_id"] != "share_dilution"
+            or metric.get("adjustment_basis") in _SHARE_ADJUSTMENT_BASES
+        )
     ]
     return "\n".join(lines)
 
@@ -564,6 +789,290 @@ def _source_text(context: Mapping[str, Any]) -> str:
     return "\n".join(f"- {reference}" for reference in references)
 
 
+def _sec_source_reference(value: Any) -> str | None:
+    reference = _text(value)
+    if not reference:
+        return None
+    normalized = reference.lower()
+    if normalized.startswith("sec:"):
+        return reference
+    try:
+        parsed = urlsplit(reference)
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    if parsed.scheme.lower() in {"http", "https"} and hostname and hostname.lower() in {
+        "sec.gov",
+        "www.sec.gov",
+        "data.sec.gov",
+    }:
+        return reference
+    return None
+
+
+def _source_reference_index(source_metadata: Any) -> dict[str, str]:
+    """索引已有 source_metadata 中的 SEC 引用，不创造新的来源字段。"""
+    references: dict[str, str] = {}
+
+    def visit(value: Any, fallback_evidence_id: str | None = None) -> None:
+        if isinstance(value, Mapping):
+            evidence_id = _text(value.get("evidence_id")) or fallback_evidence_id
+            reference = _sec_source_reference(value.get("source_reference"))
+            if evidence_id and reference:
+                references.setdefault(evidence_id, reference)
+            for key, nested in value.items():
+                visit(nested, _text(key) if isinstance(nested, Mapping) else None)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for nested in value:
+                visit(nested)
+
+    visit(source_metadata)
+    return references
+
+
+def _valuation_explanation_lines(context: Mapping[str, Any]) -> list[str]:
+    historical = context.get("historical_valuation", {})
+    historical = historical if isinstance(historical, Mapping) else {}
+    current = _decimal_from_text(historical.get("current_value"))
+    median = _decimal_from_text(historical.get("five_year_median"))
+    percentile = _decimal_from_text(historical.get("current_percentile"))
+    lines: list[str] = []
+    if current is not None and median is not None:
+        relation = "高于" if current > median else "低于" if current < median else "等于"
+        sentence = f"当前 P/E 为 {current:.2f}x，{relation}五年中位数 {median:.2f}x"
+        if percentile is not None:
+            sentence += f"，处于过去五年估值样本的 {percentile:.2f}% 分位"
+        lines.append(f"{sentence}。")
+    elif percentile is not None:
+        lines.append(f"当前 P/E 处于过去五年估值样本的 {percentile:.2f}% 分位。")
+
+    reverse_dcf = context.get("reverse_dcf", {})
+    reverse_dcf = reverse_dcf if isinstance(reverse_dcf, Mapping) else {}
+    implied_growth = _percent_display(reverse_dcf.get("implied_growth"))
+    if implied_growth is not None:
+        forecast_years = _text(reverse_dcf.get("forecast_years"))
+        growth_label = (
+            f"未来 {forecast_years} 年自由现金流年复合增长要求"
+            if forecast_years
+            else "自由现金流年复合增长要求"
+        )
+        lines.append(f"反向 DCF 显示，{growth_label}约为 {implied_growth}。")
+    return lines
+
+
+def _financial_basis_note(metrics: Sequence[Mapping[str, Any]]) -> str:
+    dates: list[str] = []
+    saw_financial_metric = False
+    for metric in metrics:
+        if not isinstance(metric, Mapping) or metric.get("metric_id") not in _FINANCIAL_BASIS_METRIC_IDS:
+            continue
+        saw_financial_metric = True
+        metric_date = _text(metric.get("period_end")) or _text(metric.get("as_of"))
+        if metric_date and metric_date not in dates:
+            dates.append(metric_date)
+    if not saw_financial_metric:
+        return ""
+    date_clause = f"截至 {'、'.join(dates)} 的" if dates else ""
+    return (
+        "*口径说明：收入增长、利润率和现金流质量是"
+        f"{date_clause}财年年初至今累计（YTD）；股份变化是同比时点比较；"
+        "后文 TTM 是最近十二个月。*"
+    )
+
+
+def _execution_summary_lines(
+    rating_label: str,
+    risk_label: str,
+    action_label: str,
+    context: Mapping[str, Any],
+) -> list[str]:
+    """把确定性 Verdict 与估值关系整理成面向读者的紧凑摘要。"""
+    historical = context.get("historical_valuation", {})
+    historical = historical if isinstance(historical, Mapping) else {}
+    current = _decimal_from_text(historical.get("current_value"))
+    median = _decimal_from_text(historical.get("five_year_median"))
+    reverse_dcf = context.get("reverse_dcf", {})
+    reverse_dcf = reverse_dcf if isinstance(reverse_dcf, Mapping) else {}
+
+    if current is not None and median is not None:
+        if current > median:
+            conclusion = "当前估值高于过去五年中位水平，估值并不便宜。"
+        elif current < median:
+            conclusion = "当前估值低于过去五年中位水平。"
+        else:
+            conclusion = "当前估值接近过去五年中位水平。"
+    else:
+        conclusion = rating_label
+    lines = [
+        f"- **结论：** {conclusion}",
+    ]
+    claims = context.get("claims", [])
+    if isinstance(claims, Sequence) and not isinstance(claims, (str, bytes)) and any(
+        isinstance(claim, Mapping)
+        and claim.get("category") == "risk"
+        and _text(claim.get("statement"))
+        for claim in claims
+    ):
+        lines.append("- 风险状态：已识别风险，但尚未建立量化评分。")
+    if valuation_lines := _valuation_explanation_lines(context):
+        lines.append(f"- **关键数据：** {' '.join(valuation_lines)}")
+    verdict = context.get("verdict", {})
+    verdict = verdict if isinstance(verdict, Mapping) else {}
+    research_status = _VERDICT_RATING_LABELS.get(_text(verdict.get("overall_rating")) or "")
+    if research_status:
+        lines.append(f"- **研究状态：** {research_status}")
+    if current is not None and median is not None:
+        conditions = [f"P/E 回落至 {median:.2f}x 附近"]
+        lines.append(f"- **重新评估条件：** {'；或 '.join(conditions)}。")
+    else:
+        lines.append(f"- **行动参考：** {action_label}")
+    company = context.get("company", {})
+    company = company if isinstance(company, Mapping) else {}
+    request_horizon = _text(context.get("horizon")) or _text(company.get("horizon"))
+    request_horizon = request_horizon or _text(company.get("investment_horizon"))
+    forecast_years = _text(reverse_dcf.get("forecast_years"))
+    if request_horizon and forecast_years:
+        lines.append(
+            f"- **期限说明：** 用户关注期限是 {request_horizon}；{forecast_years} 年反向 DCF "
+            "只是长期估值参照，不是该请求期限的预测。"
+        )
+    return lines
+
+
+def _ttm_metrics_markdown(context: Mapping[str, Any]) -> str:
+    ttm = context.get("ttm", {})
+    ttm = ttm if isinstance(ttm, Mapping) else {}
+    raw_metrics = ttm.get("metrics", [])
+    if isinstance(raw_metrics, Mapping):
+        raw_metrics = list(raw_metrics.values())
+    if not isinstance(raw_metrics, Sequence) or isinstance(raw_metrics, (str, bytes)):
+        return ""
+
+    lines: list[str] = []
+    for raw_metric in raw_metrics:
+        if not isinstance(raw_metric, Mapping):
+            continue
+        if (
+            raw_metric.get("status") != "available"
+            or raw_metric.get("validation_status") != "valid"
+        ):
+            continue
+        metric_id = _text(raw_metric.get("metric_id"))
+        value = raw_metric.get("display_value", raw_metric.get("raw_result"))
+        if not metric_id or value is None:
+            continue
+        metric = dict(raw_metric)
+        metric["metric_id"] = metric_id
+        metric["display_value"] = value
+        metric.setdefault("unit", "")
+        period_start = _text(metric.get("period_start"))
+        period_end = _text(metric.get("period_end"))
+        period = "TTM"
+        if period_start and period_end:
+            period = f"TTM；期间 {period_start} 至 {period_end}"
+        elif period_end:
+            period = f"TTM；截至 {period_end}"
+        label = _REPORT_METRIC_LABELS.get(metric_id, metric_id)
+        lines.append(
+            f"- {label}：{_formatted_metric_value(metric)}（{period}）"
+        )
+    if not lines:
+        return ""
+    return "\n".join(("### TTM 财务规模（已验证）", *lines))
+
+
+def _risk_claim_markdown(
+    claims: Sequence[Mapping[str, Any]], source_metadata: Any = None
+) -> str:
+    displayable_claims = [
+        dict(claim)
+        for claim in claims
+        if claim.get("category") == "risk"
+        and _text(claim.get("statement"))
+        and not (
+            claim.get("calculation_ids")
+            and _REPORT_NUMBER_RE.search(_text(claim.get("statement")) or "")
+        )
+    ]
+    if not displayable_claims:
+        return "未提供可单独展示的文字风险 Claim。"
+    source_index = _source_reference_index(source_metadata)
+
+    def render_claim(claim: Mapping[str, Any]) -> str:
+        references = []
+        evidence_ids = claim.get("evidence_ids", [])
+        if isinstance(evidence_ids, Sequence) and not isinstance(
+            evidence_ids, (str, bytes)
+        ):
+            for evidence_id in evidence_ids:
+                reference = source_index.get(_text(evidence_id) or "")
+                if reference and reference not in references:
+                    references.append(reference)
+        source_suffix = f"（来源：{'、'.join(references)}）" if references else ""
+        return f"- {claim['statement']}{source_suffix}"
+
+    main = "\n".join(render_claim(claim) for claim in displayable_claims[:5])
+    if len(displayable_claims) <= 5:
+        return main
+    remaining_claims = displayable_claims[5:]
+    appendix = "\n".join(render_claim(claim) for claim in remaining_claims)
+    return "\n".join(
+        (
+            main,
+            "",
+            "### 风险附录",
+            "",
+            "<details>",
+            f"<summary>展开查看其余风险（{len(remaining_claims)} 项）</summary>",
+            "",
+            appendix,
+            "",
+            "</details>",
+        )
+    )
+
+
+def _audit_metadata_markdown(
+    context: Mapping[str, Any], status: str, rule_label: str
+) -> str:
+    lines = ["### 方法与审计元数据", f"- 确定性状态：status={status}"]
+    profile = context.get("profile")
+    if isinstance(profile, Mapping):
+        profile_values = {
+            key: _text(profile.get(key))
+            for key in ("issuer_profile", "security_profile", "reporting_profile")
+        }
+        profile_values = {key: value for key, value in profile_values.items() if value}
+        if profile_values:
+            lines.append(
+                "- Profile："
+                + "; ".join(
+                    f"{key.removesuffix('_profile')}={value}"
+                    for key, value in profile_values.items()
+                )
+            )
+    if coverage_level := _text(context.get("coverage_level")):
+        lines.append(f"- 覆盖范围：{coverage_level}")
+    if policy_version := _text(context.get("policy_version")):
+        lines.append(f"- Policy version：{policy_version}")
+    verdict = context.get("verdict", {})
+    verdict = verdict if isinstance(verdict, Mapping) else {}
+    raw_rules = verdict.get("triggered_rules", [])
+    if isinstance(raw_rules, str):
+        raw_rules = [raw_rules]
+    rule_codes = (
+        [rule for rule in raw_rules if isinstance(rule, str) and rule.strip()]
+        if isinstance(raw_rules, Sequence)
+        else []
+    )
+    if rule_codes:
+        lines.append(f"- 触发规则：{rule_label}")
+        lines.append(f"- 触发规则代码：{'、'.join(dict.fromkeys(rule_codes))}")
+    else:
+        lines.append("- 触发规则：无触发规则")
+    return "\n".join(lines)
+
+
 def _term_definitions(
     *, reit: bool = False, profile: str | None = None
 ) -> tuple[str, ...]:
@@ -580,7 +1089,7 @@ def _term_definitions(
         "- FCF Yield（自由现金流收益率）：自由现金流相对于市值的收益率。",
         "- TTM（过去十二个月）：以最近连续十二个月为口径汇总经营数据。",
         "- DCF（现金流折现）：将未来现金流折算到当前价值的估值方法。",
-        "- 反向 DCF（由市场价格倒推隐含增长）：从当前市场价格反推出模型所隐含的增长假设。",
+        "- 反向 DCF（由市场价格倒推隐含增长）：在给定模型期限内，从当前市场价格反推出自由现金流年复合增长要求。",
     ]
     if reit:
         definitions.extend(
@@ -799,15 +1308,17 @@ def _reverse_dcf_markdown(payload: Mapping[str, Any]) -> str:
     """把确定性反向 DCF 参数渲染成外行可读的表格。"""
     if not payload:
         return "反向 DCF：缺少已验证的 TTM 自由现金流或模型结果，未生成参数表。"
+    forecast_years = _text(payload.get("forecast_years"))
     rows = [
         "| 参数 | 数值 | 含义 |",
         "|---|---:|---|",
-        f"| 基础自由现金流（TTM） | {_currency_display(payload.get('base_fcf'))} | 最近十二个月自由现金流 |",
-        f"| 预测年数 | {payload.get('forecast_years', '不可用')} 年 | 固定预测期限 |",
+        f"| 基础自由现金流（TTM） | {_currency_display(_normalized_amount(payload.get('base_fcf'), payload.get('base_fcf_unit') or payload.get('unit')))} | 最近十二个月自由现金流 |",
         f"| 基准折现率 | {_percent_display(payload.get('discount_rate')) or '不可用'} | 将未来现金流折算到今天 |",
         f"| 基准永续增长率 | {_percent_display(payload.get('terminal_growth')) or '不可用'} | 预测期后的稳定增长假设 |",
-        f"| 基准隐含增长率 | {_percent_display(payload.get('implied_growth')) or '不可用'} | 市场价格反推出的增长要求 |",
+        f"| 基准隐含增长率 | {_percent_display(payload.get('implied_growth')) or '不可用'} | {'未来 ' + forecast_years + ' 年' if forecast_years else ''}自由现金流年复合增长要求 |",
     ]
+    if forecast_years:
+        rows.insert(4, f"| 预测年数 | {forecast_years} 年 | 固定预测期限 |")
     scenarios = payload.get("scenario_matrix", [])
     if isinstance(scenarios, Sequence) and scenarios:
         rows.extend(
@@ -831,236 +1342,6 @@ def _reverse_dcf_markdown(payload: Mapping[str, Any]) -> str:
     return "\n".join(rows)
 
 
-def _quant_decimal(value: Any) -> Decimal | None:
-    """只把量化 JSON 数字字符串解析为有限 Decimal。"""
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, Decimal):
-        result = value
-    elif isinstance(value, int):
-        result = Decimal(value)
-    elif isinstance(value, str):
-        try:
-            result = Decimal(value.strip())
-        except (ArithmeticError, ValueError):
-            return None
-    else:
-        return None
-    return result if result.is_finite() else None
-
-
-def _quant_number(value: Any) -> str | None:
-    decimal_value = _quant_decimal(value)
-    if decimal_value is None:
-        return None
-    return format(decimal_value, "f")
-
-
-def _quant_integer(value: Any) -> str | None:
-    decimal_value = _quant_decimal(value)
-    if decimal_value is None or decimal_value != decimal_value.to_integral_value():
-        return None
-    return format(decimal_value.to_integral_value(), "f")
-
-
-def _quant_percent(value: Any) -> str | None:
-    decimal_value = _quant_decimal(value)
-    if decimal_value is None:
-        return None
-    return f"{decimal_value * Decimal('100'):.2f}%"
-
-
-def _quant_bps(value: Any) -> str | None:
-    number = _quant_number(value)
-    return f"{number} bps" if number is not None else None
-
-
-def _quant_id_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        return []
-    return [item_text for item in value if (item_text := _text(item))]
-
-
-def _quant_field_provenance_markdown(packet: Mapping[str, Any]) -> list[str]:
-    field_provenance = packet.get("field_provenance")
-    if not isinstance(field_provenance, Mapping):
-        return []
-    lines = ["字段级追溯："]
-    for field_path in _QUANT_PROVENANCE_FIELD_PATHS:
-        provenance = field_provenance.get(field_path)
-        if not isinstance(provenance, Mapping):
-            continue
-        artifact_ids = _quant_id_list(provenance.get("artifact_ids"))
-        if not artifact_ids:
-            continue
-        line = f"- {field_path}：artifact_ids={', '.join(artifact_ids)}"
-        for label, key in (("evidence_ids", "evidence_ids"), ("calculation_ids", "calculation_ids")):
-            ids = _quant_id_list(provenance.get(key))
-            if ids:
-                line += f"；{label}={', '.join(ids)}"
-        lines.append(line)
-    return lines if len(lines) > 1 else []
-
-
-def _quant_status_line(
-    payload: Mapping[str, Any], prefix: str, *, typed: bool
-) -> str | None:
-    status = _text(payload.get(f"{prefix}_status"))
-    if status is None:
-        return f"- {prefix}：unavailable（missing_status）" if typed else None
-    if status == "available":
-        return None
-    reason_code = _text(payload.get(f"{prefix}_reason_code")) or "reason_code_missing"
-    return f"- {prefix}：{status}（{reason_code}）"
-
-
-def _quant_metric_line(
-    payload: Mapping[str, Any],
-    prefix: str,
-    *,
-    value: Any,
-    formatter: Any,
-    typed: bool = False,
-    label: str | None = None,
-) -> str:
-    if status_line := _quant_status_line(payload, prefix, typed=typed):
-        return status_line
-    formatted = formatter(value)
-    if formatted is None:
-        reason_code = _text(payload.get(f"{prefix}_reason_code")) or (
-            "missing_value" if typed else f"missing_{prefix}"
-        )
-        return f"- {prefix}：unavailable（{reason_code}）"
-    return f"- {label or prefix}：{formatted}"
-
-
-def _quant_pair_line(
-    payload: Mapping[str, Any],
-    prefix: str,
-    left_key: str,
-    right_key: str,
-    status_prefix: str | None = None,
-) -> str:
-    if status_prefix:
-        status = _text(payload.get(f"{status_prefix}_status"))
-        if status is not None and status != "available":
-            reason_code = _text(payload.get(f"{status_prefix}_reason_code")) or "reason_code_missing"
-            return f"- {prefix}：{status}（{reason_code}）"
-    left = _quant_integer(payload.get(left_key))
-    right = _quant_integer(payload.get(right_key))
-    if left is None or right is None:
-        return f"- {prefix}：unavailable（missing_{prefix}）"
-    return f"- {prefix}：{left}/{right}"
-
-
-def _quant_unavailable_markdown(status: str, reason_code: str) -> str:
-    return "\n".join(
-        (
-            f"status={status}",
-            f"reason_code={reason_code}",
-            "不可用",
-        )
-    )
-
-
-def _quant_evidence_markdown(quant: Mapping[str, Any] | None) -> str:
-    """只从已验证 QuantResearchPacket 渲染确定性量化旁证。"""
-    if not isinstance(quant, Mapping):
-        return _quant_unavailable_markdown("unavailable", "quant_packet_missing")
-    status = _text(quant.get("status"))
-    reason_code = _text(quant.get("reason_code"))
-    if status != "available":
-        return _quant_unavailable_markdown(
-            status or "unavailable", reason_code or "quant_packet_invalid"
-        )
-    packet = quant.get("packet")
-    validated_packet, packet_reason = _validated_quant_packet(packet)
-    if validated_packet is None:
-        return _quant_unavailable_markdown(
-            "unavailable", packet_reason or "quant_packet_invalid"
-        )
-    packet = validated_packet.model_dump(mode="json")
-    if reason_code := quant_field_provenance_reason(packet):
-        return _quant_unavailable_markdown("unavailable", reason_code)
-
-    ranking = packet.get("ranking_summary")
-    ranking = ranking if isinstance(ranking, Mapping) else {}
-    backtest = packet.get("backtest_summary")
-    backtest = backtest if isinstance(backtest, Mapping) else {}
-    benchmark = packet.get("benchmark_summary")
-    benchmark = benchmark if isinstance(benchmark, Mapping) else {}
-    quality = packet.get("data_quality")
-    quality = quality if isinstance(quality, Mapping) else {}
-    target_ticker = _text(ranking.get("target_ticker"))
-    lines = [
-        f"- target_ticker：{target_ticker}"
-        if target_ticker
-        else "- target_ticker：unavailable（missing_target_ticker）",
-        _quant_pair_line(
-            ranking,
-            "rank/peer_count",
-            "rank",
-            "peer_count",
-            "target_rank",
-        ),
-    ]
-    for payload, prefix, formatter, typed, label in (
-        (ranking, "industry_percentile", _quant_percent, False, None),
-        (ranking, "score", _quant_number, False, None),
-        (backtest, "strategy_cagr", _quant_percent, True, None),
-        (backtest, "strategy_max_drawdown", _quant_percent, True, None),
-        (benchmark, "spy_cagr", _quant_percent, False, "SPY CAGR"),
-        (benchmark, "spy_max_drawdown", _quant_percent, False, "SPY max drawdown"),
-        (benchmark, "universe_cagr", _quant_percent, False, "Universe CAGR"),
-        (benchmark, "universe_max_drawdown", _quant_percent, False, "Universe max drawdown"),
-        (backtest, "average_turnover", _quant_percent, True, None),
-        (backtest, "annualized_turnover", _quant_percent, True, None),
-        (backtest, "net_cost_bps", _quant_bps, False, None),
-    ):
-        lines.append(
-            _quant_metric_line(
-                payload,
-                prefix,
-                value=payload.get(prefix),
-                formatter=formatter,
-                typed=typed,
-                label=label,
-            )
-        )
-    if provenance_lines := _quant_field_provenance_markdown(packet):
-        lines.extend(("", *provenance_lines))
-    coverage = _text(packet.get("coverage"))
-    lines.extend(
-        (
-            f"- coverage={coverage}" if coverage else "- coverage=unavailable（missing_coverage）",
-            _quant_pair_line(
-                quality,
-                "complete_period_count/period_count",
-                "complete_period_count",
-                "period_count",
-            ),
-            f"- survivorship_bias_known={str(quality['survivorship_bias_known']).lower()}"
-            if isinstance(quality.get("survivorship_bias_known"), bool)
-            else "- survivorship_bias_known：unavailable（missing_survivorship_bias_known）",
-        )
-    )
-    limitations = packet.get("limitations")
-    if isinstance(limitations, list) and all(
-        isinstance(item, str) and item.strip() for item in limitations
-    ) and limitations:
-        lines.append(f"- limitations：{'、'.join(item.strip() for item in limitations)}")
-    else:
-        lines.append("- limitations：unavailable（missing_limitations）")
-    artifact_ids = packet.get("artifact_ids")
-    if isinstance(artifact_ids, list) and all(
-        isinstance(item, str) and item.strip() for item in artifact_ids
-    ) and artifact_ids:
-        lines.extend(f"- artifact_id：{item.strip()}" for item in artifact_ids)
-    else:
-        lines.append("- artifact_ids：unavailable（missing_artifact_ids）")
-    return "\n".join(lines)
-
-
 def _render_report_from_context(
     context: Mapping[str, Any], report_draft: ReportDraft
 ) -> str:
@@ -1069,27 +1350,8 @@ def _render_report_from_context(
         validated_context = ReportContext.model_validate(_json_safe_context(context))
     except Exception as exc:
         raise ValueError("ReportContext 未通过本地来源和结构校验。") from exc
-    quant_present = "quant" in context
     context_payload = validated_context.model_dump(mode="json")
-    if not quant_present and context_payload.get("quant") is None:
-        context_payload.pop("quant", None)
-    quant_payload = context_payload.get("quant")
-    if isinstance(quant_payload, Mapping) and quant_payload.get("status") == "available":
-        quant_packet = quant_payload.get("packet")
-        validated_quant_packet, quant_reason = _validated_quant_packet(quant_packet)
-        if validated_quant_packet is not None:
-            normalized_quant_packet = validated_quant_packet.model_dump(mode="json")
-            quant_reason = quant_field_provenance_reason(normalized_quant_packet)
-        else:
-            normalized_quant_packet = None
-        if normalized_quant_packet is None or quant_reason:
-            context_payload["quant"] = {
-                "status": "unavailable",
-                "reason_code": quant_reason or "quant_packet_invalid",
-                "packet": None,
-            }
-        else:
-            quant_payload["packet"] = normalized_quant_packet
+    chart_context = _build_chart_context(context_payload)
     claims = _validated_claims(context_payload["claims"])
     status = context_payload["verdict_status"]
     metrics = context_payload["metrics"]
@@ -1117,7 +1379,9 @@ def _render_report_from_context(
     rating_label, risk_label, rule_label, action_label = _verdict_display(verdict, status)
     visuals = {} if profile_kind == "spac" else build_report_visuals(context=context_payload)
 
-    sections: list[str] = ["# 投资研究报告", ""]
+    company_payload = context_payload.get("company", {})
+    company_payload = company_payload if isinstance(company_payload, Mapping) else {}
+    sections: list[str] = [_report_title(company_payload), ""]
     for field, heading in _REPORT_SECTIONS:
         if profile_kind == "spac" and field in {
             "financial_trend",
@@ -1131,73 +1395,25 @@ def _render_report_from_context(
             "reverse_dcf",
         }:
             continue
-        if field == "key_risks" and quant_present:
-            sections.extend(
-                ("## 量化旁证", "", _quant_evidence_markdown(context_payload.get("quant")), "")
-            )
-            for key, alt in (
-                ("quant_factor_percentile", "行业百分位（目标与同行）"),
-                ("quant_cagr_comparison", "策略与基准 CAGR 对比"),
-                ("quant_drawdown_comparison", "策略与基准最大回撤对比"),
-            ):
-                if chart := _visual_markdown(visuals, key, alt):
-                    sections.extend((chart, ""))
         sections.extend((f"## {heading}", ""))
         if field == "execution_summary":
             sections.extend(
-                (
-                    f"确定性状态：status={status}",
-                    "",
-                    f"总体判断：{rating_label}",
-                    f"风险等级：{risk_label}",
-                    f"触发规则：{rule_label}",
-                    f"行动参考：{action_label}",
-                    "",
-                    getattr(report_draft, field),
-                    "",
-                )
+                (*_execution_summary_lines(
+                    rating_label, risk_label, action_label, context_payload
+                ), "")
             )
             if profile_kind == "spac":
                 sections.append(
                     "SPAC evidence-only：仅呈现证券结构证据，不构成评级。"
                 )
                 sections.append("")
-            profile = context_payload.get("profile", {})
-            if isinstance(profile, Mapping):
-                profile_values = {
-                    key: _text(profile.get(key))
-                    for key in ("issuer_profile", "security_profile", "reporting_profile")
-                }
-                profile_values = {key: value for key, value in profile_values.items() if value}
-                if profile_values:
-                    sections.append(
-                        "Profile："
-                        + "; ".join(
-                            f"{key.removesuffix('_profile')}={value}"
-                            for key, value in profile_values.items()
-                        )
-                    )
-            if coverage_level := _text(context_payload.get("coverage_level")):
-                sections.append(f"覆盖范围：{coverage_level}")
-            if policy_version := _text(context_payload.get("policy_version")):
-                sections.append(f"Policy version：{policy_version}")
-            sections.append("")
-            if chart := _visual_markdown(visuals, "financial_kpis", "核心财务指标"):
-                sections.extend(
-                    (
-                        "读图：柱子高于 0 表示增长/利润率为正；股份变化为负表示股份减少。",
-                        "",
-                        chart,
-                        "",
-                    )
-                )
+            if basis_note := _financial_basis_note(metrics):
+                sections.extend((basis_note, ""))
         elif field == "company_quality":
+            claim_text = _claim_text(claims, "financial_quality")
             sections.extend(
                 (
-                    getattr(report_draft, field),
-                    "",
-                    _claim_text(claims, "financial_quality"),
-                    "",
+                    *([claim_text, ""] if claim_text else []),
                     _metric_text_for_section(
                         metrics, "financial", _REPORT_QUALITY_METRIC_IDS
                     ),
@@ -1210,32 +1426,57 @@ def _render_report_from_context(
                 sections.extend((profile_markdown, ""))
             if is_reit and (unavailable := _reit_unavailable_markdown(reit_metrics)):
                 sections.extend((unavailable, ""))
-        elif field == "financial_trend":
-            sections.extend(
-                (
-                    getattr(report_draft, field),
-                    "",
-                    _claim_text(claims, "financial_trend"),
-                    "",
-                    _metric_text_for_section(metrics, "financial", _REPORT_TREND_METRIC_IDS),
-                    "",
-                )
-            )
-            if chart := _visual_markdown(visuals, "ttm_scale", "TTM 财务规模"):
+            chart = _visual_markdown(visuals, "financial_kpis", "核心财务指标")
+            if chart:
                 sections.extend(
                     (
-                        "读图：所有柱子都使用最近十二个月口径，单位为十亿美元，便于比较规模而不是比较利润率。",
-                        "",
                         chart,
+                        "",
+                        "*图表说明：三个面板分别展示增长与资本配置、盈利能力和现金流质量，并使用独立刻度。*",
                         "",
                     )
                 )
+            prefix = (
+                "**图表推导：** 根据上图及其对应的已验证数据，"
+                if chart and chart_context["financial_kpis"]["available"]
+                else "**数据解读：** 根据已验证数据，"
+            )
+            sections.extend((f"{prefix}{getattr(report_draft, field)}", ""))
+        elif field == "financial_trend":
+            claim_text = _claim_text(claims, "financial_trend")
+            sections.extend(
+                (
+                    *([claim_text, ""] if claim_text else []),
+                    _metric_text_for_section(
+                        metrics,
+                        "financial",
+                        _REPORT_TREND_METRIC_IDS - {"free_cash_flow"},
+                    ),
+                    "",
+                )
+            )
+            if ttm_markdown := _ttm_metrics_markdown(context_payload):
+                sections.extend((ttm_markdown, ""))
+            chart = _visual_markdown(visuals, "ttm_scale", "TTM 财务规模")
+            if chart:
+                sections.extend(
+                    (
+                        chart,
+                        "",
+                        "*图表说明：各柱均为最近十二个月数据，单位为十亿美元，用于比较业务规模。*",
+                        "",
+                    )
+                )
+            prefix = (
+                "**图表推导：** 根据上图及其对应的已验证数据，"
+                if chart and chart_context["ttm_scale"]["available"]
+                else "**数据解读：** 根据已验证数据，"
+            )
+            sections.extend((f"{prefix}{getattr(report_draft, field)}", ""))
         elif field == "current_valuation":
             sections.extend(
                 (
-                    getattr(report_draft, field),
-                    "",
-                    _claim_text(claims, "current_valuation"),
+                    "以下指标使用同一时点的市场价格和已验证财务数据计算。",
                     "",
                     _metric_text_for_section(metrics, "current_valuation"),
                     "",
@@ -1246,29 +1487,38 @@ def _render_report_from_context(
         elif field == "historical_valuation":
             sections.extend(
                 (
-                    getattr(report_draft, field),
-                    "",
-                    _claim_text(claims, "historical_valuation"),
+                    "以下数据将当前 P/E 与过去五年的估值分布进行比较。",
                     "",
                     _metric_text_for_section(metrics, "historical_valuation"),
                     "",
                 )
             )
-            if chart := _visual_markdown(visuals, "historical_pe", "五年历史 P/E"):
+            chart = _visual_markdown(visuals, "historical_pe", "五年历史 P/E")
+            if chart:
                 sections.extend(
                     (
-                        "读图：曲线高于中位数表示当前 TTM P/E 高于自身历史常态；最新点用于定位当前估值。",
-                        "",
                         chart,
+                        "",
+                        "*图表说明：曲线展示 TTM P/E 的历史变化，参考线用于判断当前估值相对过去五年的位置。*",
                         "",
                     )
                 )
+            prefix = (
+                "**图表推导：** 根据上图及其对应的已验证数据，"
+                if chart and chart_context["historical_pe"]["available"]
+                else "**数据解读：** 根据已验证数据，"
+            )
+            sections.extend((f"{prefix}{getattr(report_draft, field)}", ""))
         elif field == "reverse_dcf":
+            forecast_years = _text(context_payload.get("reverse_dcf", {}).get("forecast_years"))
+            dcf_growth_label = (
+                f"未来 {forecast_years} 年自由现金流年复合增长要求"
+                if forecast_years
+                else "自由现金流年复合增长要求"
+            )
             sections.extend(
                 (
-                    getattr(report_draft, field),
-                    "",
-                    _claim_text(claims, "reverse_dcf"),
+                    f"反向 DCF 从当前市场价格倒推出{dcf_growth_label}。",
                     "",
                     _metric_text_for_section(metrics, "reverse_dcf"),
                     "",
@@ -1277,20 +1527,31 @@ def _render_report_from_context(
                 )
             )
         elif field == "key_risks":
-            sections.extend((getattr(report_draft, field), "", _claim_text(claims, "risk"), ""))
-        elif field == "sources_and_method":
             sections.extend(
                 (
                     getattr(report_draft, field),
                     "",
+                    _risk_claim_markdown(
+                        claims, context_payload.get("source_metadata", {})
+                    ),
+                    "",
+                )
+            )
+        elif field == "sources_and_method":
+            sections.extend(
+                (
+                    _SOURCE_METHOD_NOTE,
+                    "",
                     _source_text(context_payload),
+                    "",
+                    _audit_metadata_markdown(context_payload, status, rule_label),
                     "",
                     *_term_definitions(reit=is_reit, profile=profile_kind),
                     "",
                 )
             )
         else:
-            sections.extend((getattr(report_draft, field), "", "本文不构成任何投资建议。", ""))
+            sections.extend((getattr(report_draft, field), ""))
 
     report = "\n".join(sections).rstrip() + "\n"
     passed, message = validate_rendered_report(report, status)
@@ -1326,18 +1587,16 @@ def _render_legacy_report(
     for field, heading in _REPORT_SECTIONS:
         sections.extend((f"## {heading}", ""))
         if field == "execution_summary":
+            summary_context = {
+                "historical_valuation": historical_payload,
+                "reverse_dcf": reverse_dcf_payload,
+                "claims": claims,
+                "verdict": verdict,
+            }
             sections.extend(
-                (
-                    f"确定性状态：status={status}",
-                    "",
-                    f"总体判断：{rating_label}",
-                    f"风险等级：{risk_label}",
-                    f"触发规则：{rule_label}",
-                    f"行动参考：{action_label}",
-                    "",
-                    getattr(report_draft, field),
-                    "",
-                )
+                (*_execution_summary_lines(
+                    rating_label, risk_label, action_label, summary_context
+                ), "")
             )
         elif field == "company_quality":
             sections.extend((getattr(report_draft, field), "", _claim_text(claims, "financial_quality"), ""))
@@ -1350,13 +1609,24 @@ def _render_legacy_report(
         elif field == "reverse_dcf":
             sections.extend((getattr(report_draft, field), "", _claim_text(claims, "reverse_dcf"), "", f"确定性反向 DCF 数据：{_json_text(reverse_dcf_payload)}", ""))
         elif field == "key_risks":
-            sections.extend((getattr(report_draft, field), "", _claim_text(claims, "risk"), ""))
-        elif field == "sources_and_method":
             sections.extend(
                 (
                     getattr(report_draft, field),
                     "",
+                    _risk_claim_markdown(claims, source_payload),
+                    "",
+                )
+            )
+        elif field == "sources_and_method":
+            sections.extend(
+                (
+                    _SOURCE_METHOD_NOTE,
+                    "",
                     f"确定性来源元数据：{_json_text(source_payload)}",
+                    "",
+                    _audit_metadata_markdown(
+                        {"verdict": verdict}, status, rule_label
+                    ),
                     "",
                     *_term_definitions(),
                     "",

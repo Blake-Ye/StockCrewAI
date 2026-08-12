@@ -12,24 +12,21 @@ from enum import Enum
 from typing import Any
 
 
-_CATEGORIES = ("evidence", "calculations", "filings", "quant")
+_CATEGORIES = ("evidence", "calculations", "filings")
 _SINGULAR_CATEGORIES = {
     "evidence": "evidence",
     "calculations": "calculation",
     "filings": "filing",
-    "quant": "quant",
 }
 _CATEGORY_KEYS = {
     "evidence": ("evidence", "evidences", "validated_evidence"),
     "calculations": ("calculations", "calculation", "validated_calculations"),
     "filings": ("filings", "filing_sections", "sections", "validated_filings"),
-    "quant": ("quant", "factors", "factor_observations", "quant_summary"),
 }
 _ID_KEYS = {
     "evidence": ("evidence_id", "id"),
     "calculations": ("calculation_id", "id"),
     "filings": ("section_id", "filing_id", "evidence_id", "id"),
-    "quant": ("factor_id", "id"),
 }
 _ALLOWLIST_KEYS = {
     "evidence": ("evidence_ids", "validated_evidence_ids", "evidence"),
@@ -46,7 +43,6 @@ _ALLOWLIST_KEYS = {
         "validated_filing_ids",
         "filings",
     ),
-    "quant": ("factor_ids", "validated_factor_ids", "quant_ids", "quant"),
 }
 _STATUS_VALUES = frozenset({"unvalidated", "valid", "invalid"})
 _TIME_KEYS = (
@@ -295,9 +291,6 @@ class EvidenceStore:
         if not validated:
             return self._error("filing_not_validated")
         return self._result(self._sorted_records(validated, "filings")[:limit])
-
-    def get_quant_summary(self, factor_ids: Sequence[str] | str | None) -> dict[str, Any]:
-        return self._get_validated_by_ids("quant", factor_ids, "factor_ids")
 
     def _get_validated_by_ids(
         self,

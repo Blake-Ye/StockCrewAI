@@ -921,6 +921,14 @@ class CompactRunReporter:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # 先清理上一轮正式报告。若本轮被阻断或导出失败，预览不能继续展示
+        # 上一家公司的旧报告；只有本轮通过最终校验后才重新写入同名文件。
+        formal_report_path = output_path.with_name("investment-report.md")
+        try:
+            formal_report_path.unlink()
+        except FileNotFoundError:
+            pass
+
         def write_result() -> None:
             _atomic_write_text(
                 result_path,

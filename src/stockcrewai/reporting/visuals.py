@@ -21,7 +21,6 @@ import matplotlib  # noqa: E402
 matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib import font_manager  # noqa: E402
-from matplotlib.ticker import PercentFormatter  # noqa: E402
 
 
 def _configure_cjk_font() -> None:
@@ -83,6 +82,18 @@ _TTM_LABELS = {
 _FINANCIAL_KPI_TITLE = "财务质量指标（已验证数据）"
 _TTM_AXIS_LABEL = "金额（十亿美元）"
 _NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
+_FINANCIAL_KPI_GROUPS = (
+    ("增长与资本配置", ("revenue_growth", "share_dilution")),
+    ("盈利能力", ("operating_margin", "net_margin")),
+    ("现金流质量", ("free_cash_flow_margin", "cash_conversion")),
+)
+_FINANCIAL_REQUIRED_IDS = frozenset(
+    metric_id
+    for _, metric_ids in _FINANCIAL_KPI_GROUPS
+    for metric_id in metric_ids
+    if metric_id != "share_dilution"
+)
+_SHARE_ADJUSTMENT_BASES = frozenset({"raw", "split_adjusted"})
 
 
 def _records(value: Any, *, collection_keys: tuple[str, ...]) -> list[Mapping[str, Any]]:
@@ -173,8 +184,10 @@ def _amount_in_billion_usd(record: Mapping[str, Any]) -> float | None:
     return float(value) if value.is_finite() else None
 
 
-def _png_uri(draw: Callable[[Any], None], *, size: tuple[float, float]) -> str:
-    figure, axes = plt.subplots(figsize=size, dpi=120)
+def _png_uri(
+    draw: Callable[[Any], None], *, size: tuple[float, float], dpi: int = 120
+) -> str:
+    figure, axes = plt.subplots(figsize=size, dpi=dpi)
     try:
         draw(axes)
         buffer = BytesIO()
@@ -207,38 +220,81 @@ def _render_to_output_dir(
 
 
 def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
-    values = [_ratio_value(records[metric_id]) for metric_id in _FINANCIAL_KPI_IDS]
-    if any(value is None for value in values):
+    verified_records = {
+        metric_id: record
+        for metric_id, record in records.items()
+        if metric_id in _FINANCIAL_KPI_IDS and _is_verified(record)
+    }
+    if not _FINANCIAL_REQUIRED_IDS.issubset(verified_records):
         return None
+    if (
+        verified_records.get("share_dilution", {}).get("adjustment_basis")
+        not in _SHARE_ADJUSTMENT_BASES
+    ):
+        verified_records.pop("share_dilution", None)
+
+    panel_data: list[tuple[str, list[str], list[float]]] = []
+    for title, metric_ids in _FINANCIAL_KPI_GROUPS:
+        available_ids = [metric_id for metric_id in metric_ids if metric_id in verified_records]
+        values = [
+            _ratio_value(verified_records[metric_id]) for metric_id in available_ids
+        ]
+        if not available_ids or any(value is None for value in values):
+            return None
+        panel_data.append(
+            (title, available_ids, [value for value in values if value is not None])
+        )
 
     def draw(axes: Any) -> None:
-        bars = axes.barh(
-            [_FINANCIAL_KPI_LABELS[metric_id] for metric_id in _FINANCIAL_KPI_IDS],
-            values,
-            color="#3568a8",
-        )
-        data_min = min(0.0, min(values))
-        data_max = max(0.0, max(values))
-        span = max(data_max - data_min, 1.0)
-        left_padding = span * (0.20 if data_min < 0 else 0.10)
-        right_padding = span * 0.20
-        axes.set_xlim(data_min - left_padding, data_max + right_padding)
-        axes.axvline(0, color="#555555", linewidth=0.8)
-        axes.set_xlabel("百分比（%）")
-        axes.set_title(_FINANCIAL_KPI_TITLE)
-        axes.grid(axis="x", alpha=0.25)
-        axes.invert_yaxis()
-        for bar, value in zip(bars, values):
-            axes.text(
-                max(value + 0.5, 0.5) if value < 0 else value + 0.5,
-                bar.get_y() + bar.get_height() / 2,
-                f"{value:.2f}%",
-                va="center",
-                ha="left",
-                fontsize=8,
-            )
+        figure = axes.figure
+        figure.clear()
+        panel_axes = figure.subplots(1, len(panel_data), squeeze=False)[0]
+        for panel, (title, metric_ids, values) in zip(panel_axes, panel_data):
+            labels = []
+            for metric_id in metric_ids:
+                label = _FINANCIAL_KPI_LABELS[metric_id]
+                if (
+                    metric_id == "share_dilution"
+                    and verified_records[metric_id].get("adjustment_basis")
+                    == "split_adjusted"
+                ):
+                    label = "股份变化（拆分调整）"
+                labels.append(label)
+            bars = panel.barh(labels, values, color="#3568a8")
+            reference = 100.0 if title == "现金流质量" else None
+            lower = min(0.0, min(values), reference if reference is not None else 0.0)
+            upper = max(0.0, max(values), reference if reference is not None else 0.0)
+            span = max(upper - lower, 1.0)
+            padding = max(span * 0.30, 3.0)
+            label_offset = max(span * 0.05, 0.5)
+            panel.set_xlim(lower - padding, upper + padding)
+            panel.axvline(0, color="#555555", linewidth=0.8)
+            if reference is not None:
+                panel.axvline(
+                    reference,
+                    color="#b91c1c",
+                    linestyle=":",
+                    linewidth=1.0,
+                    label="100%基准",
+                )
+            panel.set_xlabel("百分比（%）")
+            panel.set_title(title)
+            panel.grid(axis="x", alpha=0.25)
+            panel.invert_yaxis()
+            for bar, value in zip(bars, values):
+                positive = value >= 0
+                panel.text(
+                    value + label_offset if positive else value - label_offset,
+                    bar.get_y() + bar.get_height() / 2,
+                    f"{value:.2f}%",
+                    va="center",
+                    ha="left" if positive else "right",
+                    fontsize=8,
+                )
+        figure.suptitle(_FINANCIAL_KPI_TITLE)
+        figure.subplots_adjust(left=0.08, right=0.98, bottom=0.22, top=0.80, wspace=0.45)
 
-    return _png_uri(draw, size=(8.0, 4.2))
+    return _png_uri(draw, size=(12.0, 4.8))
 
 
 def _ttm_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
@@ -269,16 +325,8 @@ def _ttm_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
     return _png_uri(draw, size=(8.0, 4.2))
 
 
-def _percentile(values: list[float], fraction: Decimal) -> float:
-    position = (len(values) - 1) * float(fraction)
-    lower = int(position)
-    upper = min(lower + 1, len(values) - 1)
-    weight = position - lower
-    return values[lower] + (values[upper] - values[lower]) * weight
-
-
 def _historical_tick_data(
-    points: Sequence[tuple[str, float]],
+    points: Sequence[tuple[str, Decimal]],
 ) -> tuple[list[int], list[str]]:
     """为历史序列生成少量真实日期刻度，避免读者看到无意义的 0..59。"""
     if not points:
@@ -295,56 +343,68 @@ def _historical_pe_png(payload: Mapping[str, Any]) -> str | None:
         return None
     raw_series = payload.get("series")
     current_date = payload.get("current_date")
+    current_value = _decimal(payload.get("current_value"))
+    percentile_25 = _decimal(payload.get("percentile_25"))
+    median = _decimal(payload.get("five_year_median"))
+    percentile_75 = _decimal(payload.get("percentile_75"))
     if not isinstance(raw_series, Sequence) or isinstance(raw_series, (str, bytes)):
         return None
-    if not isinstance(current_date, str) or not current_date.strip():
+    if (
+        not isinstance(current_date, str)
+        or not current_date.strip()
+        or current_value is None
+        or percentile_25 is None
+        or median is None
+        or percentile_75 is None
+    ):
         return None
 
-    points: list[tuple[str, float]] = []
+    points: list[tuple[str, Decimal]] = []
     for item in raw_series:
         if not isinstance(item, Mapping):
             continue
         point_date = item.get("date")
         value = _decimal(item.get("pe_ratio", item.get("value")))
         if isinstance(point_date, str) and point_date.strip() and value is not None:
-            points.append((point_date.strip(), float(value)))
+            points.append((point_date.strip(), value))
     points.sort(key=lambda item: item[0])
     if len(points) < 60:
         return None
-    points = points[-60:]
     if points[-1][0] != current_date.strip():
         return None
-    values = [value for _, value in points]
-    percentile_25 = _percentile(values, Decimal("0.25"))
-    median = _percentile(values, Decimal("0.50"))
-    percentile_75 = _percentile(values, Decimal("0.75"))
+    if points[-1][1] != current_value:
+        return None
+    points = points[-60:]
+    values = [float(value) for _, value in points]
 
     def draw(axes: Any) -> None:
         x_values = list(range(len(points)))
         tick_indices, tick_labels = _historical_tick_data(points)
         axes.plot(x_values, values, color="#3568a8", linewidth=1.5, label="P/E（倍）")
         axes.axhline(
-            percentile_25,
+            float(percentile_25),
             color="#d97706",
             linestyle="--",
             label=f"25分位 {percentile_25:.2f}x",
         )
         axes.axhline(
-            median,
+            float(median),
             color="#555555",
             linestyle="--",
             label=f"中位数 {median:.2f}x",
         )
         axes.axhline(
-            percentile_75,
+            float(percentile_75),
             color="#b91c1c",
             linestyle="--",
             label=f"75分位 {percentile_75:.2f}x",
         )
-        axes.scatter([x_values[-1]], [values[-1]], color="#111827", zorder=3, label="最新")
+        axes.scatter(
+            [x_values[-1]], [float(current_value)], color="#111827", zorder=3, label="最新"
+        )
         axes.annotate(
-            f"最新 {values[-1]:.2f}x",
-            (x_values[-1], values[-1]),
+            f"最新 {current_value:.2f}x",
+            (x_values[-1], float(current_value)),
             xytext=(-45, 10),
             textcoords="offset points",
             fontsize=8,
@@ -357,180 +417,7 @@ def _historical_pe_png(payload: Mapping[str, Any]) -> str | None:
         axes.legend(loc="best", frameon=False)
         axes.grid(alpha=0.25)
 
-    return _png_uri(draw, size=(8.0, 4.2))
-
-
-def _quant_decimal(value: Any) -> Decimal | None:
-    """严格解析量化 JSON 数字，拒绝浮点、布尔和非有限值。"""
-    if isinstance(value, Decimal):
-        result = value
-    elif isinstance(value, int) and not isinstance(value, bool):
-        result = Decimal(value)
-    elif isinstance(value, str) and value.strip():
-        try:
-            result = Decimal(value.strip())
-        except (InvalidOperation, ValueError):
-            return None
-    else:
-        return None
-    return result if result.is_finite() else None
-
-
-def _quant_label(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    label = value.strip()
-    return label or None
-
-
-def _quant_axis_limits(
-    values: Sequence[float], *, base_limits: tuple[float, float] | None = None
-) -> tuple[float, float]:
-    lower = min(0.0, min(values))
-    upper = max(0.0, max(values))
-    if base_limits is not None:
-        lower = min(lower, base_limits[0])
-        upper = max(upper, base_limits[1])
-    span = upper - lower
-    padding = max(span * 0.10, 0.05)
-    return lower - padding, upper + padding
-
-
-def _quant_factor_png(packet: Mapping[str, Any]) -> str | None:
-    ranking = packet.get("ranking_summary")
-    if not isinstance(ranking, Mapping):
-        return None
-    percentile = _quant_decimal(ranking.get("industry_percentile"))
-    target_ticker = _quant_label(ranking.get("target_ticker"))
-    peer_group = _quant_label(ranking.get("peer_group"))
-    if (
-        percentile is None
-        or percentile < Decimal("0")
-        or percentile > Decimal("1")
-        or target_ticker is None
-        or peer_group is None
-    ):
-        return None
-
-    def draw(axes: Any) -> None:
-        percentile_value = float(percentile)
-        axes.barh([0], [percentile_value], color="#3568a8", height=0.48)
-        axes.set_yticks([0])
-        axes.set_yticklabels([target_ticker])
-        axes.set_xlim(
-            *_quant_axis_limits([percentile_value], base_limits=(0.0, 1.0))
-        )
-        axes.set_xticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
-        axes.xaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
-        axes.set_xlabel("行业分位（百分比）")
-        axes.set_title(f"行业百分位（{peer_group}）", pad=14, wrap=True)
-        axes.grid(axis="x", alpha=0.25)
-        for label in axes.get_yticklabels():
-            label.set_wrap(True)
-        axes.title.set_wrap(True)
-        label_x = percentile_value - 0.02 if percentile_value > 0.85 else percentile_value + 0.02
-        axes.text(
-            label_x,
-            0,
-            f"{percentile_value:.2%}",
-            ha="right" if percentile_value > 0.85 else "left",
-            va="center",
-            fontsize=9,
-        )
-        axes.figure.subplots_adjust(left=0.36, right=0.97, bottom=0.22, top=0.78)
-
-    return _png_uri(draw, size=(9.0, 5.0))
-
-
-def _quant_comparison_png(
-    values: Sequence[tuple[str, Decimal]], *, title: str, color: str
-) -> str:
-    def draw(axes: Any) -> None:
-        numeric_values = [float(value) for _, value in values]
-        bars = axes.bar(
-            [label for label, _ in values],
-            numeric_values,
-            color=color,
-            width=0.58,
-        )
-        axes.set_ylim(*_quant_axis_limits(numeric_values))
-        axes.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
-        axes.set_ylabel("百分比")
-        axes.set_title(title)
-        axes.axhline(0, color="#555555", linewidth=0.8)
-        axes.grid(axis="y", alpha=0.25)
-        span = max(axes.get_ylim()[1] - axes.get_ylim()[0], 1.0)
-        offset = span * 0.02
-        for bar, value in zip(bars, numeric_values):
-            positive = value >= 0
-            axes.text(
-                bar.get_x() + bar.get_width() / 2,
-                value + offset if positive else value - offset,
-                f"{value:.2%}",
-                ha="center",
-                va="bottom" if positive else "top",
-                fontsize=9,
-            )
-        axes.figure.subplots_adjust(left=0.13, right=0.97, bottom=0.20, top=0.84)
-
-    return _png_uri(draw, size=(9.0, 5.0))
-
-
-def _quant_cagr_png(packet: Mapping[str, Any]) -> str | None:
-    backtest = packet.get("backtest_summary")
-    benchmark = packet.get("benchmark_summary")
-    if not isinstance(backtest, Mapping) or not isinstance(benchmark, Mapping):
-        return None
-    if backtest.get("strategy_cagr_status") != "available":
-        return None
-    decimals = [
-        _quant_decimal(backtest.get("strategy_cagr")),
-        _quant_decimal(benchmark.get("spy_cagr")),
-        _quant_decimal(benchmark.get("universe_cagr")),
-    ]
-    if any(value is None for value in decimals):
-        return None
-    return _quant_comparison_png(
-        tuple(
-            zip(
-                ("策略", "SPY", "Universe"),
-                (value for value in decimals if value is not None),
-            )
-        ),
-        title="策略与基准 CAGR 对比",
-        color="#4c956c",
-    )
-
-
-def _quant_drawdown_png(packet: Mapping[str, Any]) -> str | None:
-    backtest = packet.get("backtest_summary")
-    benchmark = packet.get("benchmark_summary")
-    if not isinstance(backtest, Mapping) or not isinstance(benchmark, Mapping):
-        return None
-    if backtest.get("strategy_max_drawdown_status") != "available":
-        return None
-    decimals = [
-        _quant_decimal(backtest.get("strategy_max_drawdown")),
-        _quant_decimal(benchmark.get("spy_max_drawdown")),
-        _quant_decimal(benchmark.get("universe_max_drawdown")),
-    ]
-    if any(
-        value is None
-        or value < Decimal("-1")
-        or value > Decimal("0")
-        for value in decimals
-    ):
-        return None
-    return _quant_comparison_png(
-        tuple(
-            zip(
-                ("策略", "SPY", "Universe"),
-                (value for value in decimals if value is not None),
-            )
-        ),
-        title="策略与基准最大回撤对比",
-        color="#b91c1c",
-    )
+    return _png_uri(draw, size=(10.8, 5.1), dpi=84)
 
 
 def build_report_visuals(
@@ -565,13 +452,18 @@ def build_report_visuals(
         )
         if (metric_id := _record_id(record)) in _FINANCIAL_KPI_IDS and _is_verified(record)
     }
+    if (
+        financial_records.get("share_dilution", {}).get("adjustment_basis")
+        not in _SHARE_ADJUSTMENT_BASES
+    ):
+        financial_records.pop("share_dilution", None)
     ttm_records = {
         metric_id: record
         for record in _records(ttm_metrics, collection_keys=("metrics", "calculations"))
         if (metric_id := _record_id(record)) in _TTM_IDS and _is_verified(record)
     }
     visuals: dict[str, str] = {}
-    if len(financial_records) == len(_FINANCIAL_KPI_IDS):
+    if _FINANCIAL_REQUIRED_IDS.issubset(financial_records):
         if (
             uri := _render_to_output_dir(
                 "financial_kpis",
@@ -598,24 +490,6 @@ def build_report_visuals(
             )
         ) is not None:
             visuals["historical_pe"] = uri
-    quant_wrapper = context.get("quant") if isinstance(context, Mapping) else None
-    if isinstance(quant_wrapper, Mapping) and quant_wrapper.get("status") == "available":
-        quant_packet = quant_wrapper.get("packet")
-        if isinstance(quant_packet, Mapping):
-            quant_renderers = (
-                ("quant_factor_percentile", _quant_factor_png),
-                ("quant_cagr_comparison", _quant_cagr_png),
-                ("quant_drawdown_comparison", _quant_drawdown_png),
-            )
-            for key, renderer in quant_renderers:
-                if (
-                    uri := _render_to_output_dir(
-                        key,
-                        output_path,
-                        lambda renderer=renderer: renderer(quant_packet),
-                    )
-                ) is not None:
-                    visuals[key] = uri
     return visuals
 
 

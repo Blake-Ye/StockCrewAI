@@ -380,6 +380,29 @@ class FakeEdgar:
         return company
 
 
+class SplitFacts(FakeFacts):
+    def __init__(self):
+        self._facts = [
+            SimpleNamespace(
+                concept="us-gaap:StockSplitConversionRatio",
+                numeric_value=10,
+                period_start=None,
+                period_end=date(2025, 11, 14),
+                filing_date=date(2025, 11, 15),
+                form_type="8-K",
+            )
+        ]
+
+
+class SplitCompany(FakeCompany):
+    def get_facts(self):
+        return SplitFacts()
+
+
+class SplitEdgar(FakeEdgar):
+    company_class = SplitCompany
+
+
 class TTMCompany(FakeCompany):
     def get_facts(self):
         self.facts = TTMFacts()
@@ -447,6 +470,93 @@ class PartiallyFailingFilingsEdgar(FakeEdgar):
 
 
 class EdgarToolTests(unittest.TestCase):
+    def test_filing_text_extracts_verified_forward_stock_split(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        filing = FakeFiling("10-Q", 1, date(2026, 7, 17))
+        filing.text_content = (
+            "On November 14, 2025, the Company completed a ten-for-one "
+            "forward stock split of its issued common stock."
+        )
+
+        evidence = EdgarTool(as_of=date(2026, 8, 5))._filing_evidence(
+            filing,
+            "0000320193",
+            include_text=True,
+            max_text_chars=12000,
+        )
+
+        self.assertEqual(len(evidence.corporate_actions), 1)
+        self.assertEqual(evidence.corporate_actions[0].adjustment_factor, "10")
+        self.assertEqual(evidence.corporate_actions[0].effective_date, "2025-11-14")
+
+    def test_edgar_result_exposes_corporate_action_scan_contract(self):
+        from stockcrewai.tools.edgar_tool import EdgarResult
+
+        result = EdgarResult(
+            status="ok",
+            corporate_action_scan_status="checked",
+            corporate_actions=[
+                {
+                    "action_id": "action_nflx_split_2025_11",
+                    "action_type": "stock_split",
+                    "direction": "forward",
+                    "old_shares": "1",
+                    "new_shares": "10",
+                    "adjustment_factor": "10",
+                    "effective_date": "2025-11-14",
+                    "evidence_ids": ["ev_split"],
+                    "source_references": ["sec:test"],
+                    "validation_status": "valid",
+                }
+            ],
+        )
+
+        self.assertEqual(result.corporate_action_scan_status, "checked")
+        self.assertEqual(result.corporate_actions[0].adjustment_factor, "10")
+
+    def test_fake_facts_without_splits_preserves_no_action_behavior(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        fake_edgar = FakeEdgar()
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "Test User test@example.com"}):
+            result = EdgarTool(
+                edgar_module=fake_edgar,
+                as_of=date(2026, 8, 5),
+            ).run(ticker="AAPL")
+
+        self.assertEqual(result.corporate_action_scan_status, "unavailable")
+        self.assertEqual(result.corporate_actions, [])
+        self.assertFalse(
+            any(metric_id.startswith("corporate_action_") for metric_id in result.facts)
+        )
+
+    def test_scanned_action_evidence_is_registered_as_fact(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        fake_edgar = SplitEdgar()
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "Test User test@example.com"}):
+            result = EdgarTool(
+                edgar_module=fake_edgar,
+                as_of=date(2026, 8, 5),
+            ).run(ticker="NFLX")
+
+        action = result.corporate_actions[0]
+        fact = next(
+            fact
+            for fact in result.facts.values()
+            if fact.evidence_id == action.evidence_ids[0]
+        )
+        self.assertTrue(fact.metric_id.startswith("corporate_action_"))
+        self.assertEqual(fact.value, action.adjustment_factor)
+        self.assertEqual(fact.unit, "ratio")
+        self.assertEqual(fact.period_type, "instant")
+        self.assertEqual(fact.period, action.effective_date)
+        self.assertEqual(fact.period_end, action.effective_date)
+        self.assertEqual(fact.source_reference, action.source_references[0])
+        self.assertEqual(fact.validation_status, "valid")
+        self.assertEqual(fact.xbrl_tag, "StockSplitConversionRatio")
+
     def test_company_name_is_resolved_and_fixed_sec_scope_is_normalized(self):
         from stockcrewai.tools.edgar_tool import EdgarTool
 
@@ -721,6 +831,69 @@ class EdgarToolTests(unittest.TestCase):
 
 
 class CalculatorToolTests(unittest.TestCase):
+    def test_share_change_adjusts_prior_shares_for_verified_split(self):
+        from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
+
+        result = FinancialCalculatorTool().run(
+            company_name="Netflix Inc.",
+            ticker="NFLX",
+            facts={
+                "shares_current": {
+                    "value": "4163939676",
+                    "evidence_id": "ev_current_shares",
+                    "period_end": "2026-06-30",
+                },
+                "shares_prior": {
+                    "value": "424926346",
+                    "evidence_id": "ev_prior_shares",
+                    "period_end": "2025-06-30",
+                },
+            },
+            corporate_action_scan_status="checked",
+            corporate_actions=[
+                {
+                    "action_id": "action_nflx_split_2025_11",
+                    "action_type": "stock_split",
+                    "direction": "forward",
+                    "old_shares": "1",
+                    "new_shares": "10",
+                    "adjustment_factor": "10",
+                    "effective_date": "2025-11-14",
+                    "evidence_ids": ["ev_split"],
+                    "source_references": ["sec:test"],
+                    "validation_status": "valid",
+                }
+            ],
+            formulas=["share_dilution"],
+        )
+
+        calculation = result.calculations[0]
+        self.assertEqual(calculation.status, "available")
+        self.assertEqual(calculation.adjustment_basis, "split_adjusted")
+        self.assertEqual(calculation.raw_inputs["shares_prior_comparable"], "4249263460")
+        self.assertAlmostEqual(float(calculation.raw_result), -0.020079, places=5)
+
+    def test_share_change_is_unavailable_without_corporate_action_scan(self):
+        from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
+
+        result = FinancialCalculatorTool().run(
+            ticker="NFLX",
+            facts={
+                "shares_current": {"value": "4163939676", "evidence_id": "ev_current"},
+                "shares_prior": {"value": "424926346", "evidence_id": "ev_prior"},
+            },
+            formulas=["share_dilution"],
+        )
+
+        calculation = result.calculations[0]
+        self.assertEqual(calculation.status, "unavailable")
+        self.assertTrue(
+            any(
+                "share_count_comparability_unverified" in warning
+                for warning in calculation.warnings
+            )
+        )
+
     def test_calculator_uses_decimal_and_returns_traceable_results(self):
         from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
 

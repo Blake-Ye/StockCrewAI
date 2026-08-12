@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext, ROUND_HALF_EVEN
 from typing import Any, Literal, Type
 
@@ -32,6 +33,14 @@ class CalculatorToolInput(BaseModel):
         default_factory=lambda: list(DEFAULT_FORMULAS),
         description="要执行的确定性公式 ID",
     )
+    corporate_action_scan_status: Literal["checked", "unavailable"] = Field(
+        default="unavailable",
+        description="公司行动扫描状态",
+    )
+    corporate_actions: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="结构化公司行动记录",
+    )
 
 
 class CalculationResult(BaseModel):
@@ -47,6 +56,9 @@ class CalculationResult(BaseModel):
     status: Literal["available", "unavailable"]
     validation_status: Literal["unvalidated", "valid", "invalid"] = "unvalidated"
     warnings: list[str] = Field(default_factory=list)
+    adjustment_basis: Literal["raw", "split_adjusted"] = "raw"
+    adjustment_factor: str = "1"
+    corporate_action_ids: list[str] = Field(default_factory=list)
 
 
 class CalculationBatch(BaseModel):
@@ -88,6 +100,75 @@ def _fact_value(facts: dict[str, Any], key: str) -> tuple[Decimal, str | None]:
         evidence_id = raw.get("evidence_id")
         raw = raw.get("value", raw.get("numeric_value"))
     return _as_decimal(raw), str(evidence_id) if evidence_id else None
+
+
+def _period_end(facts: dict[str, Any], key: str) -> date:
+    if key not in facts or facts[key] is None:
+        raise ValueError(f"缺少 {key} 的 period_end")
+    raw = facts[key]
+    if isinstance(raw, BaseModel):
+        raw = raw.model_dump()
+    if not isinstance(raw, dict) or not raw.get("period_end"):
+        raise ValueError(f"缺少 {key} 的 period_end")
+    try:
+        return date.fromisoformat(str(raw["period_end"]))
+    except ValueError as exc:
+        raise ValueError(f"{key} 的 period_end 无效") from exc
+
+
+def _validated_split_actions(
+    corporate_actions: list[dict[str, Any]],
+) -> list[tuple[date, str, Decimal, list[str]]]:
+    validated: list[tuple[date, str, Decimal, list[str]]] = []
+    for index, action in enumerate(corporate_actions):
+        if not isinstance(action, dict):
+            raise ValueError(f"公司行动 {index} 必须是对象")
+        action_type = action.get("action_type")
+        if action_type is None:
+            raise ValueError(f"公司行动 {index} 缺少 action_type")
+        if action_type != "stock_split":
+            continue
+
+        action_id = action.get("action_id")
+        if not action_id:
+            raise ValueError(f"公司行动 {index} 缺少 action_id")
+        direction = action.get("direction")
+        if direction not in {"forward", "reverse"}:
+            raise ValueError(f"公司行动 {action_id} 的 direction 无效")
+        try:
+            old_shares = _as_decimal(action.get("old_shares"))
+            new_shares = _as_decimal(action.get("new_shares"))
+            adjustment_factor = _as_decimal(action.get("adjustment_factor"))
+        except ValueError as exc:
+            raise ValueError(f"公司行动 {action_id} 的拆股数值无效") from exc
+        if old_shares <= 0 or new_shares <= 0:
+            raise ValueError(f"公司行动 {action_id} 的拆股股数必须为正")
+        if adjustment_factor <= 0:
+            raise ValueError(f"公司行动 {action_id} 的 adjustment_factor 必须为正")
+        if adjustment_factor != new_shares / old_shares:
+            raise ValueError(f"公司行动 {action_id} 的 adjustment_factor 不匹配")
+        if direction == "forward" and new_shares <= old_shares:
+            raise ValueError(f"公司行动 {action_id} 的 forward 比例无效")
+        if direction == "reverse" and new_shares >= old_shares:
+            raise ValueError(f"公司行动 {action_id} 的 reverse 比例无效")
+        if action.get("validation_status") not in (None, "valid"):
+            raise ValueError(f"公司行动 {action_id} 未通过验证")
+        try:
+            effective_date = date.fromisoformat(str(action.get("effective_date")))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"公司行动 {action_id} 的 effective_date 无效") from exc
+
+        raw_evidence_ids = action.get("evidence_ids")
+        if raw_evidence_ids is None and action.get("evidence_id") is not None:
+            raw_evidence_ids = [action["evidence_id"]]
+        if raw_evidence_ids is None:
+            evidence_ids: list[str] = []
+        elif isinstance(raw_evidence_ids, list):
+            evidence_ids = [str(evidence_id) for evidence_id in raw_evidence_ids]
+        else:
+            raise ValueError(f"公司行动 {action_id} 的 evidence_ids 无效")
+        validated.append((effective_date, str(action_id), adjustment_factor, evidence_ids))
+    return validated
 
 
 def calculate_formula(formula_id: str, values: dict[str, Decimal]) -> tuple[Decimal, str]:
@@ -174,9 +255,12 @@ class FinancialCalculatorTool(BaseTool):
         ticker: str | None = None,
         facts: dict[str, Any] | None = None,
         formulas: list[str] | None = None,
+        corporate_action_scan_status: Literal["checked", "unavailable"] = "unavailable",
+        corporate_actions: list[dict[str, Any]] | None = None,
     ) -> CalculationBatch:
         facts = facts or {}
         selected_formulas = formulas or list(DEFAULT_FORMULAS)
+        corporate_actions = corporate_actions or []
         calculations: list[CalculationResult] = []
         batch_warnings: list[str] = []
         with localcontext() as context:
@@ -190,6 +274,9 @@ class FinancialCalculatorTool(BaseTool):
                         self._unavailable(formula_id, f"不支持的公式：{formula_id}")
                     )
                     continue
+                split_actions: list[tuple[date, str, Decimal, list[str]]] = []
+                if formula_id == "share_dilution":
+                    split_actions = _validated_split_actions(corporate_actions)
                 values: dict[str, Decimal] = {}
                 raw_inputs: dict[str, str] = {}
                 evidence_ids: list[str] = []
@@ -204,16 +291,65 @@ class FinancialCalculatorTool(BaseTool):
                     raw_inputs[key] = _plain(value)
                     if evidence_id:
                         evidence_ids.append(evidence_id)
+                fact_evidence_id_count = len(evidence_ids)
                 if missing:
+                    warning = (
+                        "share_count_comparability_unverified"
+                        if formula_id == "share_dilution"
+                        and corporate_action_scan_status != "checked"
+                        else "缺少输入：" + ", ".join(missing)
+                    )
                     calculations.append(
                         self._unavailable(
                             formula_id,
-                            "缺少输入：" + ", ".join(missing),
+                            warning,
                             raw_inputs,
                             evidence_ids,
                         )
                     )
+                    if warning == "share_count_comparability_unverified":
+                        batch_warnings.append(warning)
                     continue
+                if formula_id == "share_dilution" and corporate_action_scan_status != "checked":
+                    warning = "share_count_comparability_unverified"
+                    calculations.append(
+                        self._unavailable(
+                            formula_id,
+                            warning,
+                            raw_inputs,
+                            evidence_ids,
+                        )
+                    )
+                    batch_warnings.append(warning)
+                    continue
+                adjustment_basis: Literal["raw", "split_adjusted"] = "raw"
+                adjustment_factor = Decimal("1")
+                corporate_action_ids: list[str] = []
+                if formula_id == "share_dilution" and split_actions:
+                    prior_period_end = _period_end(facts, "shares_prior")
+                    current_period_end = _period_end(facts, "shares_current")
+                    if prior_period_end >= current_period_end:
+                        raise ValueError("shares_prior 的 period_end 必须早于 shares_current")
+                    applicable_actions = sorted(
+                        (
+                            action
+                            for action in split_actions
+                            if prior_period_end < action[0] <= current_period_end
+                        ),
+                        key=lambda action: (action[0], action[1]),
+                    )
+                    if applicable_actions:
+                        for _, action_id, factor, action_evidence_ids in applicable_actions:
+                            adjustment_factor *= factor
+                            corporate_action_ids.append(action_id)
+                            for action_evidence_id in action_evidence_ids:
+                                if action_evidence_id not in evidence_ids:
+                                    evidence_ids.append(action_evidence_id)
+                        if not adjustment_factor.is_finite() or adjustment_factor <= 0:
+                            raise ValueError("累计 adjustment_factor 无效")
+                        values["shares_prior"] *= adjustment_factor
+                        raw_inputs["shares_prior_comparable"] = _plain(values["shares_prior"])
+                        adjustment_basis = "split_adjusted"
                 try:
                     result, unit = calculate_formula(formula_id, values)
                 except (ArithmeticError, KeyError) as exc:
@@ -227,7 +363,7 @@ class FinancialCalculatorTool(BaseTool):
                     )
                     continue
                 warnings: list[str] = []
-                if len(evidence_ids) != len(required):
+                if fact_evidence_id_count != len(required):
                     warnings.append("至少一个输入缺少 Evidence ID")
                 if formula_id in {"current_ratio", "debt_to_equity"}:
                     display = f"{result:.2f}x"
@@ -246,6 +382,9 @@ class FinancialCalculatorTool(BaseTool):
                         display_result=display,
                         unit=unit,
                         status="available",
+                        adjustment_basis=adjustment_basis,
+                        adjustment_factor=_plain(adjustment_factor),
+                        corporate_action_ids=corporate_action_ids,
                         warnings=warnings,
                     )
                 )

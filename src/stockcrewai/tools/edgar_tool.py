@@ -131,6 +131,94 @@ class EdgarFact(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+CorporateActionScanStatus = Literal["checked", "unavailable"]
+
+
+class CorporateAction(BaseModel, Mapping[str, Any]):
+    action_id: str = ""
+    action_type: Literal["stock_split"] = "stock_split"
+    direction: Literal["forward", "reverse"] = "forward"
+    old_shares: str = "1"
+    new_shares: str = "1"
+    adjustment_factor: str = "1"
+    effective_date: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    source_references: list[str] = Field(default_factory=list)
+    validation_status: Literal["unvalidated", "valid", "invalid"] = "unvalidated"
+
+    def __getitem__(self, key: str) -> Any:
+        return self.model_dump()[key]
+
+    def __iter__(self):
+        return iter(self.model_dump())
+
+    def __len__(self) -> int:
+        return len(type(self).model_fields)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_fields(cls, values: Any) -> Any:
+        if isinstance(values, cls) or not isinstance(values, Mapping):
+            return values
+        data = dict(values)
+        if data.get("adjustment_factor") in (None, "") and data.get("ratio") is not None:
+            data["adjustment_factor"] = data["ratio"]
+        if not data.get("evidence_ids") and data.get("evidence_id"):
+            data["evidence_ids"] = [data["evidence_id"]]
+        if not data.get("source_references") and data.get("source_reference"):
+            data["source_references"] = [data["source_reference"]]
+        for key in ("evidence_ids", "source_references"):
+            if isinstance(data.get(key), str):
+                data[key] = [data[key]]
+
+        for key in (
+            "action_id",
+            "action_type",
+            "direction",
+            "old_shares",
+            "new_shares",
+            "adjustment_factor",
+        ):
+            if data.get(key) is not None:
+                data[key] = str(data[key])
+        effective_date = data.get("effective_date")
+        if isinstance(effective_date, datetime):
+            data["effective_date"] = effective_date.date().isoformat()
+        elif isinstance(effective_date, date):
+            data["effective_date"] = effective_date.isoformat()
+
+        try:
+            factor = Decimal(str(data.get("adjustment_factor")))
+            if factor > 0:
+                data["adjustment_factor"] = _canonical_decimal_string(factor)
+                data.setdefault("direction", "forward" if factor >= 1 else "reverse")
+                if not data.get("old_shares") or not data.get("new_shares"):
+                    if factor >= 1:
+                        data.setdefault("old_shares", "1")
+                        data.setdefault("new_shares", _canonical_decimal_string(factor))
+                    else:
+                        data.setdefault("old_shares", _canonical_decimal_string(1 / factor))
+                        data.setdefault("new_shares", "1")
+        except (InvalidOperation, ValueError, TypeError, ZeroDivisionError):
+            pass
+        return data
+
+    @property
+    def ratio(self) -> str:
+        """兼容旧的单值拆股比例字段。"""
+        return self.adjustment_factor
+
+    @property
+    def evidence_id(self) -> str | None:
+        """兼容旧的单个 Evidence ID 字段。"""
+        return self.evidence_ids[0] if self.evidence_ids else None
+
+    @property
+    def source_reference(self) -> str | None:
+        """兼容旧的单个来源引用字段。"""
+        return self.source_references[0] if self.source_references else None
+
+
 class EdgarRiskSection(BaseModel):
     section_type: Literal["10k_item_1a", "10q_item_1a", "20f_item_3d", "8k_event"]
     text: str
@@ -168,6 +256,7 @@ class EdgarFilingEvidence(BaseModel):
     text: str | None = None
     text_source_reference: str | None = None
     risk_sections: list[EdgarRiskSection] = Field(default_factory=list)
+    corporate_actions: list[CorporateAction] = Field(default_factory=list)
     risk_eligibility: EdgarRiskEligibility = Field(
         default_factory=lambda: EdgarRiskEligibility(
             evidence_id="",
@@ -199,6 +288,8 @@ class EdgarResult(BaseModel):
     facts: dict[str, EdgarFact] = Field(default_factory=dict)
     ttm_inputs: dict[str, dict[str, EdgarFact]] = Field(default_factory=dict)
     filings: list[EdgarFilingEvidence] = Field(default_factory=list)
+    corporate_action_scan_status: CorporateActionScanStatus = "unavailable"
+    corporate_actions: list[CorporateAction] = Field(default_factory=list)
     historical_financial_snapshots: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     errors: list[EdgarError] = Field(default_factory=list)
@@ -383,6 +474,163 @@ def _is_complete_fiscal_year_ttm(metadata: dict[str, Any]) -> bool:
     return timedelta(days=300) <= duration <= timedelta(days=400)
 
 
+def _canonical_decimal_string(value: Any) -> str:
+    parsed = Decimal(_decimal_string(value))
+    return format(parsed.normalize(), "f")
+
+
+_SPLIT_NUMBER_WORDS = {
+    "one": Decimal("1"),
+    "two": Decimal("2"),
+    "three": Decimal("3"),
+    "four": Decimal("4"),
+    "five": Decimal("5"),
+    "six": Decimal("6"),
+    "seven": Decimal("7"),
+    "eight": Decimal("8"),
+    "nine": Decimal("9"),
+    "ten": Decimal("10"),
+    "eleven": Decimal("11"),
+    "twelve": Decimal("12"),
+    "thirteen": Decimal("13"),
+    "fourteen": Decimal("14"),
+    "fifteen": Decimal("15"),
+    "sixteen": Decimal("16"),
+    "seventeen": Decimal("17"),
+    "eighteen": Decimal("18"),
+    "nineteen": Decimal("19"),
+    "twenty": Decimal("20"),
+}
+_SPLIT_NUMBER_TOKEN = r"(?:\d+(?:[.,]\d+)?|[A-Za-z]+(?:-[A-Za-z]+)?)"
+_SPLIT_RATIO_PATTERNS = (
+    re.compile(
+        rf"(?P<left>{_SPLIT_NUMBER_TOKEN})\s*-\s*for\s*-\s*"
+        rf"(?P<right>{_SPLIT_NUMBER_TOKEN})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?P<left>{_SPLIT_NUMBER_TOKEN})\s*[:/]\s*"
+        rf"(?P<right>{_SPLIT_NUMBER_TOKEN})",
+        re.IGNORECASE,
+    ),
+)
+_SPLIT_MONTHS = {
+    month.casefold(): index
+    for index, month in enumerate(
+        (
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ),
+        start=1,
+    )
+}
+_SPLIT_MONTH_NAMES = "|".join(_SPLIT_MONTHS)
+_SPLIT_DATE_PATTERN = re.compile(
+    rf"\b(?:"
+    rf"(?P<iso>20\d{{2}}-\d{{1,2}}-\d{{1,2}})"
+    rf"|(?P<month>{_SPLIT_MONTH_NAMES})\s+"
+    rf"(?P<day>\d{{1,2}})(?:st|nd|rd|th)?(?:,|\s)+(?P<year>20\d{{2}})"
+    rf")\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_split_number(value: str) -> Decimal | None:
+    normalized = value.strip().casefold().replace(",", "")
+    if normalized in _SPLIT_NUMBER_WORDS:
+        return _SPLIT_NUMBER_WORDS[normalized]
+    try:
+        parsed = Decimal(normalized)
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() and parsed > 0 else None
+
+
+def _split_date_from_text(text: str) -> date | None:
+    match = _SPLIT_DATE_PATTERN.search(text)
+    if match is None:
+        return None
+    if match.group("iso"):
+        return _as_date(match.group("iso"))
+    try:
+        return date(
+            int(match.group("year")),
+            _SPLIT_MONTHS[match.group("month").casefold()],
+            int(match.group("day")),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _text_stock_split_actions(
+    raw_text: str | None,
+    evidence_id: str,
+    source_reference: str,
+) -> list[CorporateAction]:
+    if not raw_text or not raw_text.strip():
+        return []
+
+    actions: list[CorporateAction] = []
+    seen: set[tuple[str, str]] = set()
+    for pattern in _SPLIT_RATIO_PATTERNS:
+        for match in pattern.finditer(raw_text):
+            window = raw_text[max(0, match.start() - 180) : match.end() + 180]
+            if not re.search(
+                r"\b(?:forward|reverse)?\s*stock\s+split\b|\b(?:forward|reverse)\s+split\b",
+                window,
+                re.IGNORECASE,
+            ):
+                continue
+            left = _parse_split_number(match.group("left"))
+            right = _parse_split_number(match.group("right"))
+            effective_date = _split_date_from_text(window)
+            if left is None or right is None or effective_date is None:
+                continue
+            factor = left / right
+            if factor <= 0:
+                continue
+            if re.search(r"\breverse\b", window, re.IGNORECASE) and factor > 1:
+                factor = 1 / factor
+            direction: Literal["forward", "reverse"] = "forward" if factor >= 1 else "reverse"
+            factor_text = _canonical_decimal_string(factor)
+            key = (effective_date.isoformat(), factor_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            if factor >= 1:
+                old_shares, new_shares = "1", factor_text
+            else:
+                old_shares, new_shares = _canonical_decimal_string(1 / factor), "1"
+            actions.append(
+                CorporateAction(
+                    action_id=(
+                        f"action_{_safe_id(evidence_id)}_split_"
+                        f"{_safe_id(effective_date)}_{_safe_id(factor_text)}"
+                    ),
+                    action_type="stock_split",
+                    direction=direction,
+                    old_shares=old_shares,
+                    new_shares=new_shares,
+                    adjustment_factor=factor_text,
+                    effective_date=effective_date.isoformat(),
+                    evidence_ids=[evidence_id] if evidence_id else [],
+                    source_references=[source_reference] if source_reference else [],
+                    validation_status="valid",
+                )
+            )
+    return sorted(actions, key=lambda action: (action.effective_date or "", action.action_id))
+
+
 class EdgarTool(BaseTool):
     name: str = "edgar_company_research"
     description: str = (
@@ -393,6 +641,8 @@ class EdgarTool(BaseTool):
 
     _edgar_module: Any = PrivateAttr(default=None)
     _as_of: date = PrivateAttr(default_factory=date.today)
+    _corporate_action_scan_status: CorporateActionScanStatus = PrivateAttr(default="unavailable")
+    _corporate_actions: list[CorporateAction] = PrivateAttr(default_factory=list)
 
     def __init__(
         self,
@@ -664,6 +914,131 @@ class EdgarTool(BaseTool):
         selected = head(count) if callable(head) else collection
         return list(selected)[:count]
 
+    def _scan_corporate_actions(
+        self,
+        container: Any,
+        company_cik: str,
+        ticker: str | None,
+    ) -> tuple[CorporateActionScanStatus, list[CorporateAction]]:
+        """Scan the already-loaded Company Facts without fetching another resource."""
+        try:
+            facts = _read_attr(container, "_facts")
+            if facts is None:
+                get_all_facts = getattr(container, "get_all_facts", None)
+                if not callable(get_all_facts):
+                    return "unavailable", []
+                facts = get_all_facts()
+            if not isinstance(facts, list):
+                facts = list(facts or [])
+
+            splits_module = importlib.import_module("edgar.ttm.splits")
+            detect_splits = getattr(splits_module, "detect_splits", None)
+            if not callable(detect_splits):
+                return "unavailable", []
+            detected_splits = detect_splits(facts)
+        except Exception:
+            return "unavailable", []
+
+        source = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json"
+        issuer_id = _safe_id(ticker or company_cik)
+        actions: list[CorporateAction] = []
+        seen: set[tuple[str, str]] = set()
+
+        def fact_value(fact: Any, *names: str) -> Any:
+            if isinstance(fact, Mapping):
+                for name in names:
+                    if fact.get(name) is not None:
+                        return fact[name]
+                return None
+            for name in names:
+                value = _read_attr(fact, name)
+                if value is not None:
+                    return value
+            return None
+
+        def matches_split_fact(fact: Any, effective_date: date, factor_text: str) -> bool:
+            concept = (
+                str(fact_value(fact, "concept", "concept_name", "tag_used") or "")
+                .casefold()
+                .replace(":", "")
+            )
+            if "stocksplitconversionratio" not in concept:
+                return False
+            if _as_date(fact_value(fact, "period_end", "effective_date")) != effective_date:
+                return False
+            try:
+                return (
+                    _canonical_decimal_string(fact_value(fact, "numeric_value", "value"))
+                    == factor_text
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                return False
+
+        for split in detected_splits or []:
+            if isinstance(split, Mapping):
+                effective_date = _as_date(split.get("date", split.get("effective_date")))
+                raw_ratio = split.get("ratio", split.get("adjustment_factor"))
+            else:
+                effective_date = _as_date(_read_attr(split, "date", "effective_date"))
+                raw_ratio = _read_attr(split, "ratio", "adjustment_factor")
+            if effective_date is None or raw_ratio is None:
+                return "unavailable", []
+            if effective_date > self._as_of:
+                continue
+            try:
+                factor = Decimal(str(raw_ratio))
+            except (InvalidOperation, TypeError, ValueError):
+                return "unavailable", []
+            if not factor.is_finite() or factor <= 0:
+                return "unavailable", []
+            if factor == 1:
+                continue
+
+            factor_text = _canonical_decimal_string(factor)
+            key = (effective_date.isoformat(), factor_text)
+            if key in seen:
+                continue
+            seen.add(key)
+            direction: Literal["forward", "reverse"] = "forward" if factor > 1 else "reverse"
+            if factor > 1:
+                old_shares, new_shares = "1", factor_text
+            else:
+                old_shares, new_shares = _canonical_decimal_string(1 / factor), "1"
+
+            matching_fact = next(
+                (fact for fact in facts if matches_split_fact(fact, effective_date, factor_text)),
+                None,
+            )
+            matching_filed_at = _as_date(fact_value(matching_fact, "filing_date", "filed_at"))
+            if matching_filed_at is not None and matching_filed_at > self._as_of:
+                continue
+            fact_source = (
+                fact_value(matching_fact, "source_reference", "source")
+                if matching_fact is not None
+                else None
+            )
+            source_reference = str(fact_source or source)
+            evidence_id = f"ev_{issuer_id}_split_{_safe_id(effective_date)}_{_safe_id(factor_text)}"
+            actions.append(
+                CorporateAction(
+                    action_id=(
+                        f"action_{issuer_id}_split_{_safe_id(effective_date)}_"
+                        f"{_safe_id(factor_text)}"
+                    ),
+                    action_type="stock_split",
+                    direction=direction,
+                    old_shares=old_shares,
+                    new_shares=new_shares,
+                    adjustment_factor=factor_text,
+                    effective_date=effective_date.isoformat(),
+                    evidence_ids=[evidence_id],
+                    source_references=[source_reference],
+                    validation_status="valid",
+                )
+            )
+        actions.sort(key=lambda action: (action.effective_date or "", action.action_id))
+        return "checked", actions
+
     def _filing_evidence(
         self,
         filing: Any,
@@ -737,6 +1112,11 @@ class EdgarTool(BaseTool):
             filed_at,
             source,
         )
+        corporate_actions = _text_stock_split_actions(
+            raw_text,
+            evidence_id,
+            text_source_reference or source,
+        )
         return EdgarFilingEvidence(
             evidence_id=evidence_id,
             cik=company_cik,
@@ -749,6 +1129,7 @@ class EdgarTool(BaseTool):
             text=text,
             text_source_reference=text_source_reference,
             risk_sections=risk_sections,
+            corporate_actions=corporate_actions,
             risk_eligibility=risk_eligibility,
             text_retrieval_status=text_retrieval_status,
             text_truncated=text_truncated,
@@ -1202,9 +1583,15 @@ class EdgarTool(BaseTool):
     ]:
         warnings: list[str] = []
         facts: dict[str, EdgarFact] = {}
+        self._corporate_action_scan_status = "unavailable"
+        self._corporate_actions = []
         container = company.get_facts()
         if container is None:
             return facts, ["SEC Company Facts 不可用"], [], {}
+        (
+            self._corporate_action_scan_status,
+            self._corporate_actions,
+        ) = self._scan_corporate_actions(container, company_cik, ticker)
         source = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json"
         sec_metadata = _company_sec_metadata(company)
         sec_registrant_profile = _safe_metadata_string(
@@ -1542,6 +1929,44 @@ class EdgarTool(BaseTool):
                                 )
                                 continue
                             add_fact(output_metric_id, metadata)
+        for action in self._corporate_actions:
+            if action.validation_status != "valid":
+                continue
+            evidence_ids = [evidence_id for evidence_id in action.evidence_ids if evidence_id]
+            source_references = [
+                source_reference
+                for source_reference in action.source_references
+                if source_reference
+            ]
+            if not evidence_ids or not source_references or not action.effective_date:
+                continue
+
+            action_token = _safe_id(action.action_id or evidence_ids[0])
+            if not action_token:
+                continue
+            base_metric_id = f"corporate_action_{action_token}"
+            for index, evidence_id in enumerate(evidence_ids):
+                metric_id = base_metric_id
+                if index:
+                    metric_id = f"{base_metric_id}_{_safe_id(evidence_id)}"
+                if metric_id in facts:
+                    metric_id = f"{metric_id}_{_safe_id(evidence_id)}"
+                    suffix = 2
+                    while metric_id in facts:
+                        metric_id = f"{metric_id}_{suffix}"
+                        suffix += 1
+                facts[metric_id] = EdgarFact(
+                    metric_id=metric_id,
+                    evidence_id=str(evidence_id),
+                    value=str(action.adjustment_factor),
+                    unit="ratio",
+                    period_type="instant",
+                    period=str(action.effective_date),
+                    period_end=str(action.effective_date),
+                    xbrl_tag="StockSplitConversionRatio",
+                    source_reference=str(source_references[0]),
+                    validation_status="valid",
+                )
         return (
             facts,
             warnings,
@@ -1584,6 +2009,8 @@ class EdgarTool(BaseTool):
             ttm_inputs: dict[str, dict[str, EdgarFact]] = {}
             warnings: list[str] = []
             errors: list[EdgarError] = []
+            self._corporate_action_scan_status = "unavailable"
+            self._corporate_actions = []
             try:
                 (
                     facts,
@@ -1638,6 +2065,8 @@ class EdgarTool(BaseTool):
                 facts=facts,
                 ttm_inputs=ttm_inputs,
                 filings=filings,
+                corporate_action_scan_status=self._corporate_action_scan_status,
+                corporate_actions=list(self._corporate_actions),
                 historical_financial_snapshots=historical_financial_snapshots,
                 warnings=warnings,
                 errors=errors,

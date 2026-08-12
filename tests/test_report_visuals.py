@@ -1,11 +1,9 @@
 import base64
-from copy import deepcopy
 from datetime import date, timedelta
 import importlib
 from io import BytesIO
 import os
 from pathlib import Path
-import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -31,6 +29,7 @@ def _financial_metrics():
             "validation_status": "valid",
             "calculation_id": f"calc_{metric_id}",
             "evidence_ids": [f"ev_{metric_id}"],
+            **({"adjustment_basis": "raw"} if metric_id == "share_dilution" else {}),
         }
         for metric_id, value in values.items()
     ]
@@ -72,82 +71,29 @@ def _historical_payload():
         "validation_status": "valid",
         "series": series,
         "current_date": series[-1]["date"],
+        "current_value": series[-1]["pe_ratio"],
+        "percentile_25": "15.30",
+        "five_year_median": "15.60",
+        "percentile_75": "16.00",
     }
 
 
 _LEGACY_VISUAL_KEYS = {"financial_kpis", "ttm_scale", "historical_pe"}
-_QUANT_VISUAL_KEYS = {
-    "quant_factor_percentile",
-    "quant_cagr_comparison",
-    "quant_drawdown_comparison",
-}
 _PNG_PREFIX = "data:image/png;base64,"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-def _quant_packet(
-    *,
-    percentile="0.8889",
-    strategy_cagr="0.1234",
-    spy_cagr="0.0800",
-    universe_cagr="0.1000",
-    strategy_drawdown="-0.2100",
-    spy_drawdown="-0.1800",
-    universe_drawdown="-0.2000",
-    target_ticker="AAPL",
-    peer_group="standard_operating:technology",
-):
-    return {
-        "ranking_summary": {
-            "target_ticker": target_ticker,
-            "peer_group": peer_group,
-            "industry_percentile": percentile,
-        },
-        "backtest_summary": {
-            "strategy_cagr": strategy_cagr,
-            "strategy_cagr_status": "available",
-            "strategy_max_drawdown": strategy_drawdown,
-            "strategy_max_drawdown_status": "available",
-        },
-        "benchmark_summary": {
-            "spy_cagr": spy_cagr,
-            "universe_cagr": universe_cagr,
-            "spy_max_drawdown": spy_drawdown,
-            "universe_max_drawdown": universe_drawdown,
-        },
-    }
-
-
-def _available_quant_context(**packet_kwargs):
-    return {
-        "metrics": _financial_metrics(),
-        "ttm": _ttm_metrics(),
-        "historical_valuation": _historical_payload(),
-        "quant": {
-            "status": "available",
-            "reason_code": "quant_packet_validated",
-            "packet": _quant_packet(**packet_kwargs),
-        },
-    }
-
-
 class ReportVisualsTests(unittest.TestCase):
     def _builder(self):
-        try:
-            legacy = importlib.import_module("stockcrewai.report_visuals")
-            module = importlib.import_module("stockcrewai.reporting.visuals")
-        except ImportError:
-            module = None
-        self.assertIsNotNone(module, "report_visuals 模块必须存在")
+        module = importlib.import_module("stockcrewai.reporting.visuals")
         builder = getattr(module, "build_report_visuals", None)
-        self.assertIsNotNone(builder, "必须提供 build_report_visuals")
-        self.assertIs(legacy.build_report_visuals, builder)
+        self.assertIsNotNone(builder, "必须提供 reporting.visuals.build_report_visuals")
         return builder
 
-    def test_financial_kpi_percentage_labels_render_outside_bars(self):
+    def test_financial_kpis_use_independent_panels_and_keep_labels_inside(self):
         module = importlib.import_module("stockcrewai.reporting.visuals")
         values = {
-            "revenue_growth": 16.15,
+            "revenue_growth": 975.00,
             "operating_margin": 33.60,
             "net_margin": 27.85,
             "free_cash_flow_margin": 30.24,
@@ -158,6 +104,14 @@ class ReportVisualsTests(unittest.TestCase):
             metric_id: {
                 "display_value": f"{value:.2f}%",
                 "unit": "percentage",
+                "status": "available",
+                "validation_status": "valid",
+                "calculation_id": f"calc_{metric_id}",
+                **(
+                    {"adjustment_basis": "split_adjusted"}
+                    if metric_id == "share_dilution"
+                    else {}
+                ),
             }
             for metric_id, value in values.items()
         }
@@ -168,22 +122,8 @@ class ReportVisualsTests(unittest.TestCase):
             try:
                 draw(axes)
                 figure.canvas.draw()
-                renderer = figure.canvas.get_renderer()
-                percentage_texts = [
-                    text for text in axes.texts if text.get_text().endswith("%")
-                ]
-                rendered["labels"] = [
-                    text.get_text() for text in percentage_texts
-                ]
-                rendered["texts"] = percentage_texts
-                rendered["extents"] = [
-                    text.get_window_extent(renderer) for text in percentage_texts
-                ]
-                rendered["bars"] = [
-                    bar.get_window_extent(renderer) for bar in axes.patches
-                ]
-                rendered["axes_bbox"] = axes.bbox
-                rendered["zero_x"] = axes.transData.transform((0, 0))[0]
+                rendered["axes"] = list(figure.axes)
+                rendered["renderer"] = figure.canvas.get_renderer()
                 return "captured"
             finally:
                 module.plt.close(figure)
@@ -191,152 +131,158 @@ class ReportVisualsTests(unittest.TestCase):
         with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
             self.assertEqual(module._financial_kpi_png(records), "captured")
 
-        self.assertEqual(len(rendered["labels"]), 6)
+        axes = rendered["axes"]
+        self.assertEqual(len(axes), 3)
         self.assertEqual(
-            rendered["labels"],
-            ["16.15%", "33.60%", "27.85%", "30.24%", "115.31%", "-1.67%"],
+            [axis.get_title() for axis in axes],
+            ["增长与资本配置", "盈利能力", "现金流质量"],
         )
-        axes_bbox = rendered["axes_bbox"]
-        for label, extent in zip(rendered["labels"], rendered["extents"]):
-            with self.subTest(label=label):
-                self.assertGreaterEqual(extent.x0, axes_bbox.x0)
-                self.assertLessEqual(extent.x1, axes_bbox.x1)
-
-        by_label = {
-            label: (text, extent, bar)
-            for label, text, extent, bar in zip(
-                rendered["labels"],
-                rendered["texts"],
-                rendered["extents"],
-                rendered["bars"],
+        self.assertNotEqual(axes[0].get_xlim(), axes[1].get_xlim())
+        self.assertNotEqual(axes[1].get_xlim(), axes[2].get_xlim())
+        self.assertGreater(axes[0].get_xlim()[1], 975.0)
+        self.assertGreater(axes[2].get_xlim()[1], 115.31)
+        self.assertTrue(
+            any(
+                line.get_xdata()[0] == 100
+                for line in axes[2].lines
+                if len(line.get_xdata())
             )
-        }
-
-        maximum_text, maximum_extent, maximum_bar = by_label["115.31%"]
-        self.assertGreater(maximum_extent.x0, maximum_bar.x1)
-        self.assertGreaterEqual(
-            axes_bbox.x1 - maximum_extent.x1,
-            axes_bbox.width * 0.05,
         )
-        self.assertEqual(maximum_text.get_color(), "black")
 
-        negative_text, negative_extent, _ = by_label["-1.67%"]
-        self.assertGreater(negative_extent.x0, rendered["zero_x"])
-        self.assertNotEqual(negative_text.get_color(), "white")
+        renderer = rendered["renderer"]
+        for axis in axes:
+            axes_bbox = axis.bbox
+            for text, bar in zip(axis.texts, axis.patches):
+                text_extent = text.get_window_extent(renderer)
+                bar_extent = bar.get_window_extent(renderer)
+                with self.subTest(label=text.get_text()):
+                    self.assertGreaterEqual(text_extent.x0, axes_bbox.x0)
+                    self.assertLessEqual(text_extent.x1, axes_bbox.x1)
+                    if bar.get_width() >= 0:
+                        self.assertGreater(text_extent.x0, bar_extent.x1)
+                    else:
+                        self.assertLess(text_extent.x1, bar_extent.x0)
 
-        for label in ("16.15%", "33.60%", "27.85%", "30.24%"):
-            _, extent, bar = by_label[label]
-            self.assertGreater(extent.x0, bar.x1)
+        growth_labels = [text.get_text() for text in axes[0].get_yticklabels()]
+        self.assertIn("股份变化（拆分调整）", growth_labels)
 
-    def test_financial_kpi_axis_padding_follows_real_data_range(self):
+    def test_financial_kpis_omit_uncomparable_share_change_but_keep_revenue_panel(self):
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        values = {
+            "revenue_growth": 20.0,
+            "operating_margin": 25.0,
+            "net_margin": 20.0,
+            "free_cash_flow_margin": 15.0,
+            "cash_conversion": 150.0,
+            "share_dilution": -2.0,
+        }
+        records = {
+            metric_id: {
+                "display_value": f"{value:.2f}%",
+                "unit": "percentage",
+                "status": "available",
+                "validation_status": "valid",
+                "calculation_id": f"calc_{metric_id}",
+                **(
+                    {"adjustment_basis": "total_return_adjusted"}
+                    if metric_id == "share_dilution"
+                    else {}
+                ),
+            }
+            for metric_id, value in values.items()
+        }
+        rendered = {}
+
+        def inspect_png_uri(draw, *, size, **kwargs):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                rendered["axes"] = list(figure.axes)
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
+            self.assertEqual(module._financial_kpi_png(records), "captured")
+
+        self.assertEqual(len(rendered["axes"][0].patches), 1)
+        self.assertEqual(
+            [text.get_text() for text in rendered["axes"][0].texts],
+            ["20.00%"],
+        )
+
+    def test_historical_pe_uses_validated_upstream_summary_values(self):
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        payload = _historical_payload()
+        payload.update(
+            {
+                "current_value": payload["series"][-1]["pe_ratio"],
+                "percentile_25": "101.01",
+                "five_year_median": "202.02",
+                "percentile_75": "303.03",
+            }
+        )
+        rendered = {}
+
+        def inspect_png_uri(draw, *, size, **kwargs):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                rendered["axes"] = list(figure.axes)
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
+            self.assertEqual(module._historical_pe_png(payload), "captured")
+
+        reference_lines = [
+            line
+            for line in rendered["axes"][0].lines
+            if line.get_linestyle() == "--"
+        ]
+        self.assertEqual(
+            [line.get_ydata()[0] for line in reference_lines],
+            [101.01, 202.02, 303.03],
+        )
+
+    def test_historical_pe_accepts_matching_high_precision_current_value(self):
+        """防止 Decimal 转 float 后的精度损失误删真实历史估值图。"""
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        payload = _historical_payload()
+        precise_value = "34.83715582331386467889908257"
+        payload["series"][-1]["pe_ratio"] = precise_value
+        payload["current_value"] = precise_value
+
+        with patch.object(module, "_png_uri", return_value="captured"):
+            self.assertEqual(module._historical_pe_png(payload), "captured")
+
+    def test_historical_pe_data_uri_stays_below_markdown_preview_limit(self):
+        """第三张图必须低于常见的 64 KiB Data URI 预览限制。"""
         module = importlib.import_module("stockcrewai.reporting.visuals")
 
-        def render(values):
-            records = {
-                metric_id: {
-                    "display_value": f"{value:.2f}%",
-                    "unit": "percentage",
-                }
-                for metric_id, value in values.items()
-            }
-            uri = module._financial_kpi_png(records)
-            self.assertIsNotNone(uri)
-            image = Image.open(
-                BytesIO(base64.b64decode(uri.split(",", 1)[1]))
-            ).convert("RGB")
+        uri = module._historical_pe_png(_historical_payload())
 
-            black = (0, 0, 0)
-            gray = (85, 85, 85)
-            blue = (53, 104, 168)
-            axis_columns = [
-                x
-                for x in range(image.width)
-                if sum(
-                    image.getpixel((x, y)) == black
-                    for y in range(image.height)
+        self.assertIsNotNone(uri)
+        self.assertLess(len(uri), 64 * 1024)
+
+    def test_historical_pe_rejects_latest_date_or_value_mismatch(self):
+        builder = self._builder()
+        for field, value in (
+            ("current_date", "2099-01-01"),
+            ("current_value", "999.99"),
+        ):
+            with self.subTest(field=field):
+                payload = _historical_payload()
+                payload[field] = value
+                visuals = builder(
+                    financial_metrics=_financial_metrics(),
+                    ttm_metrics=_ttm_metrics(),
+                    historical_payload=payload,
                 )
-                > image.height // 2
-            ]
-            self.assertGreaterEqual(len(axis_columns), 2)
-            axes_left, axes_right = min(axis_columns), max(axis_columns)
-            zero_columns = [
-                x
-                for x in range(image.width)
-                if sum(
-                    image.getpixel((x, y)) == gray
-                    for y in range(image.height)
-                )
-                > image.height // 2
-            ]
-            self.assertEqual(len(zero_columns), 1)
-
-            blue_rows = [
-                y
-                for y in range(image.height)
-                if any(
-                    image.getpixel((x, y)) == blue
-                    for x in range(image.width)
-                )
-            ]
-            row_groups = []
-            group_start = previous_row = blue_rows[0]
-            for row in blue_rows[1:]:
-                if row != previous_row + 1:
-                    row_groups.append((group_start, previous_row))
-                    group_start = row
-                previous_row = row
-            row_groups.append((group_start, previous_row))
-            self.assertEqual(len(row_groups), len(module._FINANCIAL_KPI_IDS))
-
-            negative_left = min(
-                x
-                for y in range(row_groups[-1][0], row_groups[-1][1] + 1)
-                for x in range(image.width)
-                if image.getpixel((x, y)) == blue
-            )
-            axis_width = axes_right - axes_left
-            return {
-                "zero_fraction": (zero_columns[0] - axes_left) / axis_width,
-                "negative_left_fraction": (negative_left - axes_left)
-                / axis_width,
-            }
-
-        negative_values = {
-            "revenue_growth": 10.0,
-            "operating_margin": 20.0,
-            "net_margin": 30.0,
-            "free_cash_flow_margin": 40.0,
-            "cash_conversion": 50.0,
-            "share_dilution": -5.0,
-        }
-        negative_chart = render(negative_values)
-        expected_negative_xlim = (-16.0, 61.0)
-        expected_negative_zero_fraction = (
-            -expected_negative_xlim[0]
-            / (expected_negative_xlim[1] - expected_negative_xlim[0])
-        )
-        self.assertAlmostEqual(
-            negative_chart["zero_fraction"],
-            expected_negative_zero_fraction,
-            delta=0.01,
-        )
-        self.assertGreaterEqual(negative_chart["negative_left_fraction"], 0.14)
-
-        positive_values = {**negative_values, "share_dilution": 5.0}
-        positive_chart = render(positive_values)
-        expected_positive_xlim = (-5.0, 60.0)
-        expected_positive_zero_fraction = (
-            -expected_positive_xlim[0]
-            / (expected_positive_xlim[1] - expected_positive_xlim[0])
-        )
-        self.assertAlmostEqual(
-            positive_chart["zero_fraction"],
-            expected_positive_zero_fraction,
-            delta=0.01,
-        )
-        self.assertLess(
-            positive_chart["zero_fraction"], negative_chart["zero_fraction"]
-        )
+                self.assertNotIn("historical_pe", visuals)
 
     def test_builds_three_deterministic_png_data_uris_from_verified_inputs(self):
         builder = self._builder()
@@ -379,235 +325,6 @@ class ReportVisualsTests(unittest.TestCase):
                     ratio = image.width / image.height
                     self.assertGreaterEqual(ratio, 1.2)
                     self.assertLessEqual(ratio, 3.5)
-
-    def test_available_quant_adds_three_pngs_without_changing_legacy_uris(self):
-        builder = self._builder()
-        baseline = builder(
-            financial_metrics=_financial_metrics(),
-            ttm_metrics=_ttm_metrics(),
-            historical_payload=_historical_payload(),
-        )
-        visuals = builder(context=_available_quant_context())
-
-        self.assertEqual(set(baseline), _LEGACY_VISUAL_KEYS)
-        self.assertEqual(set(visuals), _LEGACY_VISUAL_KEYS | _QUANT_VISUAL_KEYS)
-        for key in _LEGACY_VISUAL_KEYS:
-            self.assertEqual(visuals[key], baseline[key])
-        self._assert_png_uris(visuals)
-
-    def test_unavailable_quant_inputs_preserve_legacy_visuals_without_zero_fill(self):
-        builder = self._builder()
-        baseline = builder(
-            financial_metrics=_financial_metrics(),
-            ttm_metrics=_ttm_metrics(),
-            historical_payload=_historical_payload(),
-        )
-        available_context = _available_quant_context()
-        contexts = {
-            "no_quant": {
-                key: value
-                for key, value in available_context.items()
-                if key != "quant"
-            },
-            "unavailable_status": {
-                **deepcopy(available_context),
-                "quant": {
-                    "status": "unavailable",
-                    "reason_code": "quant_packet_unavailable",
-                    "packet": deepcopy(available_context["quant"]["packet"]),
-                },
-            },
-            "packet_none": {
-                **deepcopy(available_context),
-                "quant": {"status": "available", "packet": None},
-            },
-            "packet_non_mapping": {
-                **deepcopy(available_context),
-                "quant": {"status": "available", "packet": ["invalid"]},
-            },
-        }
-
-        for name, context in contexts.items():
-            with self.subTest(name=name):
-                self.assertEqual(builder(context=context), baseline)
-
-        missing_metric_cases = (
-            ("quant_factor_percentile", ("ranking_summary", "industry_percentile")),
-            ("quant_cagr_comparison", ("backtest_summary", "strategy_cagr")),
-            (
-                "quant_drawdown_comparison",
-                ("backtest_summary", "strategy_max_drawdown"),
-            ),
-        )
-        for chart_key, (section, field) in missing_metric_cases:
-            context = _available_quant_context()
-            context["quant"]["packet"][section][field] = None
-            visuals = builder(context=context)
-            with self.subTest(chart_key=chart_key):
-                self.assertNotIn(chart_key, visuals)
-                self.assertEqual(
-                    set(visuals),
-                    _LEGACY_VISUAL_KEYS | (_QUANT_VISUAL_KEYS - {chart_key}),
-                )
-
-    def test_quant_png_output_dir_is_scoped_and_embedded_uris_survive_cleanup(self):
-        builder = self._builder()
-        project_pngs_before = {
-            path.resolve() for path in Path.cwd().rglob("*.png")
-        }
-        with tempfile.TemporaryDirectory() as temp_dir:
-            tmp_path = Path(temp_dir)
-            output_dir = tmp_path / "charts"
-            visuals = builder(
-                context=_available_quant_context(),
-                output_dir=output_dir,
-            )
-
-            generated_pngs = {
-                path.resolve() for path in output_dir.rglob("*.png")
-            }
-            self.assertEqual(len(visuals), 6)
-            self.assertTrue(generated_pngs)
-            self.assertTrue(
-                all(
-                    path.is_relative_to(output_dir.resolve())
-                    for path in generated_pngs
-                )
-            )
-            for path in generated_pngs:
-                self.assertTrue(path.read_bytes().startswith(_PNG_SIGNATURE))
-                with Image.open(path) as image:
-                    image.load()
-                    self.assertGreaterEqual(image.width, 720)
-                    self.assertGreaterEqual(image.height, 360)
-            self.assertEqual(
-                {path.resolve() for path in Path.cwd().rglob("*.png")},
-                project_pngs_before,
-            )
-
-            shutil.rmtree(output_dir)
-            self.assertFalse(output_dir.exists())
-            self._assert_png_uris(visuals)
-
-    def test_extreme_quant_values_use_agg_and_keep_zero_data_and_padding(self):
-        module = importlib.import_module("stockcrewai.reporting.visuals")
-        builder = self._builder()
-        self.assertEqual(module.plt.get_backend().lower(), "agg")
-        captured = []
-
-        def inspect_png_uri(draw, *, size, **kwargs):
-            figure, axes = module.plt.subplots(figsize=size, dpi=120)
-            try:
-                draw(axes)
-                figure.canvas.draw()
-                captured.append((axes.get_xlim(), axes.get_ylim()))
-                return "captured"
-            finally:
-                module.plt.close(figure)
-
-        for percentile in ("0", "1"):
-            captured.clear()
-            context = _available_quant_context(
-                percentile=percentile,
-                strategy_cagr="-0.99",
-                spy_cagr="2.5",
-                universe_cagr="0.1",
-                strategy_drawdown="-0.001",
-                spy_drawdown="-0.5",
-                universe_drawdown="-0.99",
-            )
-            with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
-                visuals = builder(context={"quant": context["quant"]})
-
-            with self.subTest(percentile=percentile):
-                self.assertEqual(set(visuals), _QUANT_VISUAL_KEYS)
-                self.assertEqual(len(captured), 3)
-                expected_values = (
-                    (0.0, 1.0),
-                    (-0.99, 2.5, 0.1),
-                    (-0.001, -0.5, -0.99),
-                )
-                for (xlim, ylim), values in zip(captured, expected_values):
-                    matching_ranges = []
-                    for bounds in (xlim, ylim):
-                        low, high = sorted(bounds)
-                        if low <= min(values) and high >= max(values):
-                            matching_ranges.append((low, high))
-                    self.assertEqual(len(matching_ranges), 1)
-                    low, high = matching_ranges[0]
-                    self.assertLess(low, min(values))
-                    self.assertGreater(high, max(values))
-                    self.assertLess(low, 0)
-                    self.assertGreater(high, 0)
-
-    def test_long_quant_labels_fit_figure_bbox(self):
-        module = importlib.import_module("stockcrewai.reporting.visuals")
-        builder = self._builder()
-        captured = []
-
-        def inspect_png_uri(draw, *, size, **kwargs):
-            figure, axes = module.plt.subplots(figsize=size, dpi=120)
-            try:
-                draw(axes)
-                figure.canvas.draw()
-                renderer = figure.canvas.get_renderer()
-                figure_bbox = figure.get_window_extent(renderer)
-                axes_bbox = axes.get_window_extent(renderer)
-                artists = [
-                    *axes.texts,
-                    *axes.get_xticklabels(),
-                    *axes.get_yticklabels(),
-                    axes.title,
-                    axes.xaxis.label,
-                    axes.yaxis.label,
-                ]
-                legend = axes.get_legend()
-                if legend is not None:
-                    artists.extend(legend.get_texts())
-                extents = [
-                    artist.get_window_extent(renderer)
-                    for artist in artists
-                    if artist.get_visible() and artist.get_text()
-                ]
-                captured.append(
-                    (
-                        figure_bbox,
-                        axes_bbox,
-                        extents,
-                        [artist.get_text() for artist in artists if artist.get_text()],
-                    )
-                )
-                return "captured"
-            finally:
-                module.plt.close(figure)
-
-        target_ticker = "超长中文股票代码-TICKER-ABCDEFGHIJKLMN"
-        peer_group = "标准经营企业-科技行业-超长同行分组标签-2026"
-        context = _available_quant_context(
-            target_ticker=target_ticker,
-            peer_group=peer_group,
-        )
-        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
-            visuals = builder(context={"quant": context["quant"]})
-
-        self.assertEqual(set(visuals), _QUANT_VISUAL_KEYS)
-        self.assertEqual(len(captured), 3)
-        rendered_text = "\n".join(
-            text for _, _, _, texts in captured for text in texts
-        )
-        self.assertIn(target_ticker, rendered_text)
-        self.assertIn(peer_group, rendered_text)
-        for figure_bbox, axes_bbox, extents, _ in captured:
-            with self.subTest(figure_bbox=figure_bbox):
-                self.assertGreaterEqual(axes_bbox.x0, figure_bbox.x0)
-                self.assertLessEqual(axes_bbox.x1, figure_bbox.x1)
-                self.assertGreaterEqual(axes_bbox.y0, figure_bbox.y0)
-                self.assertLessEqual(axes_bbox.y1, figure_bbox.y1)
-                for extent in extents:
-                    self.assertGreaterEqual(extent.x0, figure_bbox.x0 - 2)
-                    self.assertLessEqual(extent.x1, figure_bbox.x1 + 2)
-                    self.assertGreaterEqual(extent.y0, figure_bbox.y0 - 2)
-                    self.assertLessEqual(extent.y1, figure_bbox.y1 + 2)
 
     def test_missing_input_omits_only_the_corresponding_chart(self):
         builder = self._builder()

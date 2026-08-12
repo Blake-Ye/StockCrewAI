@@ -21,7 +21,6 @@ from stockcrewai.pipelines.metric_registry import (
     policy_version_for_profile,
     resolve_metric_policies,
 )
-from stockcrewai.quant.factors import compute_factor_observations
 from stockcrewai.reporting.context import ReportContext, build_report_context
 from stockcrewai.reporting.renderer import (
     build_deterministic_report_draft,
@@ -301,25 +300,3 @@ def test_spac_verdict_precedes_all_ordinary_logic() -> None:
     assert result.summary_code == "SPAC_EVIDENCE_ONLY"
     assert result.triggered_rules == ["spac_security_structure_evidence_only"]
     assert result.reasons == ["spac_security_structure_evidence_only"]
-
-
-def test_spac_quant_observations_are_not_applicable_without_provenance() -> None:
-    payload = json.loads(
-        (Path(__file__).parent / "fixtures" / "quant" / "factors" / "snapshots.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    standard = next(item for item in payload["cases"] if item["name"] == "standard_operating")
-    from stockcrewai.models.quant import PointInTimeSnapshot
-
-    snapshot = PointInTimeSnapshot.model_validate(standard["snapshot"]).model_copy(
-        update={"security_profile": SecurityProfile.SPAC}
-    )
-
-    observations = compute_factor_observations([snapshot], "factor-formulas-v1")
-
-    assert len(observations) == 17
-    assert all(item.status == "not_applicable" for item in observations)
-    assert all(item.reason_code == "security_profile_not_applicable" for item in observations)
-    assert all(item.raw_value is None for item in observations)
-    assert all(item.evidence_ids == [] and item.calculation_ids == [] for item in observations)

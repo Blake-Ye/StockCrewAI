@@ -5,7 +5,7 @@
 - 不要擅自增加 Agent，不要创建子代理。
 - 所有实施计划、开发报告和问题说明请使用中文。
 
-“不要创建子代理”约束被分派的 `luna_coder`/`luna_worker`：它们不得继续创建孙代理。直接面向用户的父代理可以按照 `docs/architecture.md` 和 `docs/implementation-plan.md` 创建有界、文件互斥的 Luna Max 子任务，但不得因此增加产品运行时的 CrewAI Agent。
+“不要创建子代理”约束被分派的 `luna_coder`/`luna_worker`：它们不得继续创建孙代理。直接面向用户的父代理可以按照 `docs/architecture.md`、`docs/data-contracts.md` 和 `docs/testing-strategy.md` 创建有界、文件互斥的 Luna Max 子任务，但不得因此增加产品运行时的 CrewAI Agent。
 
 ==================================================
 一、开始任务前的强制读取
@@ -14,7 +14,6 @@
 每次收到具体开发任务后，必须先读取以下文件：
 - AGENTS.md
 - docs/architecture.md
-- docs/implementation-plan.md
 - docs/data-contracts.md
 - pyproject.toml
 - 与本任务直接相关的源码
@@ -51,13 +50,7 @@
 - 未经允许升级 CrewAI、Pydantic 或 Python 版本
 - 未经允许批量升级现有依赖或新增依赖
 
-用户已在 2026-08-09 明确批准目标架构使用以下开源工具，实施时无需再次逐包询问，但必须严格按照 `docs/implementation-plan.md` 指定 Step 执行：
-
-- 生产依赖：pandas、NumPy、DuckDB、exchange-calendars；
-- 开发依赖：pytest、Hypothesis、pytest-xdist、Ruff、mypy；
-- Parquet 由 DuckDB 直接读写，当前不增加 PyArrow。
-
-允许在对应 Step 使用 `uv add` 更新 `pyproject.toml`、`uv.lock` 和当前项目环境；仍禁止单独执行无目标的 `uv sync`、创建新环境、升级 CrewAI/Pydantic/Python 或添加白名单之外依赖。白名单以 `docs/implementation-plan.md` 的机器可读清单为准。
+允许在明确授权的任务中使用 `uv add` 更新 `pyproject.toml`、`uv.lock` 和当前项目环境；仍禁止单独执行无目标的 `uv sync`、创建新环境、升级 CrewAI/Pydantic/Python 或添加未批准依赖。依赖范围以 `pyproject.toml` 和 `docs/dependency-policy.md` 为准。
 
 如需新增依赖，必须先报告以下内容并等待批准：
 1. 依赖名称

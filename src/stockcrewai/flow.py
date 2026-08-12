@@ -5,6 +5,10 @@ CrewAI 的官方 Flow 装饰器、稳定路由标签以及 PrivateAttr 运行时
 它不依赖旧入口模块，因此可被入口或其他集成层独立导入。
 """
 
+# 必须先准备 CrewAI 的存储目录，再导入会初始化 SQLite 的 CrewAI 模块。
+# 因此本文件有意保留导入顺序，E402 在此处是已知且受控的例外。
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import json
@@ -16,6 +20,19 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
+
+
+def _configure_default_crewai_storage() -> None:
+    """在 CrewAI 导入前准备可写的默认 SQLite 存储目录。"""
+    configured_storage = os.getenv("CREWAI_STORAGE_DIR", "").strip()
+    if configured_storage:
+        return
+    default_storage = (Path.cwd() / ".crewai").resolve()
+    default_storage.mkdir(parents=True, exist_ok=True)
+    os.environ["CREWAI_STORAGE_DIR"] = str(default_storage)
+
+
+_configure_default_crewai_storage()
 
 from crewai.flow.flow import Flow, listen, router, start
 from crewai.flow.persistence import persist
@@ -120,6 +137,66 @@ def _is_unsupported_security_profile(profile: Any) -> bool:
             ("reporting_profile", "investment_company_reporting"),
         )
     )
+
+
+def _is_unsupported_sic_category_profile(profile: Any) -> bool:
+    """判断 Profile 是否由 SIC 识别为普通公司主线之外的类别。"""
+    if not isinstance(profile, Mapping):
+        return False
+    issuer_profile = profile.get("issuer_profile", profile.get("issuer_type"))
+    issuer_profile = getattr(issuer_profile, "value", issuer_profile)
+    reason_codes = profile.get("reason_codes", [])
+    return (
+        str(issuer_profile).strip().casefold() != "standard_operating"
+        and isinstance(reason_codes, Sequence)
+        and not isinstance(reason_codes, (str, bytes, bytearray))
+        and "profile_classified_from_sic" in reason_codes
+    )
+
+
+def _unsupported_scope_reason(profile: Any) -> str | None:
+    """返回统一范围门禁的稳定原因码，保留 SIC 与证券类型的区别。"""
+    if _is_unsupported_sic_category_profile(profile):
+        return "unsupported_category_sic"
+    if _is_unsupported_security_profile(profile):
+        return "unsupported_security"
+    return None
+
+
+def _unsupported_scope_required_data(
+    profile: Any,
+    edgar: Any,
+    reason_code: str,
+) -> list[str]:
+    """把范围门禁转换成可读且不含 ``missing`` 的摘要字段。"""
+    if reason_code == "unsupported_security":
+        security_profile = (
+            profile.get("security_profile", profile.get("security_type"))
+            if isinstance(profile, Mapping)
+            else None
+        )
+        security_profile = getattr(security_profile, "value", security_profile) or "unknown"
+        coverage_level = (
+            profile.get("coverage_level") if isinstance(profile, Mapping) else None
+        )
+        coverage_level = getattr(coverage_level, "value", coverage_level) or "unknown"
+        return [
+            f"unsupported_security:security_profile={security_profile}",
+            f"unsupported_security:coverage_level={coverage_level}",
+        ]
+
+    issuer_profile = (
+        profile.get("issuer_profile", profile.get("issuer_type"))
+        if isinstance(profile, Mapping)
+        else None
+    )
+    issuer_profile = getattr(issuer_profile, "value", issuer_profile) or "unknown"
+    sic = edgar.get("sic") if isinstance(edgar, Mapping) else None
+    sic = sic if sic not in (None, "") else "unknown"
+    return [
+        f"unsupported_category_sic:sic={sic}",
+        f"unsupported_category_sic:issuer_profile={issuer_profile}",
+    ]
 
 
 def _spac_evidence_only_policy_ready(
@@ -440,7 +517,6 @@ class ResearchFlowState(BaseModel):
     analysis_attempts: int = 0
     analysis_diagnostics: dict[str, Any] = Field(default_factory=dict)
     verdict: dict[str, Any] | None = None
-    quant: dict[str, Any] = Field(default_factory=dict)
     report: Any = None
     status: str = "pending"
     stage: str = "request"
@@ -476,7 +552,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
         "analysis_crew",
         "evidence_store",
         "report_crew",
-        "quant_packet",
         "market_price_data",
         "progress_callback",
         "profile_input",
@@ -498,7 +573,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
     _analysis_crew: Any = PrivateAttr(default=None)
     _evidence_store: Any = PrivateAttr(default=None)
     _report_crew: Any = PrivateAttr(default=None)
-    _quant_packet: Any = PrivateAttr(default=None)
     _market_price_data: Any = PrivateAttr(default=None)
     _profile_input: Mapping[str, Any] | None = PrivateAttr(default=None)
     _profile_evidence_records: tuple[EvidenceRecord, ...] = PrivateAttr(
@@ -1085,15 +1159,36 @@ class ResearchFlow(Flow[ResearchFlowState]):
             if isinstance(diagnostics, Mapping)
             else "unavailable"
         )
+        policy_gate = (
+            self.state.policy_context.get("gate")
+            if isinstance(self.state.policy_context, Mapping)
+            else None
+        )
+        policy_reason_codes = (
+            policy_gate.get("reason_codes", [])
+            if isinstance(policy_gate, Mapping)
+            else []
+        )
+        if reason_code == "unavailable" and isinstance(policy_reason_codes, Sequence):
+            for scope_reason in ("unsupported_category_sic", "unsupported_security"):
+                if scope_reason in policy_reason_codes:
+                    reason_code = scope_reason
+                    break
         if domain == "unavailable" and required_data:
-            domain = next(
-                (
-                    name
-                    for name in ("financial", "risk", "valuation")
-                    if any(name in item for item in required_data)
-                ),
-                "general",
-            )
+            if any(
+                item.startswith(("unsupported_category_sic:", "unsupported_security:"))
+                for item in required_data
+            ):
+                domain = "scope"
+            else:
+                domain = next(
+                    (
+                        name
+                        for name in ("financial", "risk", "valuation")
+                        if any(name in item for item in required_data)
+                    ),
+                    "general",
+                )
         if reason_code == "unavailable" and required_data:
             reason_code = required_data[0]
         if self.state.status != "blocked" and not required_data:
@@ -1222,12 +1317,18 @@ class ResearchFlow(Flow[ResearchFlowState]):
             )
 
         calculation_facts = _calculation_facts(edgar_result)
+        corporate_action_scan_status = getattr(
+            edgar_result, "corporate_action_scan_status", "unavailable"
+        )
+        corporate_actions = getattr(edgar_result, "corporate_actions", [])
         if self._calculator_tool is None:
             self._calculator_tool = FinancialCalculatorTool()
         calculation_result = self._calculator_tool.run(
             company_name=edgar_result.company_name or company_name,
             ticker=edgar_result.ticker or ticker,
             facts=calculation_facts,
+            corporate_action_scan_status=corporate_action_scan_status,
+            corporate_actions=corporate_actions,
         )
 
         if self._validation_tool is None:
@@ -1237,6 +1338,8 @@ class ResearchFlow(Flow[ResearchFlowState]):
             ticker=edgar_result.ticker or ticker,
             facts=calculation_facts,
             calculations=calculation_result.calculations,
+            corporate_action_scan_status=corporate_action_scan_status,
+            corporate_actions=corporate_actions,
         )
 
         ttm_inputs = getattr(edgar_result, "ttm_inputs", {})
@@ -1283,6 +1386,12 @@ class ResearchFlow(Flow[ResearchFlowState]):
         edgar_output, calculation_output = _synchronized_outputs(
             edgar_result, calculation_result, validation_result
         )
+        if isinstance(edgar_output, dict):
+            edgar_output.setdefault(
+                "corporate_action_scan_status",
+                _json_safe(corporate_action_scan_status),
+            )
+            edgar_output.setdefault("corporate_actions", _json_safe(corporate_actions))
         if getattr(validation_result, "status", None) == "valid":
             pipeline_state = _validated_state(
                 edgar_result, calculation_result, validation_result
@@ -1457,6 +1566,53 @@ class ResearchFlow(Flow[ResearchFlowState]):
             _is_unsupported_security_profile(candidate)
             for candidate in profile_candidates
         )
+        is_unsupported_sic_category = any(
+            _is_unsupported_sic_category_profile(candidate)
+            for candidate in profile_candidates
+        )
+        unsupported_scope_reason = (
+            "unsupported_category_sic"
+            if is_unsupported_sic_category
+            else "unsupported_security"
+            if is_unsupported_security and not is_spac
+            else None
+        )
+        if unsupported_scope_reason:
+            unavailable_valuation = {
+                "status": "not_applicable",
+                "readiness": "not_applicable",
+                "validation_status": "unvalidated",
+                "reason_code": unsupported_scope_reason,
+                "calculations": [],
+            }
+            self._market_price_data = _json_safe(self._market_price_data)
+            self._trusted_valuation_evidence_ids = set()
+            self._historical_financial_snapshots = []
+            self.state.market_price_data = _json_safe(self._market_price_data)
+            self.state.valuation = dict(unavailable_valuation)
+            self.state.historical_valuation = dict(unavailable_valuation)
+            self.state.reverse_dcf = dict(unavailable_valuation)
+            self.state.stage = "analysis"
+            self._refresh_profile_policy_context(self._market_price_data)
+            snapshot = self._stage_snapshot()
+            self._emit_stage(
+                RunStageEvent(
+                    step=3,
+                    title="市场价格与估值",
+                    actor="Python：SEC Scope/Profile Gate",
+                    status="blocked",
+                    input_summary=snapshot["identity"],
+                    output_summary=(
+                        "unsupported scope; "
+                        f"reason_code={unsupported_scope_reason}; "
+                        "valuation=not_applicable"
+                    ),
+                    decision="SKIPPED",
+                    reason=f"reason_code={unsupported_scope_reason}",
+                    next_step="Analysis Gate",
+                )
+            )
+            return dict(unavailable_valuation)
         if is_spac:
             unavailable_valuation = {
                 "status": "not_applicable",
@@ -1491,42 +1647,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
                         "security_profile=spac; "
                         f"reason_code={_SPAC_SECURITY_STRUCTURE_REASON}"
                     ),
-                    next_step="Analysis Gate",
-                )
-            )
-            return dict(unavailable_valuation)
-
-        if is_unsupported_security:
-            unavailable_valuation = {
-                "status": "not_applicable",
-                "readiness": "not_applicable",
-                "validation_status": "unvalidated",
-                "reason_code": "unsupported_security",
-                "calculations": [],
-            }
-            self._market_price_data = _json_safe(self._market_price_data)
-            self._trusted_valuation_evidence_ids = set()
-            self._historical_financial_snapshots = []
-            self.state.market_price_data = _json_safe(self._market_price_data)
-            self.state.valuation = dict(unavailable_valuation)
-            self.state.historical_valuation = dict(unavailable_valuation)
-            self.state.reverse_dcf = dict(unavailable_valuation)
-            self.state.stage = "analysis"
-            self._refresh_profile_policy_context(self._market_price_data)
-            snapshot = self._stage_snapshot()
-            self._emit_stage(
-                RunStageEvent(
-                    step=3,
-                    title="市场价格与估值",
-                    actor="Python：Unsupported Security Gate",
-                    status="completed",
-                    input_summary=snapshot["identity"],
-                    output_summary=(
-                        "unsupported security; ordinary valuation tools skipped; "
-                        "valuation=not_applicable"
-                    ),
-                    decision="SKIPPED",
-                    reason="reason_code=unsupported_security",
                     next_step="Analysis Gate",
                 )
             )
@@ -1888,16 +2008,24 @@ class ResearchFlow(Flow[ResearchFlowState]):
             if gate.get("status") in {"blocked", "unsupported"} and (
                 "blocking_decisions" in gate
             ):
-                required_data = [
-                    f"{decision.get('metric_id')}:{decision.get('reason_code')}"
-                    for decision in gate.get("blocking_decisions", [])
-                    if isinstance(decision, Mapping)
-                    and decision.get("metric_id")
-                    and decision.get("reason_code")
-                ]
-                gate["required_data"] = required_data or [
-                    f"profile_policy_gate_{gate.get('status', 'blocked')}"
-                ]
+                scope_reason = _unsupported_scope_reason(self.state.profile)
+                if scope_reason in {"unsupported_category_sic", "unsupported_security"}:
+                    gate["required_data"] = _unsupported_scope_required_data(
+                        self.state.profile,
+                        self.state.edgar,
+                        scope_reason,
+                    )
+                else:
+                    required_data = [
+                        f"{decision.get('metric_id')}:{decision.get('reason_code')}"
+                        for decision in gate.get("blocking_decisions", [])
+                        if isinstance(decision, Mapping)
+                        and decision.get("metric_id")
+                        and decision.get("reason_code")
+                    ]
+                    gate["required_data"] = required_data or [
+                        f"profile_policy_gate_{gate.get('status', 'blocked')}"
+                    ]
             elif gate.get("status") == "evidence_only":
                 gate["required_data"] = []
         if gate.get("status") in {"blocked", "unsupported"}:
@@ -2626,10 +2754,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             ttm=self.state.ttm,
             source_metadata=source_metadata,
             policy_context=self.state.policy_context,
-            quant_packet=self._quant_packet,
         )
-        quant_payload = _json_safe(report_context.get("quant", {}))
-        self.state.quant = quant_payload if isinstance(quant_payload, dict) else {}
         report_inputs = {"narrative_context": build_narrative_context(report_context)}
         self.state.verdict = _json_safe(verdict)
         draft_source = "agent"

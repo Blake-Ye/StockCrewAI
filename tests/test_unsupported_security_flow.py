@@ -53,7 +53,11 @@ def test_unsupported_security_fixtures_publish_profile_context_and_gate(
     assert "unsupported_security" in context["gate"]["reason_codes"]
 
 
-def _unsupported_flow(fixture: dict[str, Any]) -> tuple[ResearchFlow, dict[str, Mock]]:
+def _unsupported_flow(
+    fixture: dict[str, Any],
+    *,
+    progress_callback: Any = None,
+) -> tuple[ResearchFlow, dict[str, Mock]]:
     context = build_profile_policy_context(
         source_metadata=fixture["source_metadata"],
     )
@@ -93,6 +97,7 @@ def _unsupported_flow(fixture: dict[str, Any]) -> tuple[ResearchFlow, dict[str, 
         **ordinary_tools,
         analysis_crew=analysis_crew,
         report_crew=report_crew,
+        progress_callback=progress_callback,
     )
     flow.state.profile = context["profile"]
     flow.state.policy_context = context
@@ -115,6 +120,38 @@ def _unsupported_flow(fixture: dict[str, Any]) -> tuple[ResearchFlow, dict[str, 
         "analysis_crew": analysis_crew,
         "report_crew": report_crew,
     }
+
+
+def test_sic_and_fund_unsupported_profiles_share_scope_gate_output() -> None:
+    events: list[Any] = []
+    fund_flow, _ = _unsupported_flow(_fixture("etf"), progress_callback=events.append)
+
+    bank_edgar = EdgarResult(status="ok", ticker="JPM", sic="6020")
+    bank_context = build_profile_policy_context(
+        source_metadata=pipeline_support.profile_metadata_from_edgar(bank_edgar),
+        facts=bank_edgar.facts,
+        calculations=[],
+    )
+    bank_flow = ResearchFlow(progress_callback=events.append)
+    bank_flow.state.profile = bank_context["profile"]
+    bank_flow.state.policy_context = bank_context
+    bank_flow.state.edgar = {"sic": "6020"}
+    bank_flow._pipeline_state = {
+        "profile": bank_context["profile"],
+        "policy_context": bank_context,
+        "facts": {},
+        "calculations": [],
+    }
+
+    fund_flow.prepare_valuation(fund_flow._pipeline_state)
+    fund_event = events[-1]
+    bank_flow.prepare_valuation(bank_flow._pipeline_state)
+    bank_event = events[-1]
+
+    assert fund_event.actor == bank_event.actor == "Python：SEC Scope/Profile Gate"
+    assert fund_event.status == bank_event.status == "blocked"
+    assert "unsupported scope" in fund_event.output_summary
+    assert "unsupported scope" in bank_event.output_summary
 
 
 @pytest.mark.parametrize("fixture_name", FIXTURE_NAMES)
@@ -146,7 +183,10 @@ def test_unsupported_flow_skips_ordinary_tools_and_finalizes_blocked(
 
     assert flow.route_analysis(valuation) == "analysis_blocked"
     assert flow.state.policy_context["gate"]["status"] == "unsupported"
-    assert flow.state.required_data == ["profile_policy_gate_unsupported"]
+    assert flow.state.required_data == [
+        "unsupported_security:security_profile=unsupported_fund_security",
+        "unsupported_security:coverage_level=unsupported_security",
+    ]
     result = flow.finalize_analysis_blocked()
 
     assert result["status"] == "blocked"

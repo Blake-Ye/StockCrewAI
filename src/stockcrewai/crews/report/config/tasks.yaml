@@ -8,6 +8,9 @@ generate_validated_report_task:
     JSON 格式示例（仅用于格式；实际输出不得包含代码围栏）：{"execution_summary":"研究范围由已验证输入限定。","company_quality":"公司质量叙述来自已验证事实。","financial_trend":"财务趋势叙述来自已验证事实。","current_valuation":"当前估值叙述由确定性数据支撑。","historical_valuation":"历史估值叙述由确定性数据支撑。","reverse_dcf":"反向现金流折现叙述由确定性数据支撑。","key_risks":"主要风险叙述来自已验证事实。","sources_and_method":"来源与方法由确定性流程提供。","non_investment_disclaimer":"本文不构成、不提供也不代表任何投资建议。"}
     除 non_investment_disclaimer 外的其余八个字段不得输出数字、不得输出 Claim ID、不得输出评级、不得输出买入、卖出、持有或其他投资建议，不得包含代码围栏，不得包含 status 或确定性状态。non_investment_disclaimer 必须是明确的非投资建议声明，至少表达“不构成/不提供/不代表”与“投资建议/投资推荐/买卖建议”之间的否定关系；只有该字段可以出现免责声明所需的买入、卖出、持有等声明性词语，但仍不得输出数字、代码围栏、评级、Claim ID、status 或额外字段。不得输出 JSON 对象之外的解释、Markdown、前后缀或代码围栏。
     只可解释 narrative_context 中的已验证 Claim 摘要和确定性 Verdict 标签；不得接收、引用或改写原始 Agent 输出、rejected Claims、未经验证数字或新事实。最终 Markdown 的数字、确定性 status、已验证 Claim 原文、估值数据和来源数据由 Python Renderer 注入。
+    narrative_context 中的 chart_context 固定包含 financial_kpis、ttm_scale、historical_pe 三项；每项只提供 available 和 observations 的无数字关系事实。
+    company_quality 只根据 chart_context.financial_kpis.observations 与对应已验证 Claim 组织“我们可以看到—这说明—由此判断”的中文推导；financial_trend 只根据 chart_context.ttm_scale.observations 与对应已验证 Claim 使用同一结构；historical_valuation 只根据 chart_context.historical_pe.observations 与对应已验证 Claim 使用同一结构。
+    三个字段不得复制输入数字、不得自行计算、不得建立新评级、不得改变确定性 Verdict、不得声称已直接读取图片。对应项 available=false 时，只能根据对应已验证 Claim 做“数据解读”，不得提到图表。
   expected_output: >-
     唯一 JSON 对象 ReportDraft；固定九字段、每个字段为非空无数字中文叙述字符串；除免责声明字段外不包含买入、卖出、持有或其他投资建议，non_investment_disclaimer 必须是明确的非投资建议声明，不包含 Claim ID、评级、status、代码围栏或 JSON 外解释。
   agent: report_writer_agent

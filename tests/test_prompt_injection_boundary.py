@@ -172,7 +172,6 @@ class PromptInjectionBoundaryTests(unittest.TestCase):
             "financial_quality_agent": [
                 "query_validated_evidence",
                 "get_validated_calculations",
-                "get_quant_summary",
             ],
             "risk_analysis_agent": ["search_validated_filing_sections"],
         }
@@ -265,7 +264,6 @@ class PromptInjectionBoundaryTests(unittest.TestCase):
             [
                 "query_validated_evidence",
                 "get_validated_calculations",
-                "get_quant_summary",
             ],
         )
         self.assertEqual(

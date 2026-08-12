@@ -7,9 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 
 class RuntimeDefaultsTests(unittest.TestCase):
-    def test_no_input_uses_three_year_default_request(self):
+    def test_no_input_requires_explicit_request(self):
         from stockcrewai.main import main
 
         with (
@@ -18,9 +20,10 @@ class RuntimeDefaultsTests(unittest.TestCase):
             patch("stockcrewai.main.run_research", return_value={}) as run_research,
             patch("builtins.print"),
         ):
-            main()
+            with pytest.raises(ValueError, match="STOCKCREWAI_REQUEST"):
+                main()
 
-        run_research.assert_called_once_with("分析苹果公司未来 3 年投资价值")
+        run_research.assert_not_called()
 
     def test_unparseable_analysis_outputs_return_one_gate_code(self):
         from stockcrewai.main import _filter_analysis_claims

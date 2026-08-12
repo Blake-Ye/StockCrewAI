@@ -438,6 +438,7 @@ class MainFlowExecutionTests(unittest.TestCase):
                     "status": "available",
                     "validation_status": "valid",
                     "raw_result": "123.45",
+                    "period_basis": "TTM",
                 }
             ],
             "warnings": [],
@@ -633,6 +634,7 @@ class MainFlowExecutionTests(unittest.TestCase):
                     "input_evidence_ids": sorted(ttm_evidence_ids),
                     "raw_result": "105",
                     "unit": "USD",
+                    "period_basis": "TTM",
                     "status": "available",
                     "validation_status": "valid",
                 }
@@ -1128,7 +1130,12 @@ class MainFlowExecutionTests(unittest.TestCase):
                     result = _run_flow(flow)
 
                 self.assertEqual(result["status"], "ok")
-                self.assertIn("报告由已验证研究结果生成。", result["report"])
+                self.assertIn(
+                    "SEC 申报中的年度及季度数据、已验证计算和市场数据；季度数据可能未经审计。",
+                    result["report"],
+                )
+                self.assertNotIn("经审计财务数据", result["report"])
+                self.assertNotIn("报告由已验证研究结果生成。", result["report"])
                 self.assertEqual(report_crew.kickoff_calls, 1)
                 report_event = next(
                     event
@@ -1403,6 +1410,27 @@ class MainFlowExecutionTests(unittest.TestCase):
 
 
 class MainEntrypointTests(unittest.TestCase):
+    def test_request_resolution_requires_explicit_company_request(self):
+        module = _main_module()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(module.sys, "argv", ["kickoff"]),
+            self.assertRaisesRegex(ValueError, "STOCKCREWAI_REQUEST"),
+        ):
+            module._resolve_request()
+
+    def test_request_resolution_uses_explicit_environment_request(self):
+        module = _main_module()
+        with patch.dict(
+            os.environ,
+            {"STOCKCREWAI_REQUEST": "请分析 Netflix（NFLX）"},
+            clear=True,
+        ):
+            self.assertEqual(
+                module._resolve_request(),
+                "请分析 Netflix（NFLX）",
+            )
+
     def test_kickoff_exports_validated_report_with_one_trailing_newline(self):
         module = _main_module()
         report = "# 正式报告\n\n"
@@ -1429,7 +1457,7 @@ class MainEntrypointTests(unittest.TestCase):
         )
         self.assertEqual(persisted["artifacts"]["report_bytes"], len(exported_bytes))
 
-    def test_kickoff_does_not_export_blocked_or_empty_report(self):
+    def test_kickoff_removes_stale_report_when_run_has_no_formal_report(self):
         module = _main_module()
         results = (
             {"status": "blocked", "stage": "analysis", "report": "# 不应导出"},
@@ -1443,9 +1471,7 @@ class MainEntrypointTests(unittest.TestCase):
                 with patch.object(module, "run_research", return_value=run_result):
                     module.kickoff(REQUEST, output_path=output_path)
 
-                self.assertEqual(
-                    exported.read_text(encoding="utf-8"), "旧正式报告\n"
-                )
+                self.assertFalse(exported.exists())
                 persisted = json.loads(
                     output_path.with_name("run-result.json").read_text(encoding="utf-8")
                 )
@@ -1510,7 +1536,7 @@ class MainEntrypointTests(unittest.TestCase):
             ):
                 module.kickoff(REQUEST, output_path=output_path)
 
-            self.assertEqual(exported.read_text(encoding="utf-8"), "旧正式报告\n")
+            self.assertFalse(exported.exists())
             persisted = json.loads(
                 output_path.with_name("run-result.json").read_text(encoding="utf-8")
             )

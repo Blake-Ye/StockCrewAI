@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from stockcrewai import pipeline_support
 from stockcrewai.crews.report.crew import (
     build_deterministic_report_draft,
@@ -25,7 +27,8 @@ from stockcrewai.pipelines.metric_registry import (
     evaluate_policy_decisions,
     resolve_metric_policies,
 )
-from stockcrewai.tools.edgar_tool import EdgarFact, EdgarResult
+from stockcrewai.pipelines.profile_registry import classify_profiles
+from stockcrewai.tools.edgar_tool import EdgarFact, EdgarFilingEvidence, EdgarResult
 from stockcrewai.tools.verdict_tool import DeterministicVerdictTool
 
 
@@ -72,6 +75,132 @@ def _sec_fact(metric_id: str, evidence_id: str, value: str) -> EdgarFact:
         source_reference=f"sec:test/{evidence_id}",
         validation_status="valid",
     )
+
+
+def _ordinary_fact(
+    metric_id: str,
+    evidence_id: str,
+    value: str,
+    *,
+    unit: str,
+    period_type: str,
+    xbrl_tag: str,
+) -> EdgarFact:
+    return EdgarFact(
+        metric_id=metric_id,
+        evidence_id=evidence_id,
+        value=value,
+        unit=unit,
+        period_type=period_type,
+        period="2025-FY",
+        period_end="2025-12-31",
+        filed_at="2026-02-20",
+        form="10-K",
+        accession_number=f"acc-{evidence_id}",
+        taxonomy="us-gaap",
+        xbrl_tag=xbrl_tag,
+        source_reference=f"sec:test/{evidence_id}",
+        validation_status="valid",
+    )
+
+
+def _ordinary_filing(form: str, evidence_id: str) -> EdgarFilingEvidence:
+    return EdgarFilingEvidence(
+        evidence_id=evidence_id,
+        cik="0000123456",
+        form=form,
+        filed_at="2026-02-20",
+        period_end="2025-12-31",
+        accession_number=f"acc-{evidence_id}",
+        source_reference=f"sec:test/{evidence_id}",
+    )
+
+
+def _ordinary_edgar_result() -> EdgarResult:
+    return EdgarResult(
+        status="ok",
+        company_name="Example Operating Company",
+        ticker="EXM",
+        sic="3571",
+        facts={
+            "revenue": _ordinary_fact(
+                "revenue",
+                "ev_exm_revenue",
+                "1000000",
+                unit="USD",
+                period_type="duration",
+                xbrl_tag="us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+            ),
+            "common_shares_outstanding": _ordinary_fact(
+                "common_shares_outstanding",
+                "ev_exm_common_shares",
+                "100000",
+                unit="shares",
+                period_type="instant",
+                xbrl_tag="us-gaap:EntityCommonStockSharesOutstanding",
+            ),
+        },
+        filings=[
+            _ordinary_filing("10-K", "ev_exm_10k"),
+            _ordinary_filing("10-Q", "ev_exm_10q"),
+            _ordinary_filing("8-K", "ev_exm_8k"),
+        ],
+    )
+
+
+def test_realistic_domestic_edgar_payload_derives_ordinary_scope() -> None:
+    edgar_result = _ordinary_edgar_result()
+
+    metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
+    profile = classify_profiles(metadata)
+
+    assert "is_foreign_private_issuer" not in metadata
+    assert metadata["filing_forms"] == ["10-K", "10-Q", "8-K"]
+    assert set(metadata["taxonomy"]) == {"us-gaap"}
+    assert metadata["security_type"] == "common_stock"
+    assert metadata["security_class"] == "common_stock"
+    assert set(metadata["classification_evidence_ids"]) == {
+        "ev_exm_revenue",
+        "ev_exm_common_shares",
+        "ev_exm_10k",
+        "ev_exm_10q",
+        "ev_exm_8k",
+    }
+    assert profile.issuer_profile is IssuerProfile.STANDARD_OPERATING
+    assert profile.is_ordinary_scope is True
+
+
+@pytest.mark.parametrize(
+    "variant", ["foreign", "special_sic", "no_common_stock", "explicit_foreign"]
+)
+def test_realistic_edgar_payload_keeps_non_ordinary_scope_blocked(variant: str) -> None:
+    edgar_result = _ordinary_edgar_result()
+    if variant == "foreign":
+        edgar_result = edgar_result.model_copy(
+            update={
+                "facts": {
+                    metric_id: fact.model_copy(update={"taxonomy": "ifrs-full"})
+                    for metric_id, fact in edgar_result.facts.items()
+                },
+                "filings": [
+                    _ordinary_filing("20-F", "ev_exm_20f"),
+                    _ordinary_filing("6-K", "ev_exm_6k"),
+                ],
+            }
+        )
+    elif variant == "special_sic":
+        edgar_result = edgar_result.model_copy(update={"sic": "6020"})
+    elif variant == "no_common_stock":
+        edgar_result = edgar_result.model_copy(
+            update={"facts": {"revenue": edgar_result.facts["revenue"]}}
+        )
+
+    metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
+    if variant == "explicit_foreign":
+        metadata["is_foreign_private_issuer"] = True
+    profile = classify_profiles(metadata)
+
+    assert profile.is_ordinary_scope is False
 
 
 def _valuation_policy_context() -> dict[str, Any]:
@@ -227,7 +356,7 @@ def test_legacy_profile_is_adapted_to_shared_profile_policy_gate() -> None:
     assert all(item["metric_id"] and item["reason_code"] for item in blocking)
 
 
-def test_sec_sic_auto_profile_uses_bank_policy_gate_without_reverse_dcf_block() -> None:
+def test_sec_sic_auto_profile_blocks_bank_before_metric_gate() -> None:
     edgar_result = EdgarResult(status="ok", sic="6020")
     metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
     context = pipeline_support.build_profile_policy_context(
@@ -240,6 +369,7 @@ def test_sec_sic_auto_profile_uses_bank_policy_gate_without_reverse_dcf_block() 
     flow = ResearchFlow()
     flow.state.profile = context["profile"]
     flow.state.policy_context = context
+    flow.state.edgar = {"sic": "6020"}
     flow._pipeline_state = {
         "profile": context["profile"],
         "policy_context": context,
@@ -253,20 +383,30 @@ def test_sec_sic_auto_profile_uses_bank_policy_gate_without_reverse_dcf_block() 
 
     assert context["profile"]["issuer_profile"] == "bank"
     assert context["policy_version"] == "metric-policy:bank:v1"
-    assert context["gate"]["status"] == "blocked"
-    assert any(
-        item["reason_code"] == "bank_roa_missing"
-        for item in context["gate"]["blocking_decisions"]
-    )
-    assert "reverse_dcf_required" not in {
-        item["reason_code"] for item in context["gate"]["blocking_decisions"]
+    assert context["gate"]["status"] == "unsupported"
+    assert context["gate"]["reason_codes"] == ["unsupported_category_sic"]
+    assert context["gate"]["blocking_decisions"] == []
+
+    valuation = flow.prepare_valuation(flow._pipeline_state)
+    assert valuation["reason_code"] == "unsupported_category_sic"
+    assert flow.state.market_price_data is None
+    assert flow.route_analysis(valuation) == "analysis_blocked"
+    assert flow.state.required_data == [
+        "unsupported_category_sic:sic=6020",
+        "unsupported_category_sic:issuer_profile=bank",
+    ]
+    assert flow._gate_summary() == {
+        "status": "BLOCKED",
+        "domain": "scope",
+        "reason_code": "unsupported_category_sic",
+        "required_data": (
+            "unsupported_category_sic:sic=6020, "
+            "unsupported_category_sic:issuer_profile=bank"
+        ),
     }
 
-    assert flow.route_analysis() == "analysis_blocked"
-    assert "reverse_dcf_required" not in flow.state.required_data
 
-
-def test_sec_sic_auto_utility_profile_keeps_reverse_dcf_unavailable_non_blocking() -> None:
+def test_sec_sic_auto_utility_profile_is_blocked_by_category_scope() -> None:
     edgar_result = EdgarResult(
         status="ok",
         ticker="NEE",
@@ -302,6 +442,7 @@ def test_sec_sic_auto_utility_profile_keeps_reverse_dcf_unavailable_non_blocking
     flow = ResearchFlow()
     flow.state.profile = context["profile"]
     flow.state.policy_context = context
+    flow.state.edgar = {"sic": "4911"}
     flow._pipeline_state = {
         "profile": context["profile"],
         "policy_context": context,
@@ -326,11 +467,13 @@ def test_sec_sic_auto_utility_profile_keeps_reverse_dcf_unavailable_non_blocking
     assert decisions["utility_operating_margin"]["status"] == "available"
     assert decisions["fcf_yield"]["status"] == "unavailable"
     assert decisions["fcf_yield"]["blocking"] is False
-    assert context["gate"]["status"] == "ready"
-    assert flow.route_analysis() == "analysis_ready"
-    assert flow.state.required_data == []
-    assert "reverse_dcf_required" not in flow.state.required_data
-    assert flow.state.reverse_dcf["reason_code"] == "ttm_fcf_required"
+    assert context["gate"]["status"] == "unsupported"
+    assert context["gate"]["reason_codes"] == ["unsupported_category_sic"]
+    assert flow.route_analysis() == "analysis_blocked"
+    assert flow.state.required_data == [
+        "unsupported_category_sic:sic=4911",
+        "unsupported_category_sic:issuer_profile=utility",
+    ]
 
 
 def test_flow_routes_from_profile_gate_and_exposes_one_json_safe_context() -> None:

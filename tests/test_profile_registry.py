@@ -289,3 +289,67 @@ def test_invalid_listing_age_does_not_create_recent_listing(
     assert result.security_profile.value == "common_stock"
     assert "profile_metadata_invalid" in result.reason_codes
     assert result.security_profile.value != "recent_listing"
+
+
+def test_valid_ordinary_company_has_positive_scope_evidence() -> None:
+    source_metadata = {
+        "sic": "3571",
+        "filing_forms": ["10-K", "10-Q", "8-K"],
+        "taxonomy": ["us-gaap"],
+        "security_type": "common_stock",
+        "security_class": "common_stock",
+        "is_foreign_private_issuer": False,
+        "is_investment_company": None,
+        "has_revenue": None,
+        "classification_evidence_ids": [
+            "ev_ordinary_sec",
+            "ev_ordinary_filing",
+            "ev_ordinary_taxonomy",
+        ],
+    }
+
+    result = classify_profiles(source_metadata)
+
+    assert result.issuer_profile.value == "standard_operating"
+    assert result.reporting_profile.value == "domestic_us_gaap"
+    assert result.security_profile.value == "common_stock"
+    assert result.is_ordinary_scope is True
+    assert result.ordinary_scope_reason_code == "ordinary_scope_allowed"
+
+
+@pytest.mark.parametrize(
+    "case_name",
+    [
+        "bank_6020",
+        "reit",
+        "utility",
+        "foreign_private_issuer",
+        "fund",
+        "unknown_empty",
+    ],
+)
+def test_special_or_unknown_profiles_fail_ordinary_scope(
+    profile_fixture: dict[str, Any], case_name: str
+) -> None:
+    result = classify_profiles(_case(profile_fixture, case_name)["source_metadata"])
+
+    assert result.is_ordinary_scope is False
+    assert result.ordinary_scope_reason_code.startswith("ordinary_scope_")
+
+
+def test_ordinary_scope_does_not_default_missing_positive_evidence_to_allowed() -> None:
+    result = classify_profiles(
+        {
+            "sic": "3571",
+            "filing_forms": ["10-K", "10-Q"],
+            "taxonomy": ["us-gaap"],
+            "security_type": "common_stock",
+            "security_class": "common_stock",
+            "is_foreign_private_issuer": False,
+            "is_investment_company": False,
+            "has_revenue": True,
+        }
+    )
+
+    assert result.is_ordinary_scope is False
+    assert result.ordinary_scope_reason_code == "ordinary_scope_evidence_missing"

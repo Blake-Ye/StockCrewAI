@@ -152,26 +152,6 @@ def _records() -> dict[str, Any]:
                 "validation_status": "unvalidated",
             },
         ],
-        "quant": [
-            {
-                "factor_id": "quality_roe",
-                "run_id": RUN_ID,
-                "as_of": "2026-08-10T00:00:00Z",
-                "period": "2025-12-31",
-                "source_reference": "fixture:quant/quality_roe",
-                "raw_value": "0.25",
-                "validation_status": "valid",
-            },
-            {
-                "factor_id": "value_fcf_yield_unvalidated",
-                "run_id": RUN_ID,
-                "as_of": "2026-08-10T00:00:00Z",
-                "period": "2025-12-31",
-                "source_reference": "fixture:quant/value_fcf_yield",
-                "raw_value": "0.10",
-                "validation_status": "unvalidated",
-            },
-        ],
         "allowlist": {
             "evidence_ids": [
                 "ev_revenue_2024",
@@ -180,7 +160,6 @@ def _records() -> dict[str, Any]:
             ],
             "calculation_ids": ["calc_margin_2025", "calc_margin_unvalidated"],
             "filing_section_ids": ["section_risk_10k", "section_risk_10q", "section_unvalidated"],
-            "factor_ids": ["quality_roe", "value_fcf_yield_unvalidated"],
         },
     }
 
@@ -262,7 +241,6 @@ def test_store_never_returns_unvalidated_records() -> None:
         metric_ids=["revenue"], periods=["FY2026"], limit=10
     )
     calculations = store.get_validated_calculations(["calc_margin_unvalidated"])
-    quant = store.get_quant_summary(["value_fcf_yield_unvalidated"])
     filing = store.search_validated_filing_sections("未经验证", forms=["10-K"], limit=10)
 
     assert evidence["records"] == []
@@ -270,11 +248,6 @@ def test_store_never_returns_unvalidated_records() -> None:
     assert calculations == {
         "status": "error",
         "reason_code": "calculation_not_validated",
-        "records": [],
-    }
-    assert quant == {
-        "status": "error",
-        "reason_code": "quant_not_validated",
         "records": [],
     }
     assert filing["records"] == []
@@ -299,19 +272,13 @@ def test_store_searches_filings_by_query_and_form_with_deterministic_limit() -> 
     json.dumps(result, ensure_ascii=False, allow_nan=False)
 
 
-def test_store_returns_quant_summary_and_validates_limit() -> None:
+def test_store_validates_limit() -> None:
     store = _store()
 
-    result = store.get_quant_summary(["quality_roe"])
     zero = store.query_validated_evidence(metric_ids=["revenue"], periods=None, limit=0)
     negative = store.query_validated_evidence(metric_ids=None, periods=None, limit=-1)
     too_large = store.query_validated_evidence(metric_ids=None, periods=None, limit=101)
 
-    assert result["status"] == "ok"
-    assert result["records"][0]["factor_id"] == "quality_roe"
-    assert result["records"][0]["as_of"] == "2026-08-10T00:00:00Z"
-    assert result["records"][0]["source_reference"] == "fixture:quant/quality_roe"
-    assert result["records"][0]["validation_status"] == "valid"
     assert zero == {"status": "ok", "reason_code": "ok", "records": []}
     assert negative == {
         "status": "error",

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from pydantic import (
@@ -17,7 +16,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from stockcrewai.models.quant import QuantResearchPacket
 from stockcrewai.profiles.reit import PROFILE_VERSION as REIT_PROFILE_VERSION
 
 
@@ -83,7 +81,6 @@ _REPORT_QUALITY_METRIC_IDS = frozenset(
 _REPORT_TREND_METRIC_IDS = frozenset(
     {"revenue_growth", "free_cash_flow", "share_dilution"}
 )
-_QUANT_PACKET_UNSET = object()
 _REIT_FORMULA_TO_METRIC = {
     "reit-ffo-reconciliation-v1": "ffo_total",
     "reit-ffo-per-share-v1": "ffo_per_share",
@@ -110,26 +107,71 @@ _FOREIGN_ADR_FORMULA_IDS = frozenset(
         "foreign-adr-market-cap-v1",
     }
 )
-_QUANT_PROVENANCE_FIELD_PATHS = (
-    "ranking_summary.rank",
-    "ranking_summary.peer_count",
-    "ranking_summary.industry_percentile",
-    "ranking_summary.score",
-    "backtest_summary.strategy_cagr",
-    "backtest_summary.strategy_max_drawdown",
-    "backtest_summary.average_turnover",
-    "backtest_summary.annualized_turnover",
-    "backtest_summary.net_cost_bps",
-    "benchmark_summary.spy_cagr",
-    "benchmark_summary.spy_max_drawdown",
-    "benchmark_summary.universe_cagr",
-    "benchmark_summary.universe_max_drawdown",
-    "data_quality.complete_period_count",
-    "data_quality.period_count",
-)
-_QUANT_ARTIFACT_HASH_RE = re.compile(r"[0-9a-f]{64}")
-_QUANT_FIELD_PROVENANCE_MISSING = "quant_field_provenance_missing"
-_QUANT_FIELD_PROVENANCE_INVALID = "quant_field_provenance_invalid"
+
+
+def _normalized_amount(value: Any, unit: Any = None) -> Decimal | None:
+    raw = _text(value)
+    if raw is None:
+        return None
+    try:
+        amount = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None
+    if not amount.is_finite():
+        return None
+
+    normalized_unit = (_text(unit) or "").lower().replace(" ", "")
+    if "万亿" in normalized_unit or "trillion" in normalized_unit:
+        amount *= Decimal("1000000000000")
+    elif "亿美元" in normalized_unit:
+        amount *= Decimal("100000000")
+    elif "十亿" in normalized_unit or "billion" in normalized_unit:
+        amount *= Decimal("1000000000")
+    elif "百万" in normalized_unit or "million" in normalized_unit:
+        amount *= Decimal("1000000")
+    elif "千" in normalized_unit or "thousand" in normalized_unit:
+        amount *= Decimal("1000")
+    return amount
+
+
+def _validated_ttm_fcf(value: Any) -> Decimal | None:
+    payload = value if isinstance(value, Mapping) else {"metrics": value}
+    metrics = payload.get("metrics", [])
+    if isinstance(metrics, Mapping):
+        metrics = list(metrics.values())
+    if not isinstance(metrics, Sequence) or isinstance(metrics, (str, bytes)):
+        return None
+    for metric in metrics:
+        if not isinstance(metric, Mapping):
+            continue
+        if (
+            metric.get("metric_id") == "free_cash_flow"
+            and metric.get("period_basis") == "TTM"
+            and metric.get("status") == "available"
+            and metric.get("validation_status") == "valid"
+        ):
+            return _normalized_amount(metric.get("raw_result"), metric.get("unit"))
+    return None
+
+
+def _validated_reverse_dcf_fcf(value: Mapping[str, Any]) -> Decimal | None:
+    if (
+        value.get("status") != "ok"
+        or value.get("validation_status") != "valid"
+        or value.get("period_basis") != "TTM"
+    ):
+        return None
+    unit = value.get("base_fcf_unit", value.get("unit"))
+    return _normalized_amount(value.get("base_fcf"), unit)
+
+
+def _validate_ttm_fcf_consistency(
+    ttm_payload: Any, reverse_payload: Mapping[str, Any]
+) -> None:
+    ttm_fcf = _validated_ttm_fcf(ttm_payload)
+    reverse_fcf = _validated_reverse_dcf_fcf(reverse_payload)
+    if ttm_fcf is not None and reverse_fcf is not None and ttm_fcf != reverse_fcf:
+        raise ValueError("report_ttm_fcf_mismatch: TTM FCF and reverse DCF base FCF differ")
 
 
 class ReportMetric(BaseModel):
@@ -148,6 +190,9 @@ class ReportMetric(BaseModel):
     calculation_id: StrictStr | None = None
     status: StrictStr = "unavailable"
     validation_status: StrictStr = "unknown"
+    adjustment_basis: StrictStr | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     provenance_type: StrictStr = Field(
         default="calculation", exclude_if=lambda value: value == "calculation"
     )
@@ -206,7 +251,6 @@ class ReportContext(BaseModel):
     ttm: dict[str, Any] = Field(default_factory=dict)
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
-    quant: dict[str, Any] | None = None
     reit_metrics: dict[str, Any] | None = None
     profile_metrics: dict[str, Any] | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -260,109 +304,6 @@ def _ids(value: Any) -> list[str]:
         if item_text and item_text not in result:
             result.append(item_text)
     return result
-
-
-def _quant_packet_mapping(value: Any) -> dict[str, Any] | None:
-    """把量化 packet 变成普通 dict，避免复用未经验证的模型实例。"""
-    try:
-        if isinstance(value, QuantResearchPacket):
-            payload = value.model_dump(mode="python", warnings=False)
-        elif isinstance(value, Mapping):
-            payload = dict(value)
-        else:
-            return None
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def quant_field_provenance_reason(value: Any) -> str | None:
-    """返回量化字段追溯的确定性失败原因；合法时返回 None。"""
-    packet = _quant_packet_mapping(value)
-    if packet is None:
-        return _QUANT_FIELD_PROVENANCE_INVALID
-
-    field_provenance = packet.get("field_provenance")
-    if field_provenance is None or (
-        isinstance(field_provenance, Mapping) and not field_provenance
-    ):
-        return _QUANT_FIELD_PROVENANCE_MISSING
-    if not isinstance(field_provenance, Mapping):
-        return _QUANT_FIELD_PROVENANCE_INVALID
-
-    packet_artifact_ids = packet.get("artifact_ids")
-    if not isinstance(packet_artifact_ids, Sequence) or isinstance(
-        packet_artifact_ids, (str, bytes)
-    ) or not packet_artifact_ids or any(
-        not isinstance(item, str) or not item.strip() for item in packet_artifact_ids
-    ):
-        return _QUANT_FIELD_PROVENANCE_INVALID
-    packet_artifact_id_set = set(packet_artifact_ids)
-
-    for field_path in _QUANT_PROVENANCE_FIELD_PATHS:
-        if field_path not in field_provenance:
-            return _QUANT_FIELD_PROVENANCE_MISSING
-
-    for provenance in field_provenance.values():
-        if not isinstance(provenance, Mapping):
-            return _QUANT_FIELD_PROVENANCE_INVALID
-        artifact_ids = provenance.get("artifact_ids")
-        if artifact_ids is None:
-            return _QUANT_FIELD_PROVENANCE_MISSING
-        if not isinstance(artifact_ids, Sequence) or isinstance(
-            artifact_ids, (str, bytes)
-        ):
-            return _QUANT_FIELD_PROVENANCE_INVALID
-        if not artifact_ids:
-            return _QUANT_FIELD_PROVENANCE_MISSING
-        if not any(_text(item) for item in artifact_ids):
-            return _QUANT_FIELD_PROVENANCE_MISSING
-        for artifact_id in artifact_ids:
-            if not isinstance(artifact_id, str) or _QUANT_ARTIFACT_HASH_RE.fullmatch(
-                artifact_id
-            ) is None:
-                return _QUANT_FIELD_PROVENANCE_INVALID
-            if artifact_id not in packet_artifact_id_set:
-                return _QUANT_FIELD_PROVENANCE_INVALID
-    return None
-
-
-def _quant_packet_without_field_provenance(value: Any) -> Mapping[str, Any] | None:
-    payload = _quant_packet_mapping(value)
-    if payload is None:
-        return None
-    payload.pop("field_provenance", None)
-    return payload
-
-
-def _quant_packet_shape_valid_without_field_provenance(value: Any) -> bool:
-    payload = _quant_packet_without_field_provenance(value)
-    if payload is None:
-        return False
-    try:
-        QuantResearchPacket.model_validate(payload)
-    except Exception:
-        return False
-    return True
-
-
-def _validated_quant_packet(
-    value: Any,
-) -> tuple[QuantResearchPacket | None, str | None]:
-    """完整校验量化 packet，并保留稳定的 provenance 失败原因。"""
-    payload = _quant_packet_mapping(value)
-    if payload is None:
-        return None, "quant_packet_invalid"
-    try:
-        packet = QuantResearchPacket.model_validate(payload)
-    except Exception:
-        if _quant_packet_shape_valid_without_field_provenance(payload):
-            return None, quant_field_provenance_reason(payload) or _QUANT_FIELD_PROVENANCE_INVALID
-        return None, "quant_packet_invalid"
-    reason_code = quant_field_provenance_reason(packet)
-    if reason_code:
-        return None, reason_code
-    return packet, None
 
 
 def _evidence_index(source_metadata: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -464,6 +405,7 @@ def _metric_from_payload(
     direct_as_of: Sequence[Any] = (),
     require_direct_source: bool = False,
     provenance_type: str = "calculation",
+    adjustment_basis: Any = None,
 ) -> ReportMetric | None:
     """把一个确定性结果转换成可渲染指标；不完整时返回 None。"""
     metric_name = _text(metric_id)
@@ -502,6 +444,7 @@ def _metric_from_payload(
             calculation_id=calculation,
             status="available",
             validation_status="valid",
+            adjustment_basis=_text(adjustment_basis),
             provenance_type=provenance_type,
         )
     except ValidationError:
@@ -677,6 +620,7 @@ _TTM_CONTEXT_FIELDS = (
     "normalized_result",
     "display_value",
     "unit",
+    "period_basis",
     "status",
     "validation_status",
     "input_evidence_ids",
@@ -697,15 +641,20 @@ def _verified_ttm_context(value: Any) -> dict[str, Any]:
     for raw_metric in raw_metrics:
         if not isinstance(raw_metric, Mapping):
             continue
-        if raw_metric.get("status") != "available" or raw_metric.get("validation_status") != "valid":
+        period_basis = raw_metric.get("period_basis")
+        if (
+            period_basis != "TTM"
+            or raw_metric.get("status") != "available"
+            or raw_metric.get("validation_status") != "valid"
+        ):
             continue
-        metrics.append(
-            {
-                key: _json_safe_context(raw_metric[key])
-                for key in _TTM_CONTEXT_FIELDS
-                if key in raw_metric and raw_metric[key] is not None
-            }
-        )
+        metric = {
+            key: _json_safe_context(raw_metric[key])
+            for key in _TTM_CONTEXT_FIELDS
+            if key in raw_metric and raw_metric[key] is not None
+        }
+        metric["period_basis"] = "TTM"
+        metrics.append(metric)
     return {
         "status": _text(payload.get("status")) or ("ok" if metrics else "unavailable"),
         "metrics": metrics,
@@ -737,12 +686,24 @@ def _historical_visual_context(value: Mapping[str, Any]) -> dict[str, Any]:
             )
     if not normalized_series:
         return {}
+    summary = {
+        key: _json_safe_context(value[key])
+        for key in (
+            "current_value",
+            "percentile_25",
+            "five_year_median",
+            "percentile_75",
+            "current_percentile",
+        )
+        if value.get(key) is not None
+    }
     return {
         "status": "ok",
         "validation_status": "valid",
         "period_basis": "TTM",
         "series": normalized_series,
         "current_date": current_date,
+        **summary,
     }
 
 
@@ -774,6 +735,8 @@ def _verified_reverse_dcf_context(value: Mapping[str, Any]) -> dict[str, Any]:
         key: _json_safe_context(value[key])
         for key in (
             "base_fcf",
+            "base_fcf_unit",
+            "unit",
             "period_basis",
             "forecast_years",
             "discount_rate",
@@ -825,7 +788,6 @@ def build_report_context(
     ticker: Any = None,
     financial_calculations: Any = None,
     ttm: Any = None,
-    quant_packet: Any = _QUANT_PACKET_UNSET,
 ) -> dict[str, Any]:
     """构造 Report Crew 与 Renderer 共享的唯一 JSON-safe 输入。"""
     company_payload = dict(company or {})
@@ -879,29 +841,16 @@ def build_report_context(
     }
     calculation_payload = calculations if calculations is not None else financial_calculations
     ttm_payload = ttm if ttm is not None else source_payload.get("ttm")
-    quant_payload: dict[str, Any] | None = None
-    if quant_packet is not _QUANT_PACKET_UNSET:
-        if quant_packet is None:
-            quant_payload = {
-                "status": "unavailable",
-                "reason_code": "quant_packet_missing",
-                "packet": None,
-            }
-        else:
-            validated_quant_packet, reason_code = _validated_quant_packet(quant_packet)
-            if validated_quant_packet is None:
-                quant_payload = {
-                    "status": "unavailable",
-                    "reason_code": reason_code or "quant_packet_invalid",
-                    "packet": None,
-                }
-            else:
-                quant_payload = {
-                    "status": "available",
-                    "reason_code": "quant_packet_validated",
-                    "packet": validated_quant_packet.model_dump(mode="json"),
-                }
-
+    canonical_ttm_fcf = _validated_ttm_fcf(ttm_payload)
+    reverse_dcf_fcf = _validated_reverse_dcf_fcf(reverse_payload)
+    reverse_dcf_base_present = _text(reverse_payload.get("base_fcf")) is not None
+    reverse_dcf_base_ready = (
+        reverse_dcf_base_present
+        and canonical_ttm_fcf is not None
+        and reverse_dcf_fcf is not None
+    )
+    if "reverse_dcf" not in not_applicable_metrics:
+        _validate_ttm_fcf_consistency(ttm_payload, reverse_payload)
     profile_evidence_records = policy_payload.get("evidence_records", [])
     if isinstance(profile_evidence_records, Sequence) and not isinstance(
         profile_evidence_records, (str, bytes)
@@ -982,6 +931,11 @@ def build_report_context(
                 evidence_index=evidence_index,
                 direct_source=calculation.get("source_reference"),
                 direct_as_of=(calculation.get("as_of"), calculation.get("period_end")),
+                adjustment_basis=(
+                    calculation.get("adjustment_basis")
+                    if calculation.get("formula_id") == "share_dilution"
+                    else None
+                ),
             )
             if metric is not None:
                 metrics.append(metric)
@@ -1097,6 +1051,7 @@ def build_report_context(
         and reverse_payload.get("validation_status") == "valid"
         and reverse_calculation_id
         and reverse_ids
+        and reverse_dcf_base_ready
         and "reverse_dcf" not in not_applicable_metrics
     ):
         metric = _metric_from_payload(
@@ -1194,10 +1149,12 @@ def build_report_context(
         ),
         reverse_dcf=(
             {}
-            if "reverse_dcf" in not_applicable_metrics
+            if (
+                "reverse_dcf" in not_applicable_metrics
+                or not reverse_dcf_base_ready
+            )
             else _verified_reverse_dcf_context(reverse_payload)
         ),
-        quant=quant_payload,
         reit_metrics=reit_metrics_payload,
         profile_metrics=profile_metrics_payload,
     )
@@ -1210,8 +1167,6 @@ def build_report_context(
             context_payload.pop(key, None)
     if not is_reit_profile:
         context_payload.pop("reit_metrics", None)
-    if quant_packet is _QUANT_PACKET_UNSET:
-        context_payload.pop("quant", None)
     return context_payload
 
 
@@ -1219,5 +1174,4 @@ __all__ = [
     "ReportContext",
     "ReportMetric",
     "build_report_context",
-    "quant_field_provenance_reason",
 ]

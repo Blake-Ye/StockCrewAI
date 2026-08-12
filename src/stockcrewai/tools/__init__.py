@@ -4,6 +4,8 @@ from stockcrewai.tools.calculator_tool import (
     FinancialCalculatorTool,
 )
 from stockcrewai.tools.edgar_tool import (
+    CorporateAction,
+    CorporateActionScanStatus,
     EdgarFact,
     EdgarFilingEvidence,
     EdgarResult,
@@ -46,6 +48,8 @@ from stockcrewai.tools.verdict_tool import (
 __all__ = [
     "CalculationBatch",
     "CalculationResult",
+    "CorporateAction",
+    "CorporateActionScanStatus",
     "EdgarFact",
     "EdgarFilingEvidence",
     "EdgarResult",

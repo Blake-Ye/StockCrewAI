@@ -428,7 +428,7 @@ def test_generate_report_indexes_only_validated_typed_reit_sources() -> None:
 
     def capture_context(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
-        return {"quant": {}}
+        return {}
 
     with (
         patch(

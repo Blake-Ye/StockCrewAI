@@ -14,10 +14,6 @@ from stockcrewai.tools.filing_section_search_tool import (
     FilingSectionSearchTool,
     FilingSectionSearchToolInput,
 )
-from stockcrewai.tools.quant_summary_tool import (
-    QuantSummaryTool,
-    QuantSummaryToolInput,
-)
 from stockcrewai.tools.validated_calculation_tool import (
     ValidatedCalculationTool,
     ValidatedCalculationToolInput,
@@ -48,11 +44,6 @@ class FakeEvidenceStore:
     ) -> Any:
         self.calls.append(("search_validated_filing_sections", (query, forms, limit)))
         return self.responses["search_validated_filing_sections"]
-
-    def get_quant_summary(self, factor_ids: list[str]) -> Any:
-        self.calls.append(("get_quant_summary", (factor_ids,)))
-        return self.responses["get_quant_summary"]
-
 
 def _success_responses() -> dict[str, Any]:
     as_of = datetime(2026, 8, 10, 1, 2, 3, tzinfo=timezone.utc)
@@ -93,18 +84,6 @@ def _success_responses() -> dict[str, Any]:
                 }
             ],
         },
-        "get_quant_summary": {
-            "status": "ok",
-            "records": [
-                {
-                    "factor_id": "quality_roe",
-                    "source": "fixture:quant",
-                    "as_of": as_of,
-                    "validation_status": "valid",
-                    "normalized_value": Decimal("0.75"),
-                }
-            ],
-        },
     }
 
 
@@ -129,13 +108,6 @@ TOOL_CASES = (
         "search_validated_filing_sections",
         {"query": " risk factors ", "forms": [" 10-K "], "limit": 2},
         ("search_validated_filing_sections", ("risk factors", ["10-K"], 2)),
-    ),
-    (
-        QuantSummaryTool,
-        QuantSummaryToolInput,
-        "get_quant_summary",
-        {"factor_ids": [" quality_roe "]},
-        ("get_quant_summary", (["quality_roe"],)),
     ),
 )
 
@@ -184,11 +156,6 @@ def test_tools_require_explicit_evidence_store(tool_cls: type[Any]) -> None:
             FilingSectionSearchToolInput,
             {"query": "risk", "forms": [], "limit": 1},
             {"query": " ", "forms": [], "limit": 1},
-        ),
-        (
-            QuantSummaryToolInput,
-            {"factor_ids": ["quality_roe"]},
-            {"factor_ids": []},
         ),
     ],
 )
@@ -241,7 +208,7 @@ def test_success_results_are_json_safe_and_keep_audit_fields(tool_cls: type[Any]
 
     assert encoded
     item = result["records"][0]
-    assert any(field in item for field in ("evidence_id", "calculation_id", "factor_id"))
+    assert any(field in item for field in ("evidence_id", "calculation_id"))
     assert item["source"]
     assert item.get("as_of") or item.get("filed_at")
     assert item["validation_status"] == "valid"
@@ -253,7 +220,6 @@ def test_adapters_do_not_import_network_or_calculation_modules() -> None:
         "stockcrewai.tools.validated_evidence_tool",
         "stockcrewai.tools.validated_calculation_tool",
         "stockcrewai.tools.filing_section_search_tool",
-        "stockcrewai.tools.quant_summary_tool",
     ]
     forbidden_modules = {"requests", "httpx", "urllib", "edgar", "yfinance"}
     for module_name in modules:

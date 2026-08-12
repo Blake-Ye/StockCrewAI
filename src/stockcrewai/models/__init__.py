@@ -21,12 +21,6 @@ from stockcrewai.models.profile import (
     ReportingProfile,
     SecurityProfile,
 )
-from stockcrewai.models.quant import (
-    FactorObservation,
-    PointInTimeSnapshot,
-    QuantResearchPacket,
-    UniverseManifest,
-)
 from stockcrewai.models.request import (
     CompanyIdentity,
     ParsedRequest,
@@ -52,8 +46,4 @@ __all__ = [
     "MetricPolicy",
     "PolicyDecision",
     "GateResult",
-    "PointInTimeSnapshot",
-    "FactorObservation",
-    "QuantResearchPacket",
-    "UniverseManifest",
 ]

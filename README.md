@@ -1,6 +1,6 @@
 # StockCrewAI
 
-StockCrewAI 是一个基于 CrewAI Flow 的 evidence-backed research/quant prototype：它把自然语言研究请求转换为可审计的 SEC、市场数据、财务计算、门禁和报告。当前发布版不承诺覆盖所有美股，也不承诺无偏 Alpha 或未来收益。
+StockCrewAI 是一个基于 CrewAI Flow 的 evidence-backed 投研原型：它把自然语言研究请求转换为可审计的 SEC、市场数据、财务计算、行业类别门禁和报告。当前发布版主要面向 SIC 识别为普通经营公司的美国上市公司，不承诺覆盖所有美股或未来收益。
 
 ## 先看结论
 
@@ -9,7 +9,7 @@ StockCrewAI 是一个基于 CrewAI Flow 的 evidence-backed research/quant proto
 - 离线测试使用替身、fixture 或注入数据，默认不访问 SEC、Yahoo、DeepSeek 或付费 API。
 - 真实运行需要外部服务和本地配置；数据不足、模型输出不合约或 Profile 不适用时，结果会保留结构化状态，不补零、不补造数据。
 
-项目定位是可审计的研究初稿与量化原型，不是交易建议、收益保证或无偏 Alpha 系统。
+项目定位是可审计的研究初稿，不是交易建议、收益保证或收益预测系统。
 
 ## 当前发布状态
 
@@ -47,29 +47,30 @@ uv sync --group dev
 | `AnalysisCrew` | `RiskAnalysisAgent` | 只解释已验证 SEC filing 风险文本，生成带 Evidence ID 的风险 Claim。 |
 | `ReportCrew` | `ReportWriterAgent` | 组织无数字叙述草稿；最终数字、状态、来源和 Verdict 由 Python Renderer 注入。 |
 
-估值、量化、验证和 Verdict 没有额外 LLM Agent。Agent 不能自行选 SEC 文件、决定 CIK、重新计算、补齐数字、修改 Gate 或生成最终评级。
+估值、验证和 Verdict 没有额外 LLM Agent。Agent 不能自行选 SEC 文件、决定 CIK、重新计算、补齐数字、修改 Gate 或生成最终评级。
 
 ## 数据流
 
 ```mermaid
 flowchart LR
     A[研究请求] --> B[RequestParserCrew\nRequestParserAgent]
-    B --> C[Python 实体解析与 Profile]
-    C -->|支持的证券| D[SEC + Market 数据选择]
-    C -->|ETF/基金等不支持证券| X[unsupported_security 结果]
-    D --> E[Evidence 规范化与验证]
-    E --> F[Decimal Calculation\nTTM/估值]
-    F --> G[Analysis Gate]
-    G -->|ready| H[AnalysisCrew\nFinancialQuality + Risk]
-    G -->|blocked| Y[结构化阻断结果]
-    H --> I[Claim Gate]
-    I -->|通过| J[Python Deterministic Verdict]
-    I -->|阻断| Y
-    J --> K[ReportCrew\nReportWriterAgent]
-    K --> L[Python Renderer + Final Validator]
-    X --> L
-    Y --> M[不生成正式报告]
-    L --> N[Markdown + JSON artifacts]
+    B --> C[确定性公司解析]
+    C --> D[SEC EdgarTools\nFacts/Filings/SIC]
+    D --> E[Evidence + Calculation\nValidation]
+    E --> F[SEC Scope/Profile Gate]
+    F -->|普通经营公司 Profile| G[Yahoo 市场价格 + 估值]
+    F -->|范围不支持| X[unsupported scope 结果\nreason_code]
+    G --> H[Analysis Gate]
+    H -->|ready| I[AnalysisCrew\nFinancialQuality + Risk]
+    H -->|blocked| Y[结构化阻断结果]
+    I --> J[Claim Gate]
+    J -->|通过| K[Python Deterministic Verdict]
+    J -->|阻断| Y
+    K --> L[ReportCrew\nReportWriterAgent]
+    L --> M[Python Renderer + Final Validator]
+    X --> Y
+    Y --> N[不生成正式报告]
+    M --> O[Markdown + JSON artifacts]
 ```
 
 主入口是 `src/stockcrewai/main.py` 的 `run_research()`、`kickoff()` 和 `plot()`；Flow 编排位于 `src/stockcrewai/flow.py`。数据选择、公式、验证和门禁不由 Agent 决定。
@@ -85,10 +86,44 @@ flowchart LR
 | `evidence_only` | 证据足以描述公司或风险，但不足以形成估值结论；不生成伪造估值或确定性评级。 |
 | `unsupported_security` | 输入不是当前线路支持的普通股证券；返回结构化范围说明，不套用股票报告。 |
 
-Profile policy 会先判断发行人、证券结构和申报制度，再决定指标是 `required`、`available`、`unavailable` 还是 `not_applicable`。`not_applicable` 不是失败，也不能被当成零：
+### SEC Scope/Profile 门禁与 SIC 行业类别
 
-- 银行（`bank` Profile）使用 ROA、ROE、NIM、效率比率、资本与信贷相关指标以及适用的 P/B/P/E；普通企业 FCF Yield 等指标可明确标为 `not_applicable`。
-- REIT 使用 FFO/AFFO、同店 NOI、入住率、杠杆、股息覆盖和 P/FFO 等 Profile 指标；不能强行套用普通企业指标。
+SEC/EdgarTools 提供公司的 SIC 行业代码以及证券/申报元数据；项目将这些输入规范化后交给确定性的 Profile Registry，不由 LLM 猜测公司类别。当前以下 SIC 范围在真实主流程中直接阻断：
+
+| SIC 范围 | 类别 | 阻断原因 |
+| --- | --- | --- |
+| `6020–6022` | 银行 | `unsupported_category_sic` |
+| `6300–6399` | 保险 | `unsupported_category_sic` |
+| `6798` | REIT | `unsupported_category_sic` |
+| `4900–4999` | 公用事业 | `unsupported_category_sic` |
+| `1000–1499` | 商品生产商/采掘类 | `unsupported_category_sic` |
+
+普通经营公司的 SIC 不落入上述范围，并且 SEC 申报、证券类型和必要证据满足 Profile 条件时，才进入市场价格、估值和 Analysis Crew。ETF、共同基金和封闭式基金也在同一个 `SEC Scope/Profile Gate` 中阻断，稳定原因码为 `unsupported_security`。它们的识别依据是 SEC 投资公司元数据和证券 Profile，不一定只靠 SIC；因此统一的是线路和出口，不能混淆原因码。
+
+统一范围门禁发生在 SEC 证据与基础验证之后、Yahoo 市场价格之前。因此，系统仍需先访问 SEC 获取 SIC/证券元数据，但不会为被阻断类别调用 Yahoo、估值工具、Analysis Crew 或 Report Crew。
+
+典型 JPM 阻断输出：
+
+```text
+status=BLOCKED
+domain=scope
+reason_code=unsupported_category_sic
+required_data=unsupported_category_sic:sic=6022, unsupported_category_sic:issuer_profile=bank
+```
+
+这表示“银行类别不在当前普通经营公司主线支持范围”，不是银行指标缺失。Profile policy 会先判断发行人、证券结构和申报制度，再决定指标是 `required`、`available`、`unavailable` 还是 `not_applicable`。`not_applicable` 不是失败，也不能被当成零：
+
+ETF/基金的范围阻断会使用同一出口，但原因码不同：
+
+```text
+status=BLOCKED
+domain=scope
+reason_code=unsupported_security
+required_data=unsupported_security:security_profile=unsupported_fund_security, unsupported_security:coverage_level=unsupported_security
+```
+
+- 银行、保险、REIT、公用事业和商品生产商的 Profile 适配器仍保留用于离线测试和未来扩展，但真实 SEC SIC 输入会先经过类别门禁。
+- 普通企业 FCF Yield 等指标只在适用的普通经营公司范围内计算；非普通类别不套用普通企业指标。
 - ADR 不自动等于不支持；ADR 比例、等价股数、股权类别、申报制度和货币证据必须分别验证，缺少可验证汇率或历史证据时可能是 `partial` 或 `evidence_only`。
 - SPAC 使用信托现金、认股权证稀释和合并前股数等结构化指标；普通经营公司的 P/E、FCF 或反向 DCF 不会被强行计算，当前政策可输出 `evidence_only`。
 - ETF、共同基金、封闭式基金等投资公司证券属于 `unsupported_security`，不生成普通股投资报告。
@@ -165,17 +200,9 @@ uv run --no-sync crewai flow plot
 | Yahoo/市场 | `yahoo_rate_limit`、`market_price_unavailable`、市场价格或历史行情阶段失败。 | SEC 证据缺失或模型输出失败。 |
 | LLM/输出契约 | 请求解析、Analysis 或 Report 阶段的 JSON 不可解析、`analysis_output_unparseable`、`claims_empty` 等。 | 把 Agent 的文字当成已验证数字或把外部数据失败归因给 SEC。 |
 | 代码/运行时 | `runtime`、`result_not_mapping` 或未满足内部契约的 Python 异常。 | 正常的 `not_applicable` 或外部服务限流。 |
-| Profile/门禁 | `profile_classification_partial`、`unsupported_security`、指标 `not_applicable` 或 Gate 阻断。 | 认为所有指标对所有证券都必须存在。 |
+| Profile/门禁 | `profile_classification_partial`、`unsupported_category_sic`、`unsupported_security`、指标 `not_applicable` 或 Gate 阻断。 | 认为所有指标对所有证券都必须存在，或把类别不支持误写成指标 `missing`。 |
 
 `reason_code` 是机器可读的稳定根因；不要只看自然语言 warning，也不要用零、空字符串或旧值掩盖 `unavailable`。Gate 是 Python 的确定性决策，不是 LLM 的意见。
-
-## 量化边界
-
-- **Point-in-time**：每个历史快照只使用其 `as_of` 之前可获得的申报和市场证据，避免 look-ahead bias。
-- **因子**：价值、质量、成长、动量和风险等因子从已验证快照确定性计算；缺失或不适用时保留 typed 状态，不由 LLM 改数字。
-- **Walk-forward/backtest**：按 signal date、trade date、forward return、换手和成本检验研究规则在历史样本上的执行一致性，可用于发现未来信息泄漏和评估样本外流程；回测不是未来收益保证。
-
-量化结果是研究旁证或 prototype 能力，不能升级为无偏 Alpha、稳定超额收益或投资建议。
 
 ## 面试展示的最短阅读顺序
 
@@ -185,4 +212,4 @@ uv run --no-sync crewai flow plot
 4. `src/stockcrewai/crews/`：看 3 个 Crew 与 4 个 Agent 的最小职责；再看 `tools/`、`models/`、`validators/` 的确定性边界。
 5. `docs/architecture.md`、`docs/testing-strategy.md`、`docs/error-model.md`：看目标架构、离线门禁和失败解释。
 
-项目亮点是：Agent 与确定性 Python 内核职责分离；Evidence/Calculation/Claim 可追溯；`Decimal` 计算和 Profile-aware 指标适用性；point-in-time 与 walk-forward 边界清楚；Gate、Verdict 和报告数字不由 LLM 自由决定；默认测试不触网。当前发布版仍是 evidence-backed research/quant prototype，未宣称所有美股 full coverage、无偏 Alpha、未来收益或真实网络运行必然成功。
+项目亮点是：Agent 与确定性 Python 内核职责分离；Evidence/Calculation/Claim 可追溯；`Decimal` 计算和 Profile-aware 指标适用性；Gate、Verdict 和报告数字不由 LLM 自由决定；默认测试不触网。当前发布版不宣称所有美股 full coverage、未来收益或真实网络运行必然成功。

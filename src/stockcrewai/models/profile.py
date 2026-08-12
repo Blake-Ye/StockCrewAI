@@ -48,6 +48,12 @@ class CoverageLevel(str, Enum):
     UNSUPPORTED_SECURITY = "unsupported_security"
 
 
+_ORDINARY_SECURITY_PROFILES = frozenset(
+    {SecurityProfile.COMMON_STOCK, SecurityProfile.MULTI_CLASS}
+)
+_ORDINARY_SCOPE_EVIDENCE_REASON = "ordinary_scope_evidence_verified"
+
+
 class ProfileResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -58,3 +64,36 @@ class ProfileResult(BaseModel):
     classification_evidence_ids: list[_NonEmptyString] = Field(default_factory=list)
     reason_codes: list[_NonEmptyString] = Field(default_factory=list)
     registry_version: _NonEmptyString
+
+    @property
+    def ordinary_scope_reason_code(self) -> str:
+        """Return the stable reason for allowing or blocking ordinary scope."""
+        if self.security_profile is SecurityProfile.UNSUPPORTED_FUND_SECURITY:
+            return "ordinary_scope_security_unsupported_fund_security"
+        if self.issuer_profile is not IssuerProfile.STANDARD_OPERATING:
+            if self.issuer_profile is not IssuerProfile.UNKNOWN:
+                return f"ordinary_scope_issuer_{self.issuer_profile.value}"
+        if self.reporting_profile is not ReportingProfile.DOMESTIC_US_GAAP:
+            if self.reporting_profile is not ReportingProfile.UNKNOWN:
+                return f"ordinary_scope_reporting_{self.reporting_profile.value}"
+        if self.security_profile not in _ORDINARY_SECURITY_PROFILES:
+            if self.security_profile is not SecurityProfile.UNKNOWN:
+                return f"ordinary_scope_security_{self.security_profile.value}"
+        if self.issuer_profile is not IssuerProfile.STANDARD_OPERATING:
+            return f"ordinary_scope_issuer_{self.issuer_profile.value}"
+        if self.reporting_profile is not ReportingProfile.DOMESTIC_US_GAAP:
+            return f"ordinary_scope_reporting_{self.reporting_profile.value}"
+        if self.security_profile not in _ORDINARY_SECURITY_PROFILES:
+            return f"ordinary_scope_security_{self.security_profile.value}"
+        if (
+            self.coverage_level is not CoverageLevel.FULL
+            or not self.classification_evidence_ids
+            or _ORDINARY_SCOPE_EVIDENCE_REASON not in self.reason_codes
+        ):
+            return "ordinary_scope_evidence_missing"
+        return "ordinary_scope_allowed"
+
+    @property
+    def is_ordinary_scope(self) -> bool:
+        """Whether this profile is eligible for the ordinary-company mainline."""
+        return self.ordinary_scope_reason_code == "ordinary_scope_allowed"

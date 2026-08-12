@@ -1551,7 +1551,7 @@ class AnalysisGateTests(unittest.TestCase):
         self.assertIn("## 执行摘要", result["report"])
         self.assertIn("确定性状态：status=ready", result["report"])
         self.assertIn("财务质量稳定。", result["report"])
-        self.assertIn("本文不构成任何投资建议。", result["report"])
+        self.assertIn("本文不构成投资建议。", result["report"])
         self.assertNotIn("limitations", result)
         self.assertEqual(set(report_crew.inputs), {"narrative_context"})
         self.assertEqual(
@@ -1837,6 +1837,14 @@ class ReportContractTests(unittest.TestCase):
         ]
         inputs["historical_valuation"]["series"] = series
         inputs["historical_valuation"]["current_date"] = series[-1]["date"]
+        inputs["historical_valuation"].update(
+            {
+                "current_value": series[-1]["pe_ratio"],
+                "percentile_25": "15.30",
+                "five_year_median": "15.60",
+                "percentile_75": "16.00",
+            }
+        )
         inputs["ttm"] = {
             "status": "ok",
             "metrics": [
@@ -1845,6 +1853,7 @@ class ReportContractTests(unittest.TestCase):
                     "calculation_id": f"calc_{metric_id}_ttm",
                     "raw_result": raw_result,
                     "unit": "USD",
+                    "period_basis": "TTM",
                     "status": "available",
                     "validation_status": "valid",
                     "input_evidence_ids": ["ev_revenue"],
@@ -1859,6 +1868,40 @@ class ReportContractTests(unittest.TestCase):
             ],
         }
         return inputs
+
+    def test_report_context_rejects_missing_and_non_ttm_period_basis(self):
+        from stockcrewai.crews.report.crew import build_report_context
+
+        cases = (
+            ("missing", None, []),
+            ("explicit_fy", "FY", []),
+            ("explicit_ytd", "YTD", []),
+        )
+        for case_name, period_basis, expected in cases:
+            with self.subTest(case_name=case_name):
+                inputs = self._canonical_context_inputs()
+                metric = {
+                    "metric_id": "free_cash_flow",
+                    "calculation_id": "calc_free_cash_flow_ttm",
+                    "raw_result": "22000000000",
+                    "unit": "USD",
+                    "status": "available",
+                    "validation_status": "valid",
+                    "input_evidence_ids": ["ev_fcf"],
+                }
+                if period_basis is not None:
+                    metric["period_basis"] = period_basis
+                inputs["ttm"] = {"status": "ok", "metrics": [metric]}
+
+                context = build_report_context(**inputs)
+
+                self.assertEqual(
+                    [
+                        (item["metric_id"], item["period_basis"])
+                        for item in context["ttm"]["metrics"]
+                    ],
+                    expected,
+                )
 
     def test_historical_metric_prefers_current_date_over_selected_dates(self):
         from stockcrewai.crews.report.crew import build_report_context
@@ -1920,18 +1963,18 @@ class ReportContractTests(unittest.TestCase):
             parse_report_draft(VALID_REPORT_DRAFT),
         )
 
-        self.assertIn("总体判断：估值偏贵", report)
-        self.assertIn("风险等级：中等风险", report)
+        self.assertIn("- **结论：** 当前估值高于过去五年中位水平", report)
+        self.assertNotIn("中等风险", report)
         self.assertIn("触发规则：估值偏高规则触发", report)
-        self.assertIn("行动参考：等待更高安全边际", report)
+        self.assertIn("- **研究状态：** 估值偏贵", report)
         self.assertIn("P/E（市盈率）", report)
         self.assertIn("FCF Yield（自由现金流收益率）", report)
         self.assertIn("TTM（过去十二个月）", report)
         self.assertIn("DCF（现金流折现）", report)
         self.assertIn("反向 DCF（由市场价格倒推隐含增长）", report)
-        self.assertIn("读图：柱子高于 0 表示增长/利润率为正；股份变化为负表示股份减少。", report)
-        self.assertIn("读图：所有柱子都使用最近十二个月口径，单位为十亿美元，便于比较规模而不是比较利润率。", report)
-        self.assertIn("读图：曲线高于中位数表示当前 TTM P/E 高于自身历史常态；最新点用于定位当前估值。", report)
+        self.assertIn("三个面板分别展示增长与资本配置、盈利能力和现金流质量", report)
+        self.assertIn("各柱均为最近十二个月数据", report)
+        self.assertIn("曲线展示 TTM P/E 的历史变化", report)
         self.assertEqual(report.count("data:image/png;base64,"), 3)
         self.assertNotIn("无已验证 Claim。", report)
         self.assertNotRegex(report, r"Decimal\(['\"]")
@@ -1998,8 +2041,9 @@ class ReportContractTests(unittest.TestCase):
 
         self.assertEqual(
             {metric["section"] for metric in context["metrics"]},
-            {"financial", "current_valuation", "historical_valuation", "reverse_dcf"},
+            {"financial", "current_valuation", "historical_valuation"},
         )
+        self.assertEqual(context["reverse_dcf"], {})
         required = {
             "metric_id",
             "display_value",
@@ -2422,6 +2466,14 @@ class ReportContractTests(unittest.TestCase):
             "卖出",
             "持有",
             "Python Renderer",
+            "chart_context",
+            "我们可以看到",
+            "这说明",
+            "由此判断",
+            "不得自行计算",
+            "不得改变确定性 Verdict",
+            "available=false",
+            "不得声称已直接读取图片",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, prompt)

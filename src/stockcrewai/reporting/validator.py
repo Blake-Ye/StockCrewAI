@@ -43,8 +43,13 @@ _REPORT_ADVICE_RE = re.compile(
     r"(?:买入|卖出|持有|增持|减持)"
     r"|(?:买入|卖出|持有|增持|减持)(?:建议|推荐|信号|评级|仓位|操作)"
     r"|投资建议|投资推荐|买卖建议"
-    r"|\b(?:buy|sell|hold)\b(?:\s+(?:the\s+)?(?:stock|shares|position|rating))?",
+    r"|\b(?:buy|sell|hold)\b",
     re.IGNORECASE,
+)
+_REPORT_HOLD_TICKER_LINE_RE = re.compile(
+    r"(?:#\s+.+[（(]HOLD[)）]|"
+    r"[A-Za-z][A-Za-z .'-]+[（(]HOLD[)）]|"
+    r"(?:ticker|symbol|股票代码|证券代码)\s*[:=：]\s*HOLD)"
 )
 _REPORT_DRAFT_ADVICE_RE = re.compile(
     r"(?:建议|推荐|应当|应该|可以考虑|适合|不妨|请勿|不要|不应|避免)"
@@ -235,8 +240,14 @@ def validate_rendered_report(
             continue
         if heading.startswith("## "):
             in_disclaimer = False
-        if not in_disclaimer and _REPORT_ADVICE_RE.search(line):
-            return False, "最终报告不得包含买入、卖出、持有或其他投资建议。"
+        if not in_disclaimer:
+            for match in _REPORT_ADVICE_RE.finditer(line):
+                if (
+                    match.group(0).casefold() == "hold"
+                    and _REPORT_HOLD_TICKER_LINE_RE.fullmatch(line.strip())
+                ):
+                    continue
+                return False, "最终报告不得包含买入、卖出、持有或其他投资建议。"
     if deterministic_status is not None:
         marker = f"确定性状态：status={deterministic_status}"
         if marker not in report:

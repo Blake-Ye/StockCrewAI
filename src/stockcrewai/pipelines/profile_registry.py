@@ -53,6 +53,9 @@ _SECURITY_PROFILE_VALUES = {
     "common_stock": SecurityProfile.COMMON_STOCK,
     "common": SecurityProfile.COMMON_STOCK,
 }
+_DOMESTIC_FILING_FORMS = frozenset({"10_k", "10_q", "8_k"})
+_US_GAAP_TAXONOMY_PREFIX = "us_gaap"
+_ORDINARY_SCOPE_EVIDENCE_REASON = "ordinary_scope_evidence_verified"
 
 
 def _text(value: Any) -> str | None:
@@ -115,6 +118,60 @@ def _issuer_from_sic(sic: int) -> IssuerProfile | None:
     return None
 
 
+def _has_us_gaap_taxonomy(source_metadata: Mapping[str, Any]) -> bool:
+    return any(
+        (normalized or "").startswith(_US_GAAP_TAXONOMY_PREFIX)
+        for normalized in (
+            _normalized(value) for value in _string_values(source_metadata, "taxonomy")
+        )
+    )
+
+
+def _has_ordinary_filing_signal(source_metadata: Mapping[str, Any]) -> bool:
+    return _has_any_normalized(source_metadata, "filing_forms", _DOMESTIC_FILING_FORMS)
+
+
+def _has_common_security_signal(source_metadata: Mapping[str, Any]) -> bool:
+    values = {
+        _normalized(source_metadata.get(key))
+        for key in ("sec_security_profile", "security_type", "security_class")
+    }
+    return any(value in {"common_stock", "common", "multi_class"} for value in values)
+
+
+def _has_valid_non_special_sic(source_metadata: Mapping[str, Any]) -> bool:
+    sic, has_sic_signal = _parse_sic(source_metadata.get("sic"))
+    return (
+        has_sic_signal
+        and sic is not None
+        and 0 <= sic <= 9999
+        and _issuer_from_sic(sic) is None
+    )
+
+
+def _ordinary_scope_evidence_present(source_metadata: Mapping[str, Any]) -> bool:
+    explicit_issuer = _normalized(source_metadata.get("sec_registrant_profile"))
+    issuer_signal = (
+        explicit_issuer == IssuerProfile.STANDARD_OPERATING.value
+        or (explicit_issuer is None and _has_valid_non_special_sic(source_metadata))
+    )
+    taxonomy_values = {
+        _normalized(value) for value in _string_values(source_metadata, "taxonomy")
+    }
+    return (
+        issuer_signal
+        and source_metadata.get("has_revenue") is not False
+        and source_metadata.get("is_investment_company") is not True
+        and source_metadata.get("is_foreign_private_issuer") is not True
+        and not _fund_security_sources(source_metadata)
+        and _has_ordinary_filing_signal(source_metadata)
+        and _has_us_gaap_taxonomy(source_metadata)
+        and _has_common_security_signal(source_metadata)
+        and not _has_foreign_form_signal(source_metadata)
+        and not any((value or "").startswith("ifrs") for value in taxonomy_values)
+    )
+
+
 def _issuer_from_filing_metadata(source_metadata: Mapping[str, Any]) -> IssuerProfile | None:
     values = _string_values(source_metadata, "taxonomy")
     normalized_values = {_normalized(value) for value in values}
@@ -142,9 +199,11 @@ def _classify_issuer(
     sic, has_sic_signal = _parse_sic(source_metadata.get("sic"))
     if has_sic_signal:
         sic_profile = _issuer_from_sic(sic) if sic is not None else None
-        return sic_profile or IssuerProfile.UNKNOWN, (
-            frozenset({"sic"}) if sic_profile is not None else frozenset()
-        )
+        if sic_profile is not None:
+            return sic_profile, frozenset({"sic"})
+        if _ordinary_scope_evidence_present(source_metadata):
+            return IssuerProfile.STANDARD_OPERATING, frozenset({"sec", "sic", "filing"})
+        return IssuerProfile.UNKNOWN, frozenset()
 
     filing_profile = _issuer_from_filing_metadata(source_metadata)
     if filing_profile is not None:
@@ -358,6 +417,8 @@ def classify_profiles(source_metadata: Mapping[str, Any]) -> ProfileResult:
         reason_codes.append("security_profile_conflict_with_fund_metadata")
     if _listing_age_metadata_invalid(source_metadata):
         reason_codes.append("profile_metadata_invalid")
+    if _ordinary_scope_evidence_present(source_metadata):
+        reason_codes.append(_ORDINARY_SCOPE_EVIDENCE_REASON)
 
     if security_profile is SecurityProfile.UNSUPPORTED_FUND_SECURITY:
         coverage_level = CoverageLevel.UNSUPPORTED_SECURITY

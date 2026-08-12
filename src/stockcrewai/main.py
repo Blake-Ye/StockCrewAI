@@ -111,8 +111,23 @@ from stockcrewai.tools.valuation_tool import (  # noqa: F401
 )
 
 
+def _resolve_request(request: str | None = None) -> str:
+    """解析显式请求，禁止无输入时回退到某个具体公司。"""
+    candidates = []
+    if isinstance(request, str):
+        candidates.append(request.strip())
+    candidates.append(os.getenv("STOCKCREWAI_REQUEST", "").strip())
+    candidates.append(" ".join(sys.argv[1:]).strip())
+    resolved = next((candidate for candidate in candidates if candidate), "")
+    if not resolved:
+        raise ValueError(
+            "缺少公司分析请求；请设置 STOCKCREWAI_REQUEST 或传入命令行请求。"
+        )
+    return resolved
+
+
 def run_research(
-    request: str = DEFAULT_REQUEST,
+    request: str | None = None,
     edgar_tool: EdgarTool | None = None,
     calculator_tool: FinancialCalculatorTool | None = None,
     validation_tool: FinancialValidationTool | None = None,
@@ -128,6 +143,7 @@ def run_research(
     profile: Mapping[str, Any] | None = None,
 ):
     """以完整的 CrewAI 原生 Flow 保持旧 run_research 调用契约。"""
+    request = _resolve_request(request)
     flow_kwargs = {
         "edgar_tool": edgar_tool,
         "calculator_tool": calculator_tool,
@@ -245,10 +261,7 @@ def run_research(
 
 def main(request: str | None = None) -> None:
     """解析请求来源，打印完整 JSON，并保持旧入口的 None 返回契约。"""
-    if request is None:
-        request = os.getenv("STOCKCREWAI_REQUEST", "").strip()
-        if not request:
-            request = " ".join(sys.argv[1:]).strip() or DEFAULT_REQUEST
+    request = _resolve_request(request)
     result = run_research(request)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
@@ -269,12 +282,8 @@ def kickoff(
     result: Mapping[str, Any]
     error_message = ""
     error_type = ""
-    resolved_request = request
-    if resolved_request is None:
-        resolved_request = os.getenv("STOCKCREWAI_REQUEST", "").strip()
-        if not resolved_request:
-            resolved_request = " ".join(sys.argv[1:]).strip() or DEFAULT_REQUEST
     try:
+        resolved_request = _resolve_request(request)
         with redirect_stdout(captured), redirect_stderr(captured):
             result = run_research(
                 resolved_request,

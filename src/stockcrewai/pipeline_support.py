@@ -87,7 +87,8 @@ from stockcrewai.validators.claim_gate import (
 )
 
 
-DEFAULT_REQUEST = "分析苹果公司未来 3 年投资价值"
+# 不再内置具体公司，避免无请求运行时悄悄覆盖工作区报告。
+DEFAULT_REQUEST = ""
 
 
 class _NoopTaskOutputStorageHandler:
@@ -123,8 +124,12 @@ def _configure_crewai_runtime() -> None:
         private_attribute.default_factory = _NoopTaskOutputStorageHandler
 
 
-def run_request_parser(request: str = DEFAULT_REQUEST):
+def run_request_parser(request: str | None = None):
     """运行 Request Parser Crew 并返回原始 CrewAI 输出对象。"""
+    if not isinstance(request, str) or not request.strip():
+        raise ValueError(
+            "缺少公司分析请求；请设置 STOCKCREWAI_REQUEST 或传入命令行请求。"
+        )
     _configure_crewai_runtime()
     return RequestParserCrew().crew().kickoff(inputs={"request": request})
 

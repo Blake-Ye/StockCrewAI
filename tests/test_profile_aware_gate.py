@@ -12,6 +12,7 @@ from stockcrewai.models.profile import (
     ReportingProfile,
     SecurityProfile,
 )
+from stockcrewai.pipelines.profile_registry import classify_profiles
 from stockcrewai.validators.analysis_gate import evaluate_analysis_gate
 
 
@@ -73,6 +74,28 @@ def test_blocked_gate_lists_only_blocking_unavailable_or_invalid_decisions() -> 
     assert "negative_eps" in gate.reason_codes
     assert "required_calculation_missing" in gate.reason_codes
     assert gate.policy_version == "metric-policy:v1"
+
+
+def test_sic_classified_nonordinary_company_is_blocked_before_metric_gate() -> None:
+    profile = classify_profiles(
+        {
+            "sic": "6022",
+            "filing_forms": ["10-K", "10-Q"],
+            "taxonomy": ["us-gaap"],
+            "security_type": "common_stock",
+            "security_class": "common_stock",
+            "has_revenue": True,
+        }
+    )
+
+    gate = evaluate_analysis_gate(profile, [])
+
+    assert profile.issuer_profile is IssuerProfile.BANK
+    assert "profile_classified_from_sic" in profile.reason_codes
+    assert gate.status == "unsupported"
+    assert gate.reason_codes == ["unsupported_category_sic"]
+    assert gate.blocking_decisions == []
+    assert gate.non_blocking_decisions == []
 
 
 def test_ready_gate_accepts_full_or_partial_coverage_without_blocking_decisions() -> None:

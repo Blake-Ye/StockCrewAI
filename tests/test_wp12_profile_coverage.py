@@ -19,13 +19,11 @@ from stockcrewai.models.profile import (
     ReportingProfile,
     SecurityProfile,
 )
-from stockcrewai.models.quant import PointInTimeSnapshot
 from stockcrewai.pipelines.metric_registry import (
     policy_version_for_profile,
     resolve_metric_policies,
 )
 from stockcrewai.pipelines.profile_registry import classify_profiles
-from stockcrewai.quant.factors import FACTOR_DIRECTIONS, compute_factor_observations
 from stockcrewai.profiles.foreign_issuer import evaluate_foreign_issuer_profile
 from stockcrewai.reporting.context import build_report_context
 from stockcrewai.reporting.renderer import (
@@ -39,11 +37,6 @@ PROFILE_REGISTRY_FIXTURE = (
     Path(__file__).parent / "fixtures" / "profiles" / "profile_registry.json"
 )
 FOREIGN_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "profiles" / "foreign_issuer"
-QUANT_FACTOR_FIXTURE = (
-    Path(__file__).parent / "fixtures" / "quant" / "factors" / "snapshots.json"
-)
-
-
 def _foreign_fixture(name: str) -> dict[str, Any]:
     return json.loads((FOREIGN_FIXTURE_DIR / f"{name}.json").read_text(encoding="utf-8"))
 
@@ -362,7 +355,13 @@ def test_wp12_registry_profiles_feed_the_gate_with_explicit_policy_versions() ->
         assert policy_version_for_profile(profile) == expected_versions[name]
 
         gate = evaluate_analysis_gate(profile, [])
-        expected_gate_status = "evidence_only" if name == "spac" else "ready"
+        expected_gate_status = (
+            "evidence_only"
+            if name == "spac"
+            else "unsupported"
+            if name in {"utility", "commodity_producer"}
+            else "ready"
+        )
         assert gate.status == expected_gate_status
 
 
@@ -422,92 +421,3 @@ def test_wp12_profiles_reach_report_renderer_with_identity_and_profile_boundary(
     assert f"issuer={profile.issuer_profile.value}" in report
     assert f"security={profile.security_profile.value}" in report
     assert f"reporting={profile.reporting_profile.value}" in report
-
-
-def _standard_factor_snapshot() -> PointInTimeSnapshot:
-    payload = json.loads(QUANT_FACTOR_FIXTURE.read_text(encoding="utf-8"))
-    standard = next(
-        case for case in payload["cases"] if case["name"] == "standard_operating"
-    )
-    return PointInTimeSnapshot.model_validate(standard["snapshot"])
-
-
-@pytest.mark.parametrize(
-    "issuer_profile",
-    [IssuerProfile.UTILITY, IssuerProfile.COMMODITY_PRODUCER],
-)
-def test_utility_and_commodity_profiles_use_the_operating_factor_set(
-    issuer_profile: IssuerProfile,
-) -> None:
-    snapshot = _standard_factor_snapshot().model_copy(
-        update={
-            "snapshot_id": f"snapshot_{issuer_profile.value}",
-            "issuer_profile": issuer_profile,
-        }
-    )
-
-    observations = compute_factor_observations([snapshot], "factor-formulas:v1")
-
-    assert tuple(item.factor_id for item in observations) == tuple(FACTOR_DIRECTIONS)
-    assert all(item.status == "available" for item in observations)
-    assert all(item.reason_code == "validated_inputs" for item in observations)
-
-
-def test_holding_and_spac_profiles_use_explicit_quantitative_boundaries() -> None:
-    baseline = _standard_factor_snapshot()
-    market_risk_factor_ids = {
-        factor_id
-        for factor_id in FACTOR_DIRECTIONS
-        if factor_id.startswith(("market.", "risk."))
-    }
-
-    holding = baseline.model_copy(
-        update={
-            "snapshot_id": "snapshot_holding_company",
-            "issuer_profile": IssuerProfile.HOLDING_COMPANY,
-        }
-    )
-    holding_observations = compute_factor_observations([holding], "factor-formulas:v1")
-    holding_by_id = {item.factor_id: item for item in holding_observations}
-    assert {
-        factor_id for factor_id, item in holding_by_id.items() if item.status == "available"
-    } == market_risk_factor_ids
-    assert {
-        factor_id
-        for factor_id, item in holding_by_id.items()
-        if item.status == "not_applicable"
-    } == set(FACTOR_DIRECTIONS) - market_risk_factor_ids
-    assert all(
-        item.reason_code == "validated_inputs"
-        for item in holding_by_id.values()
-        if item.status == "available"
-    )
-
-    spac = baseline.model_copy(
-        update={
-            "snapshot_id": "snapshot_spac",
-            "security_profile": SecurityProfile.SPAC,
-        }
-    )
-    spac_observations = compute_factor_observations([spac], "factor-formulas:v1")
-    assert len(spac_observations) == len(FACTOR_DIRECTIONS)
-    assert all(item.status == "not_applicable" for item in spac_observations)
-    assert all(item.reason_code == "security_profile_not_applicable" for item in spac_observations)
-    assert all(not item.evidence_ids and not item.calculation_ids for item in spac_observations)
-
-
-def test_foreign_adr_and_ifrs_metadata_do_not_change_unrelated_factor_values() -> None:
-    domestic = _standard_factor_snapshot()
-    foreign = domestic.model_copy(
-        update={
-            "security_profile": SecurityProfile.ADR,
-            "reporting_profile": ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS,
-        }
-    )
-
-    domestic_observations = compute_factor_observations([domestic], "factor-formulas:v1")
-    foreign_observations = compute_factor_observations([foreign], "factor-formulas:v1")
-
-    assert [item.model_dump(mode="json") for item in foreign_observations] == [
-        item.model_dump(mode="json") for item in domestic_observations
-    ]

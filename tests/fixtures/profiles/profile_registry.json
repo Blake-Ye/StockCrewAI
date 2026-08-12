@@ -34,7 +34,8 @@
         "reason_codes": [
           "profile_classified_from_sec_metadata",
           "profile_classified_from_filing_metadata",
-          "profile_classified_from_security_metadata"
+          "profile_classified_from_security_metadata",
+          "ordinary_scope_evidence_verified"
         ],
         "registry_version": "profile-registry:v1"
       }

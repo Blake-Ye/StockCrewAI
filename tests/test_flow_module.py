@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,6 +72,27 @@ def test_plot_copies_returned_html_without_network_or_llm(tmp_path, monkeypatch)
     for filename, content in expected_targets.items():
         assert (tmp_path / filename).read_text(encoding="utf-8") == content
     assert result is None
+
+
+def test_flow_imports_with_a_writable_default_storage_directory(tmp_path):
+    environment = os.environ.copy()
+    environment.pop("CREWAI_STORAGE_DIR", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os; import stockcrewai.flow; print(os.environ['CREWAI_STORAGE_DIR'])",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()) == (tmp_path / ".crewai").resolve()
+    assert (tmp_path / ".crewai").is_dir()
 
 
 class FlowModuleDefinitionTests(unittest.TestCase):

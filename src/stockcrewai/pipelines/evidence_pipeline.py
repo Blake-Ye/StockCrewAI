@@ -104,6 +104,22 @@ _BANK_PROFILE_FACT_ALLOWLIST = frozenset(
 _FOREIGN_PROFILE_FACT_ALLOWLIST = frozenset(
     {"ordinary_shares_per_adr", "ordinary_shares_outstanding"}
 )
+_COMMON_STOCK_FACT_METRIC_IDS = frozenset(
+    {
+        "common_shares_outstanding",
+        "common_stock_shares_outstanding",
+        "diluted_shares",
+        "diluted_weighted_average_shares",
+        "shares_outstanding",
+    }
+)
+_COMMON_STOCK_FACT_XBRL_TAGS = frozenset(
+    {
+        "commonstocksharesoutstanding",
+        "entitycommonstocksharesoutstanding",
+        "weightedaveragenumberofdilutedsharesoutstanding",
+    }
+)
 
 
 def _calculation_facts(edgar_result: EdgarResult) -> dict[str, Any]:
@@ -406,11 +422,26 @@ def profile_metadata_from_edgar(edgar_result: Any) -> dict[str, Any]:
         ]
     taxonomy: list[str] = []
     facts = payload.get("facts", {})
+    common_stock_fact_present = False
     if isinstance(facts, Mapping):
-        for fact in facts.values():
-            if isinstance(fact, Mapping) and isinstance(fact.get("taxonomy"), str):
+        for fact_id, fact in facts.items():
+            if not isinstance(fact, Mapping):
+                continue
+            if isinstance(fact.get("taxonomy"), str):
                 taxonomy.append(fact["taxonomy"])
+            metric_id = str(fact.get("metric_id") or fact_id).casefold()
+            xbrl_tag = str(fact.get("xbrl_tag") or "").casefold().rsplit(":", 1)[-1]
+            unit = str(fact.get("unit") or "").casefold()
+            if (
+                (metric_id in _COMMON_STOCK_FACT_METRIC_IDS
+                 or xbrl_tag in _COMMON_STOCK_FACT_XBRL_TAGS)
+                and (not unit or unit in {"share", "shares"})
+            ):
+                common_stock_fact_present = True
     metadata["taxonomy"] = taxonomy
+    if common_stock_fact_present:
+        metadata.setdefault("security_type", "common_stock")
+        metadata.setdefault("security_class", "common_stock")
     evidence_ids = (
         [
             fact.get("evidence_id")

@@ -195,7 +195,7 @@ def test_flow_refresh_and_generate_report_use_utility_typed_records() -> None:
 
     def capture_context(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
-        return {"quant": {}}
+        return {}
 
     with (
         patch(
