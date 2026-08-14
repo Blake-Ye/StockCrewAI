@@ -162,6 +162,173 @@ def _canonical_context_inputs() -> dict[str, object]:
     }
 
 
+def _apple_q3_context_inputs() -> dict[str, object]:
+    source_reference = "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
+    current_duration = {
+        "form": "10-Q",
+        "fiscal_period": "Q3",
+        "period_type": "duration",
+        "period_start": "2025-09-28",
+        "period_end": "2026-06-27",
+    }
+    prior_duration = {
+        "form": "10-Q",
+        "fiscal_period": "Q3",
+        "period_type": "duration",
+        "period_start": "2024-09-29",
+        "period_end": "2025-06-28",
+    }
+    current_instant = {
+        "form": "10-Q",
+        "fiscal_period": "Q3",
+        "period_type": "instant",
+        "period_start": None,
+        "period_end": "2026-06-27",
+    }
+    prior_instant = {
+        "form": "10-Q",
+        "fiscal_period": "Q3",
+        "period_type": "instant",
+        "period_start": None,
+        "period_end": "2025-06-28",
+    }
+    evidence_specs = {
+        "ev_aapl_revenue_2026_q3": current_duration,
+        "ev_aapl_revenue_prior_2025_q3": prior_duration,
+        "ev_aapl_operating_income_2026_q3": current_duration,
+        "ev_aapl_net_income_2026_q3": current_duration,
+        "ev_aapl_operating_cash_flow_2026_q3": current_duration,
+        "ev_aapl_capex_2026_q3": current_duration,
+        "ev_aapl_common_shares_outstanding_2026_q3": current_instant,
+        "ev_aapl_shares_prior_2025_q3": prior_instant,
+    }
+    calculations = [
+        ("revenue_growth", "16.15%", ["ev_aapl_revenue_2026_q3", "ev_aapl_revenue_prior_2025_q3"]),
+        ("operating_margin", "33.60%", ["ev_aapl_operating_income_2026_q3", "ev_aapl_revenue_2026_q3"]),
+        ("net_margin", "27.85%", ["ev_aapl_net_income_2026_q3", "ev_aapl_revenue_2026_q3"]),
+        (
+            "free_cash_flow_margin",
+            "30.24%",
+            [
+                "ev_aapl_operating_cash_flow_2026_q3",
+                "ev_aapl_capex_2026_q3",
+                "ev_aapl_revenue_2026_q3",
+            ],
+        ),
+        (
+            "cash_conversion",
+            "115.31%",
+            ["ev_aapl_operating_cash_flow_2026_q3", "ev_aapl_net_income_2026_q3"],
+        ),
+        (
+            "share_dilution",
+            "-1.67%",
+            [
+                "ev_aapl_common_shares_outstanding_2026_q3",
+                "ev_aapl_shares_prior_2025_q3",
+            ],
+        ),
+    ]
+    return {
+        "company": {"name": "Apple Inc.", "ticker": "AAPL"},
+        "validated_claims": [],
+        "deterministic_verdict": {"status": "ready"},
+        "calculations": [
+            {
+                "calculation_id": f"calc_{metric_id}",
+                "formula_id": metric_id,
+                "display_result": display_result,
+                "unit": "ratio",
+                "status": "available",
+                "validation_status": "valid",
+                "input_evidence_ids": evidence_ids,
+                **(
+                    {"adjustment_basis": "raw"}
+                    if metric_id == "share_dilution"
+                    else {}
+                ),
+            }
+            for metric_id, display_result, evidence_ids in calculations
+        ],
+        "source_metadata": {
+            "facts": {
+                evidence_id: {
+                    "evidence_id": evidence_id,
+                    **metadata,
+                    "period_basis": None,
+                    "validation_status": "valid",
+                    "source_reference": source_reference,
+                }
+                for evidence_id, metadata in evidence_specs.items()
+            }
+        },
+    }
+
+
+def _apple_q3_context_with_consistent_explicit_bases() -> dict[str, object]:
+    inputs = deepcopy(_apple_q3_context_inputs())
+    calculations = inputs["calculations"]
+    source_metadata = inputs["source_metadata"]
+    assert isinstance(calculations, list)
+    assert isinstance(source_metadata, dict)
+    facts = source_metadata["facts"]
+    assert isinstance(facts, dict)
+
+    expected_bases = {
+        "revenue_growth": "YTD同比",
+        "operating_margin": "YTD",
+        "net_margin": "YTD",
+        "free_cash_flow_margin": "YTD",
+        "cash_conversion": "YTD",
+        "share_dilution": "同比时点",
+    }
+    consistent_facts: dict[str, dict[str, object]] = {}
+    consistent_calculations: list[dict[str, object]] = []
+    for calculation in calculations:
+        metric_id = str(calculation["formula_id"])
+        basis = expected_bases[metric_id]
+        evidence_ids = calculation["input_evidence_ids"]
+        assert isinstance(evidence_ids, list)
+        renamed_evidence_ids = []
+        for index, evidence_id in enumerate(evidence_ids):
+            original = facts[evidence_id]
+            assert isinstance(original, dict)
+            renamed_id = f"ev_consistent_{metric_id}_{index}"
+            consistent_facts[renamed_id] = {
+                **original,
+                "evidence_id": renamed_id,
+                "period_basis": basis,
+            }
+            renamed_evidence_ids.append(renamed_id)
+        consistent_calculations.append(
+            {
+                **calculation,
+                "period_basis": basis,
+                "input_evidence_ids": renamed_evidence_ids,
+            }
+        )
+
+    inputs["calculations"] = consistent_calculations
+    inputs["source_metadata"] = {
+        **source_metadata,
+        "facts": consistent_facts,
+    }
+    return inputs
+
+
+def _strict_lite_sections(report: str) -> dict[str, str]:
+    matches = list(
+        re.finditer(r"^## (?P<number>[0-9]+)\. [^\n]+$", report, re.MULTILINE)
+    )
+    assert [match.group("number") for match in matches] == [str(index) for index in range(10)]
+    return {
+        match.group("number"): report[
+            match.end() : (matches[index + 1].start() if index + 1 < len(matches) else len(report))
+        ]
+        for index, match in enumerate(matches)
+    }
+
+
 def _reader_focused_inputs() -> dict[str, object]:
     inputs = _canonical_context_inputs()
     inputs["deterministic_verdict"] = {
@@ -262,6 +429,11 @@ def _financial_metrics() -> list[dict[str, object]]:
             "period_end": "2025-12-31",
             "as_of": "2025-12-31",
             "evidence_ids": [f"ev_{metric_id}"],
+            **(
+                {"adjustment_basis": "raw"}
+                if metric_id == "share_dilution"
+                else {}
+            ),
         }
         for metric_id, value in values.items()
     ]
@@ -465,6 +637,176 @@ def test_report_metric_rejects_missing_evidence_period_basis() -> None:
     )
 
     assert metric.get("period_basis") is None
+
+
+def test_q3_calculation_period_conflict_fails_closed_and_suppresses_chart() -> None:
+    inputs = _apple_q3_context_inputs()
+    calculations = inputs["calculations"]
+    assert isinstance(calculations, list)
+    inputs["calculations"] = [
+        {
+            **calculation,
+            **(
+                {"period_basis": "FY"}
+                if calculation["formula_id"] == "operating_margin"
+                else {}
+            ),
+        }
+        for calculation in calculations
+    ]
+
+    context = build_report_context(**inputs)
+    metric = next(
+        metric
+        for metric in context["metrics"]
+        if metric["metric_id"] == "operating_margin"
+    )
+
+    assert metric.get("period_basis") is None
+    assert "financial_kpis" not in build_report_visuals(context=context)
+
+
+def test_q3_evidence_period_conflict_fails_closed_and_suppresses_chart() -> None:
+    inputs = _apple_q3_context_inputs()
+    source_metadata = inputs["source_metadata"]
+    assert isinstance(source_metadata, dict)
+    facts = source_metadata["facts"]
+    assert isinstance(facts, dict)
+    for evidence_id in (
+        "ev_aapl_operating_income_2026_q3",
+        "ev_aapl_revenue_2026_q3",
+    ):
+        evidence = facts[evidence_id]
+        assert isinstance(evidence, dict)
+        evidence["period_basis"] = "FY"
+
+    context = build_report_context(**inputs)
+    metric = next(
+        metric
+        for metric in context["metrics"]
+        if metric["metric_id"] == "operating_margin"
+    )
+
+    assert metric.get("period_basis") is None
+    assert "financial_kpis" not in build_report_visuals(context=context)
+
+
+def test_q3_calculation_evidence_and_inferred_periods_agree_for_chart() -> None:
+    context = build_report_context(
+        **_apple_q3_context_with_consistent_explicit_bases()
+    )
+
+    metric = next(
+        metric
+        for metric in context["metrics"]
+        if metric["metric_id"] == "operating_margin"
+    )
+
+    assert metric["period_basis"] == "YTD"
+    assert "financial_kpis" in build_report_visuals(context=context)
+
+
+def test_q3_complete_structured_period_fields_still_infer_and_generate_chart() -> None:
+    context = build_report_context(**_apple_q3_context_inputs())
+
+    metric = next(
+        metric
+        for metric in context["metrics"]
+        if metric["metric_id"] == "operating_margin"
+    )
+
+    assert metric["period_basis"] == "YTD"
+    assert "financial_kpis" in build_report_visuals(context=context)
+
+
+def test_real_apple_q3_context_restores_missing_financial_kpi_chart() -> None:
+    context = build_report_context(**_apple_q3_context_inputs())
+
+    visuals = build_report_visuals(context=context)
+
+    assert "financial_kpis" in visuals
+
+
+def test_real_apple_q3_context_restores_three_visuals_and_caption_basis() -> None:
+    inputs = _apple_q3_context_inputs()
+    complete_inputs = _reader_focused_inputs()
+    inputs["annual_financial_history"] = complete_inputs["annual_financial_history"]
+    inputs["historical_valuation"] = complete_inputs["historical_valuation"]
+
+    context = build_report_context(**inputs)
+    visuals = build_report_visuals(context=context)
+    report = render_validated_report(
+        context,
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+
+    assert set(visuals) == {
+        "financial_kpis",
+        "annual_financial_trend",
+        "historical_pe",
+    }
+    assert report.count("data:image/png;base64,") == 3
+    assert "期间：YTD同比 / YTD / 同比时点（2026-06-27）" in report
+    assert "## 9. 非投资建议声明" in report
+    assert "<!-- ## 9. 非投资建议声明 -->" not in report
+
+
+def test_generate_report_preserves_standard_operating_period_fields() -> None:
+    from stockcrewai.flow import ResearchFlow
+
+    from unittest.mock import Mock, patch
+
+    inputs = _apple_q3_context_inputs()
+    source_metadata = inputs["source_metadata"]
+    assert isinstance(source_metadata, dict)
+    facts = source_metadata["facts"]
+    assert isinstance(facts, dict)
+    fact = facts["ev_aapl_revenue_2026_q3"]
+    assert isinstance(fact, dict)
+
+    flow = ResearchFlow()
+    flow._validation_result = SimpleNamespace(status="valid")
+    flow._edgar_result = SimpleNamespace(ttm_inputs={})
+    flow._pipeline_state = {
+        "company_name": "Apple Inc.",
+        "ticker": "AAPL",
+        "facts": {"revenue": {**fact, "evidence_id": "ev_aapl_revenue_2026_q3"}},
+        "calculations": [],
+    }
+    flow._risk_input = {}
+
+    captured: dict[str, object] = {}
+    flow_module = __import__("stockcrewai.flow", fromlist=["build_report_context"])
+    original_build_report_context = flow_module.build_report_context
+
+    def capture_report_context(**kwargs: object) -> dict[str, object]:
+        captured["source_metadata"] = kwargs["source_metadata"]
+        return original_build_report_context(**kwargs)
+
+    report_crew = Mock()
+    report_crew.kickoff.return_value = SimpleNamespace(raw=VALID_REPORT_DRAFT)
+    report_factory = Mock()
+    report_factory.return_value.crew.return_value = report_crew
+    with (
+        patch.object(flow_module, "ReportCrew", report_factory),
+        patch.object(
+            flow_module,
+            "build_report_context",
+            side_effect=capture_report_context,
+        ),
+        patch.object(flow_module, "render_validated_report", return_value="# report"),
+        patch.object(flow_module, "validate_rendered_report", return_value=(True, "")),
+    ):
+        flow.generate_report()
+
+    generated_source_metadata = captured["source_metadata"]
+    assert isinstance(generated_source_metadata, dict)
+    generated_facts = generated_source_metadata["facts"]
+    assert isinstance(generated_facts, dict)
+    generated_fact = generated_facts["revenue"]
+    assert isinstance(generated_fact, dict)
+    assert generated_fact["fiscal_period"] == "Q3"
+    assert generated_fact["period_type"] == "duration"
 
 
 def test_normalized_financial_kpis_without_basis_are_unavailable_and_caption_is_insufficient() -> None:
@@ -795,7 +1137,7 @@ def test_report_historical_current_pe_uses_realtime_date_not_series_month_start(
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    historical_section = report.split("## 历史估值", 1)[1].split("## 反向 DCF", 1)[0]
+    historical_section = _strict_lite_sections(report)["5"]
 
     assert "历史当前 P/E：40.00x（截至 2026-08-12" in historical_section
     assert "截至 2026-07-31" not in historical_section
@@ -1081,14 +1423,11 @@ def test_renderer_places_chart_reasoning_after_each_matching_chart() -> None:
         match.start() for match in re.finditer("data:image/png;base64,", report)
     ]
     assert len(chart_positions) == 3
-    assert chart_positions[0] < report.index("公司质量关系")
     assert "现金流关系" not in report
+    assert "公司质量关系" not in report
     assert "估值关系" not in report
     assert "整体增长但存在波动" in report
-    execution_summary = report.split("## 公司质量", 1)[0]
-    assert "data:image/png;base64," not in execution_summary
-    assert report.count("公司质量关系") == 1
-    assert f"**图表推导：** 根据上图及其对应的已验证数据，{draft.company_quality}" in report
+    assert "**图表推导：**" not in report
 
 
 def test_renderer_keeps_chart_reasoning_fields_without_visuals(monkeypatch) -> None:
@@ -1107,7 +1446,8 @@ def test_renderer_keeps_chart_reasoning_fields_without_visuals(monkeypatch) -> N
     )
 
     assert "根据上图" not in report
-    assert f"**数据解读：** 根据已验证数据，{draft.company_quality}" in report
+    assert "**图表推导：**" not in report
+    assert draft.company_quality not in report
     assert draft.financial_trend not in report
     assert draft.historical_valuation not in report
 
@@ -1126,11 +1466,11 @@ def test_chart_reasoning_uses_data_interpretation_when_current_percentile_missin
     }
 
     report = render_validated_report(context, parse_report_draft(VALID_REPORT_DRAFT))
-    historical_section = report.split("## 历史估值", 1)[1].split("## 反向 DCF", 1)[0]
+    historical_section = _strict_lite_sections(report)["5"]
 
     assert "data:image/png;base64," in historical_section
     assert "以下数据用于相对自身历史估值比较" in historical_section
-    assert "重新评估条件" in historical_section
+    assert "重新评估条件" not in historical_section
     assert "根据上图" not in historical_section
     assert "图表推导" not in historical_section
 
@@ -1141,18 +1481,20 @@ def test_markdown_renderer_keeps_sections_terms_visuals_and_fixed_hash() -> None
         parse_report_draft(VALID_REPORT_DRAFT),
     )
 
-    for heading in (
-        "执行摘要",
-        "公司质量",
-        "财务趋势",
-        "当前估值",
-        "历史估值",
-        "反向 DCF",
-        "主要风险",
-        "数据来源与方法",
-        "非投资建议声明",
-    ):
-        assert f"## {heading}" in report
+    assert [
+        line for line in report.splitlines() if line.startswith("## ")
+    ] == [
+        "## 0. 封面与研究元数据",
+        "## 1. 一页结论",
+        "## 2. 公司与研究范围",
+        "## 3. 历史经营与财务质量",
+        "## 4. 最新经营状态",
+        "## 5. 估值",
+        "## 6. 主要风险与监控条件",
+        "## 7. 综合判断与重新评估条件",
+        "## 8. 数据来源、方法与技术附录",
+        "## 9. 非投资建议声明",
+    ]
     assert "- **相对自身历史估值：** 偏高" in report
     assert "- **市场隐含预期：** 低" in report
     assert "P/E（市盈率）" in report
@@ -1185,9 +1527,11 @@ def test_strict_lite_annual_financial_table_and_section_order() -> None:
     assert [report.index(value) for value in headings] == sorted(
         report.index(value) for value in headings
     )
+    chapter_three = _strict_lite_sections(report)["3"]
     assert "| 公司名称 |" in report
     assert "| 指标 | FY2021 | FY2022 | FY2023 | FY2024 | FY2025 |" in report
-    assert "收入 CAGR" in report
+    for label in ("收入 CAGR", "净利润 CAGR", "FCF CAGR"):
+        assert chapter_three.count(label) == 1
     assert "TTM 数据与完整财年数据期间不同" in report
     assert "status=ready" not in report.split("## 8. 数据来源", 1)[0]
 
@@ -1210,7 +1554,7 @@ def test_strict_lite_has_only_numbered_top_level_sections() -> None:
         "## 6. 主要风险与监控条件",
         "## 7. 综合判断与重新评估条件",
         "## 8. 数据来源、方法与技术附录",
-        "## 非投资建议声明",
+        "## 9. 非投资建议声明",
     ]
 
 
@@ -1271,6 +1615,70 @@ def test_strict_lite_separates_market_timestamp_and_period_bases() -> None:
     assert "截至 2026-08-06T15:30:00Z" in valuation_section
 
 
+def test_strict_lite_content_stays_in_explicit_chapter_boundaries() -> None:
+    report = render_validated_report(
+        build_report_context(**_reader_focused_inputs()),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+    sections = _strict_lite_sections(report)
+
+    chapter_zero = sections["0"]
+    assert "| 市场价格 |" in chapter_zero
+    assert "2026-08-06T15:30:00Z" in chapter_zero
+
+    chapter_one = sections["1"]
+    assert chapter_one.count("- **") == 4
+
+    chapter_two = sections["2"]
+    assert "研究范围" in chapter_two
+    for forbidden in ("图 1", "利润率", "TTM", "五年财务表", "FY2021"):
+        assert forbidden not in chapter_two
+
+    chapter_three = sections["3"]
+    assert "五年财务表" in chapter_three
+    assert "完整财年起止" in chapter_three
+    assert "图 2" in chapter_three
+    for forbidden in ("YTD", "TTM", "图 1"):
+        assert forbidden not in chapter_three
+
+    chapter_four = sections["4"]
+    assert "财年年初至今累计（YTD）" in chapter_four
+    assert "TTM 财务规模（已验证）" in chapter_four
+    assert "图 1" in chapter_four
+    assert "图 2" not in chapter_four
+
+    chapter_five = sections["5"]
+    assert "图 3" in chapter_five
+    assert "反向 DCF" in chapter_five
+    assert "重新评估条件" not in chapter_five
+
+    chapter_seven = sections["7"]
+    assert chapter_seven.count("### 重新评估条件") == 1
+    assert report.count("### 重新评估条件") == 1
+    assert "**图表推导：**" not in report
+
+
+def test_non_strict_lite_report_keeps_legacy_sections() -> None:
+    inputs = _reader_focused_inputs()
+    inputs["policy_context"] = {"profile": {"issuer_profile": "bank"}}
+
+    report = render_validated_report(
+        build_report_context(**inputs),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+
+    assert "## 执行摘要" in report
+    assert "## 公司质量" in report
+    assert "## 财务趋势" in report
+    assert "## 当前估值" in report
+    assert "## 历史估值" in report
+    assert "## 反向 DCF" in report
+    assert "## 主要风险" in report
+    assert "## 数据来源与方法" in report
+    assert "## 非投资建议声明" in report
+    assert "## 0. 封面与研究元数据" not in report
+
+
 def test_markdown_renderer_puts_company_identity_in_title() -> None:
     report = render_validated_report(
         build_report_context(**_reader_focused_inputs()),
@@ -1296,10 +1704,9 @@ def test_execution_summary_hides_audit_metadata_and_moves_it_to_method_section()
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    execution_summary = report.split("## 公司质量", 1)[0]
-    method_section = report.split("## 数据来源与方法", 1)[1].split(
-        "## 非投资建议声明", 1
-    )[0]
+    sections = _strict_lite_sections(report)
+    execution_summary = sections["1"]
+    method_section = sections["8"]
 
     assert "status=" not in execution_summary
     assert "Profile：" not in execution_summary
@@ -1345,7 +1752,7 @@ def test_financial_trend_uses_annual_trend_and_keeps_ttm_fcf_list() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    financial_trend = report.split("## 财务趋势", 1)[1].split("## 当前估值", 1)[0]
+    financial_trend = _strict_lite_sections(report)["4"]
 
     assert "TTM 财务规模（已验证）" in financial_trend
     assert "自由现金流：220.00 亿美元" in financial_trend
@@ -1389,8 +1796,9 @@ def test_renderer_formats_ttm_and_reverse_dcf_amounts_using_record_units(
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    trend = report.split("## 财务趋势", 1)[1].split("## 当前估值", 1)[0]
-    reverse_section = report.split("## 反向 DCF", 1)[1].split("## 主要风险", 1)[0]
+    sections = _strict_lite_sections(report)
+    trend = sections["4"]
+    reverse_section = sections["5"]
 
     assert "自由现金流：220.00 亿美元" in trend
     assert "| 基础自由现金流（TTM，模型起点） | 220.00 亿美元 |" in reverse_section
@@ -1420,7 +1828,7 @@ def test_share_dilution_body_matches_visual_adjustment_basis_boundary() -> None:
         build_report_context(**split_inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    trend = split_report.split("## 财务趋势", 1)[1].split("## 当前估值", 1)[0]
+    trend = _strict_lite_sections(split_report)["4"]
     assert "股份稀释率（拆分调整）：-2.00%" in trend
 
     unsupported_inputs = deepcopy(split_inputs)
@@ -1442,9 +1850,7 @@ def test_share_dilution_body_matches_visual_adjustment_basis_boundary() -> None:
         build_report_context(**unsupported_inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    unsupported_trend = unsupported_report.split("## 财务趋势", 1)[1].split(
-        "## 当前估值", 1
-    )[0]
+    unsupported_trend = _strict_lite_sections(unsupported_report)["4"]
     assert "股份稀释率" not in unsupported_trend
 
 
@@ -1491,9 +1897,7 @@ def test_risk_sources_require_exact_sec_hostname() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    risk_section = report.split("## 主要风险", 1)[1].split(
-        "## 数据来源与方法", 1
-    )[0]
+    risk_section = _strict_lite_sections(report)["6"]
 
     assert "来源：https://www.sec.gov/Archives/valid.txt" in risk_section
     assert "sec.gov.evil.example" not in risk_section
@@ -1526,7 +1930,7 @@ def test_execution_summary_explains_verified_valuation_relationships() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    execution_summary = report.split("## 公司质量", 1)[0]
+    execution_summary = _strict_lite_sections(report)["1"]
 
     assert execution_summary.count("- **") == 4
     assert "- **经营质量：** 强" in execution_summary
@@ -1564,7 +1968,7 @@ def test_report_uses_compact_reader_facing_copy_without_duplicate_audit_prose() 
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    execution_summary = report.split("## 公司质量", 1)[0]
+    execution_summary = _strict_lite_sections(report)["1"]
 
     assert "- **经营质量：** 强" in execution_summary
     assert "- **相对自身历史估值：** 偏高" in execution_summary
@@ -1574,7 +1978,7 @@ def test_report_uses_compact_reader_facing_copy_without_duplicate_audit_prose() 
     assert "总体判断：" not in execution_summary
     assert "结论仅基于已验证数据和 Claim" not in execution_summary
     assert "数字已由规范化指标展示。" not in report
-    assert report.count("## 非投资建议声明") == 1
+    assert report.count("## 9. 非投资建议声明") == 1
     assert "本文不构成任何投资建议。" not in report
 
 
@@ -1589,7 +1993,7 @@ def test_summary_turns_verified_valuation_into_observation_conditions() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    summary = report.split("## 公司质量", 1)[0]
+    summary = _strict_lite_sections(report)["1"]
 
     assert summary.count("- **") == 4
     assert "相对自身历史估值" in summary
@@ -1617,7 +2021,7 @@ def test_execution_summary_omits_unavailable_valuation_relationships() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    execution_summary = report.split("## 公司质量", 1)[0]
+    execution_summary = _strict_lite_sections(report)["1"]
 
     assert "当前 P/E" not in execution_summary
     assert "隐含增长率" not in execution_summary
@@ -1658,9 +2062,7 @@ def test_risks_are_capped_and_visible_claims_show_existing_sec_sources() -> None
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    risk_section = report.split("## 主要风险", 1)[1].split(
-        "## 数据来源与方法", 1
-    )[0]
+    risk_section = _strict_lite_sections(report)["6"]
     main_risks, appendix = risk_section.split("### 风险附录", 1)
 
     assert "主要风险叙述来自已验证 Claim。" not in risk_section
@@ -1745,9 +2147,7 @@ def test_risks_filter_non_displayable_claims_before_main_cap() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    risk_section = report.split("## 主要风险", 1)[1].split(
-        "## 数据来源与方法", 1
-    )[0]
+    risk_section = _strict_lite_sections(report)["6"]
     main_risks, appendix = risk_section.split("### 风险附录", 1)
 
     assert "风险数字为 12%。" not in risk_section
@@ -1765,7 +2165,7 @@ def test_context_summary_uses_deterministic_conclusion_not_draft_summary() -> No
         build_report_context(**_reader_focused_inputs()),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    execution_summary = report.split("## 公司质量", 1)[0]
+    execution_summary = _strict_lite_sections(report)["1"]
 
     assert "研究范围由已验证输入限定。" not in execution_summary
     assert "结论仅基于已验证数据和 Claim；缺失输入不作推断。" not in execution_summary
@@ -1903,6 +2303,12 @@ def test_rendered_report_validator_allows_advice_only_in_disclaimer() -> None:
     report = "确定性状态：status=ready\n## 公司质量\n公司事实。\n## 非投资建议声明\n本文不构成买入建议。\n"
 
     assert validate_rendered_report(report, "ready")[0] is True
+    numbered = report.replace("## 非投资建议声明", "## 9. 非投资建议声明")
+    assert validate_rendered_report(numbered, "ready")[0] is True
+    comment_only = numbered.replace(
+        "## 9. 非投资建议声明", "<!-- ## 9. 非投资建议声明 -->"
+    )
+    assert validate_rendered_report(comment_only, "ready")[0] is False
     contaminated = report.replace("公司事实。", "公司建议买入。")
     assert validate_rendered_report(contaminated, "ready")[0] is False
 
@@ -1927,7 +2333,7 @@ def test_execution_summary_keeps_only_four_deterministic_conclusions() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    summary = report.split("## 公司质量", 1)[0]
+    summary = _strict_lite_sections(report)["1"]
 
     assert summary.count("- **") == 4
     assert "风险状态：" not in summary
@@ -1940,7 +2346,7 @@ def test_execution_summary_does_not_invent_risk_level_without_risk_claim() -> No
         build_report_context(**_reader_focused_inputs()),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    summary = report.split("## 公司质量", 1)[0]
+    summary = _strict_lite_sections(report)["1"]
 
     assert "风险等级：中等风险" not in report
     assert "风险水平：中等风险" not in summary
@@ -1969,7 +2375,7 @@ def test_research_status_comes_only_from_verdict_rating(
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    summary = report.split("## 公司质量", 1)[0]
+    summary = _strict_lite_sections(report)["1"]
 
     assert summary.count("- **") == 4
     assert "- **研究动作：** 加入观察名单并跟踪关键指标" in summary
@@ -1987,7 +2393,7 @@ def test_unknown_verdict_rating_does_not_guess_research_status() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    summary = report.split("## 公司质量", 1)[0]
+    summary = _strict_lite_sections(report)["1"]
 
     assert summary.count("- **") == 4
     assert "研究动作" in summary
@@ -2003,8 +2409,9 @@ def test_reverse_dcf_summary_uses_model_years_and_cagr_language() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    summary = report.split("## 公司质量", 1)[0]
-    reverse_section = report.split("## 反向 DCF", 1)[1].split("## 主要风险", 1)[0]
+    sections = _strict_lite_sections(report)
+    summary = sections["1"]
+    reverse_section = sections["5"]
 
     assert summary.count("- **") == 4
     assert "未来 10 年自由现金流年复合增长要求" in reverse_section
@@ -2025,7 +2432,7 @@ def test_reverse_dcf_omits_missing_model_year() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    reverse_section = report.split("## 反向 DCF", 1)[1].split("## 主要风险", 1)[0]
+    reverse_section = _strict_lite_sections(report)["5"]
 
     assert "预测年数 | 不可用 年" not in reverse_section
 
@@ -2043,7 +2450,7 @@ def test_summary_distinguishes_request_horizon_from_dcf_horizon() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    summary = report.split("## 公司质量", 1)[0]
+    summary = _strict_lite_sections(report)["1"]
 
     assert summary.count("- **") == 4
     assert "用户关注期限是 3 年" not in summary
@@ -2067,9 +2474,7 @@ def test_sources_method_states_quarterly_data_may_be_unaudited() -> None:
         build_report_context(**_reader_focused_inputs()),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    method_section = report.split("## 数据来源与方法", 1)[1].split(
-        "## 非投资建议声明", 1
-    )[0]
+    method_section = _strict_lite_sections(report)["8"]
 
     assert "SEC 申报中的年度及季度数据" in method_section
     assert "已验证计算和市场数据" in method_section
@@ -2086,9 +2491,7 @@ def test_sources_method_ignores_llm_audit_claim() -> None:
         build_report_context(**_reader_focused_inputs()),
         draft,
     )
-    method_section = report.split("## 数据来源与方法", 1)[1].split(
-        "## 非投资建议声明", 1
-    )[0]
+    method_section = _strict_lite_sections(report)["8"]
 
     assert "本报告使用经审计财务数据" not in method_section
     assert "经审计财务数据" not in method_section

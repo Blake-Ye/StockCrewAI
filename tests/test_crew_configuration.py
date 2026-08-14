@@ -1826,6 +1826,11 @@ class ReportContractTests(unittest.TestCase):
                 "status": "available",
                 "validation_status": "valid",
                 "input_evidence_ids": ["ev_revenue"],
+                **(
+                    {"adjustment_basis": "raw"}
+                    if metric_id == "share_dilution"
+                    else {}
+                ),
             }
             for metric_id, display_value in financial_values.items()
         )
@@ -2028,7 +2033,7 @@ class ReportContractTests(unittest.TestCase):
         self.assertEqual(report.count("data:image/png;base64,"), 3)
         self.assertNotIn("无已验证 Claim。", report)
         self.assertNotRegex(report, r"Decimal\(['\"]")
-        report_body = report.split("## 非投资建议声明", 1)[0]
+        report_body = report.split("## 9. 非投资建议声明", 1)[0]
         for forbidden in ("买入", "卖出", "持有"):
             self.assertNotIn(forbidden, report_body)
 

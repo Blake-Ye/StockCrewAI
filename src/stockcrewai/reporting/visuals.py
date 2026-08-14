@@ -11,6 +11,8 @@ import re
 import tempfile
 from typing import Any, Callable
 
+from .context import _SUPPORTED_FINANCIAL_PERIOD_BASES
+
 
 _MPL_CONFIG_DIR = Path(tempfile.gettempdir()) / "stockcrewai-matplotlib"
 _MPL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -83,7 +85,6 @@ _FINANCIAL_REQUIRED_IDS = frozenset(
     metric_id
     for _, metric_ids in _FINANCIAL_KPI_GROUPS
     for metric_id in metric_ids
-    if metric_id != "share_dilution"
 )
 _SHARE_ADJUSTMENT_BASES = frozenset({"raw", "split_adjusted"})
 
@@ -128,7 +129,7 @@ def _financial_period_signature(
     )
     period_end = _period_text(record.get("period_end"))
     as_of = _period_text(record.get("as_of"))
-    if period_basis is None:
+    if period_basis not in _SUPPORTED_FINANCIAL_PERIOD_BASES:
         return None
     if as_of is None:
         return None
@@ -140,9 +141,27 @@ def _financial_period_signature(
 def _financial_periods_consistent(
     records: Mapping[str, Mapping[str, Any]],
 ) -> bool:
-    signatures = [_financial_period_signature(record) for record in records.values()]
+    if set(records) != set(_FINANCIAL_KPI_IDS):
+        return False
+    for metric_id, record in records.items():
+        evidence_ids = record.get("evidence_ids", record.get("input_evidence_ids"))
+        if (
+            not isinstance(evidence_ids, Sequence)
+            or isinstance(evidence_ids, (str, bytes))
+            or not any(_period_text(evidence_id) for evidence_id in evidence_ids)
+            or _period_text(record.get("calculation_id")) is None
+        ):
+            return False
+        if (
+            metric_id == "share_dilution"
+            and record.get("adjustment_basis") not in _SHARE_ADJUSTMENT_BASES
+        ):
+            return False
+    signatures = [
+        _financial_period_signature(record) for record in records.values()
+    ]
     return bool(signatures) and all(signature is not None for signature in signatures) and (
-        len({signature for signature in signatures if signature is not None}) == 1
+        len({signature[2] for signature in signatures if signature is not None}) == 1
     )
 
 
@@ -257,11 +276,6 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
     }
     if not _FINANCIAL_REQUIRED_IDS.issubset(verified_records):
         return None
-    if (
-        verified_records.get("share_dilution", {}).get("adjustment_basis")
-        not in _SHARE_ADJUSTMENT_BASES
-    ):
-        verified_records.pop("share_dilution", None)
     if not _financial_periods_consistent(verified_records):
         return None
 

@@ -2668,6 +2668,8 @@ class ResearchFlow(Flow[ResearchFlowState]):
                         "period",
                         "period_start",
                         "period_end",
+                        "fiscal_period",
+                        "period_type",
                         "form",
                         "accession_number",
                     )

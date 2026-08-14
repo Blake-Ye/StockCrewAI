@@ -107,6 +107,9 @@ _FOREIGN_ADR_FORMULA_IDS = frozenset(
         "foreign-adr-market-cap-v1",
     }
 )
+_SUPPORTED_FINANCIAL_PERIOD_BASES = frozenset(
+    {"YTD同比", "YTD", "FY同比", "FY", "同比时点"}
+)
 
 
 def _normalized_amount(value: Any, unit: Any = None) -> Decimal | None:
@@ -596,16 +599,78 @@ def _evidence_as_of(
     return None
 
 
-def _evidence_period_basis(
+def _evidence_period_basis_state(
     evidence_ids: list[str], evidence_index: Mapping[str, Mapping[str, Any]]
-) -> str | None:
+) -> tuple[str | None, bool, bool]:
     period_bases: list[str] = []
+    has_missing = False
     for evidence_id in evidence_ids:
         period_basis = _text(evidence_index.get(evidence_id, {}).get("period_basis"))
         if period_basis is None:
-            return None
+            has_missing = True
+            continue
         period_bases.append(period_basis)
-    return period_bases[0] if len(set(period_bases)) == 1 else None
+    if has_missing:
+        return None, bool(period_bases), not period_bases
+    if not period_bases:
+        return None, False, True
+    if len(set(period_bases)) != 1:
+        return None, True, False
+    return period_bases[0], True, True
+
+
+def _inferred_financial_period_basis(
+    metric_id: str,
+    evidence_ids: list[str],
+    evidence_index: Mapping[str, Mapping[str, Any]],
+) -> str | None:
+    records = [evidence_index.get(evidence_id) for evidence_id in evidence_ids]
+    if any(not isinstance(record, Mapping) for record in records):
+        return None
+    filing_records = [record for record in records if isinstance(record, Mapping)]
+
+    def common_value(key: str, normalizer) -> str | None:
+        values = [normalizer(_text(record.get(key))) for record in filing_records]
+        if not values or any(value is None for value in values):
+            return None
+        return values[0] if len(set(values)) == 1 else None
+
+    form = common_value("form", lambda value: value.upper() if value else None)
+    fiscal_period = common_value(
+        "fiscal_period", lambda value: value.upper() if value else None
+    )
+    period_type = common_value(
+        "period_type", lambda value: value.lower() if value else None
+    )
+    if form is None or fiscal_period is None or period_type is None:
+        return None
+    if form == "10-Q" and fiscal_period in {"Q1", "Q2", "Q3"}:
+        base = "YTD"
+    elif form == "10-K" and fiscal_period == "FY":
+        base = "FY"
+    else:
+        return None
+
+    period_ends = [_text(record.get("period_end")) for record in filing_records]
+    if any(period_end is None for period_end in period_ends):
+        return None
+    if metric_id == "share_dilution":
+        if period_type != "instant" or len(filing_records) != 2:
+            return None
+        return "同比时点" if len(set(period_ends)) == 2 else None
+    if period_type != "duration":
+        return None
+
+    period_starts = [_text(record.get("period_start")) for record in filing_records]
+    if any(period_start is None for period_start in period_starts):
+        return None
+    if metric_id == "revenue_growth":
+        if len(filing_records) != 2 or len(set(period_starts)) != 2:
+            return None
+        return f"{base}同比" if len(set(period_ends)) == 2 else None
+    if len(set(zip(period_starts, period_ends))) != 1:
+        return None
+    return base
 
 
 def _metric_from_payload(
@@ -647,7 +712,28 @@ def _metric_from_payload(
         require_direct=require_direct_source,
     )
     as_of = _evidence_as_of(ids, evidence_index, direct_as_of)
-    basis = _text(period_basis) or _evidence_period_basis(ids, evidence_index)
+    calculation_basis = _text(period_basis)
+    evidence_basis, has_explicit_evidence_basis, evidence_is_complete = (
+        _evidence_period_basis_state(ids, evidence_index)
+    )
+    inferred_basis = _inferred_financial_period_basis(
+        metric_name, ids, evidence_index
+    )
+    candidates = [
+        candidate
+        for candidate in (
+            calculation_basis,
+            evidence_basis if has_explicit_evidence_basis else None,
+            inferred_basis,
+        )
+        if candidate is not None
+    ]
+    if has_explicit_evidence_basis and not evidence_is_complete:
+        basis = None
+    elif len(set(candidates)) > 1:
+        basis = None
+    else:
+        basis = candidates[0] if candidates else None
     if not source or not as_of:
         return None
     try:

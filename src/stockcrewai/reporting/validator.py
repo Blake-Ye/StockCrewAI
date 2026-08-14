@@ -82,6 +82,9 @@ _REPORT_STATUS_RE = re.compile(
 _REPORT_UNSUPPORTED_INFERENCE_RE = re.compile(
     r"不断提升|持续扩张|导致|由于|资本开支|营运资金|显著|大幅"
 )
+_REPORT_DISCLAIMER_HEADINGS = frozenset(
+    {"## 非投资建议声明", "## 9. 非投资建议声明"}
+)
 
 
 class ReportDraftError(ValueError):
@@ -248,7 +251,7 @@ def validate_rendered_report(
     in_disclaimer = False
     for line in report.splitlines():
         heading = line.strip()
-        if heading == "## 非投资建议声明":
+        if heading in _REPORT_DISCLAIMER_HEADINGS:
             in_disclaimer = True
             continue
         if heading.startswith("## "):

@@ -159,6 +159,7 @@ class ReportVisualsTests(unittest.TestCase):
                 "status": "available",
                 "validation_status": "valid",
                 "calculation_id": f"calc_{metric_id}",
+                "evidence_ids": [f"ev_{metric_id}"],
                 "period_basis": "FY",
                 "period_end": "2025-12-31",
                 "as_of": "2025-12-31",
@@ -221,7 +222,7 @@ class ReportVisualsTests(unittest.TestCase):
         growth_labels = [text.get_text() for text in axes[0].get_yticklabels()]
         self.assertIn("股份变化（拆分调整）", growth_labels)
 
-    def test_financial_kpis_omit_uncomparable_share_change_but_keep_revenue_panel(self):
+    def test_financial_kpis_reject_invalid_share_adjustment_basis(self):
         module = importlib.import_module("stockcrewai.reporting.visuals")
         values = {
             "revenue_growth": 20.0,
@@ -238,6 +239,7 @@ class ReportVisualsTests(unittest.TestCase):
             "status": "available",
             "validation_status": "valid",
             "calculation_id": f"calc_{metric_id}",
+            "evidence_ids": [f"ev_{metric_id}"],
             "period_basis": "FY",
             "period_end": "2025-12-31",
             "as_of": "2025-12-31",
@@ -249,26 +251,7 @@ class ReportVisualsTests(unittest.TestCase):
             }
             for metric_id, value in values.items()
         }
-        rendered = {}
-
-        def inspect_png_uri(draw, *, size, **kwargs):
-            figure, axes = module.plt.subplots(figsize=size, dpi=120)
-            try:
-                draw(axes)
-                figure.canvas.draw()
-                rendered["axes"] = list(figure.axes)
-                return "captured"
-            finally:
-                module.plt.close(figure)
-
-        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
-            self.assertEqual(module._financial_kpi_png(records), "captured")
-
-        self.assertEqual(len(rendered["axes"][0].patches), 1)
-        self.assertEqual(
-            [text.get_text() for text in rendered["axes"][0].texts],
-            ["20.00%"],
-        )
+        self.assertIsNone(module._financial_kpi_png(records))
 
     def test_financial_kpis_omit_mixed_period_basis(self):
         builder = self._builder()
@@ -290,20 +273,43 @@ class ReportVisualsTests(unittest.TestCase):
 
         self.assertNotIn("financial_kpis", visuals)
 
-    def test_financial_kpis_generate_when_same_as_of_basis_is_ytd(self):
+    def test_financial_kpis_generate_when_semantic_bases_share_as_of(self):
+        builder = self._builder()
+        financial_metrics = _financial_metrics()
+        for record in financial_metrics:
+            record.update(
+                section="financial",
+                period_end="2026-06-27",
+                as_of="2026-06-27",
+            )
+            record["period_basis"] = {
+                "revenue_growth": "YTD同比",
+                "share_dilution": "同比时点",
+            }.get(record["metric_id"], "YTD")
+
+        visuals = builder(financial_metrics=financial_metrics)
+
+        self.assertIn("financial_kpis", visuals)
+
+    def test_financial_kpis_omit_different_as_of(self):
         builder = self._builder()
         financial_metrics = _financial_metrics()
         for record in financial_metrics:
             record.update(
                 section="financial",
                 period_basis="YTD",
-                period_end="2025-12-31",
-                as_of="2025-12-31",
+                period_end="2026-06-27",
+                as_of="2026-06-27",
             )
+        next(
+            record
+            for record in financial_metrics
+            if record["metric_id"] == "cash_conversion"
+        )["as_of"] = "2026-06-26"
 
         visuals = builder(financial_metrics=financial_metrics)
 
-        self.assertIn("financial_kpis", visuals)
+        self.assertNotIn("financial_kpis", visuals)
 
     def test_normalized_financial_kpis_require_explicit_period_basis(self):
         builder = self._builder()
