@@ -1594,6 +1594,137 @@ def _reverse_dcf_markdown(
     return "\n".join(rows)
 
 
+def _markdown_cell(value: Any, fallback: str = "不可用") -> str:
+    text = _text(value)
+    if not text:
+        return fallback
+    return " ".join(text.replace("|", "／").split()) or fallback
+
+
+def _research_metadata_markdown(context: Mapping[str, Any]) -> str:
+    company = context.get("company", {})
+    company = company if isinstance(company, Mapping) else {}
+    profile = context.get("profile", {})
+    profile = profile if isinstance(profile, Mapping) else {}
+    horizon = (
+        _text(context.get("horizon"))
+        or _text(company.get("horizon"))
+        or _text(company.get("investment_horizon"))
+    )
+    profile_values = [
+        _text(profile.get(key))
+        for key in ("issuer_profile", "security_profile", "reporting_profile")
+    ]
+    profile_text = " / ".join(value for value in profile_values if value)
+    rows = [
+        ("公司名称", _markdown_cell(company.get("name") or company.get("company"))),
+        ("股票代码", _markdown_cell(company.get("ticker"))),
+        ("研究期限", _markdown_cell(horizon)),
+        ("研究 Profile", _markdown_cell(profile_text)),
+    ]
+    lines = ["| 字段 | 内容 |", "|---|---|"]
+    lines.extend(f"| {label} | {value} |" for label, value in rows)
+    return "\n".join(lines)
+
+
+def _annual_financial_table_markdown(context: Mapping[str, Any]) -> str:
+    annual = context.get("annual_financial_history", {})
+    annual = annual if isinstance(annual, Mapping) else {}
+    periods = annual.get("periods")
+    if (
+        annual.get("status") != "ok"
+        or annual.get("validation_status") != "valid"
+        or not isinstance(periods, Sequence)
+        or isinstance(periods, (str, bytes))
+    ):
+        return "### 五年财务表（已验证完整财年）\n\n数据不足。"
+
+    columns: list[tuple[str, Mapping[str, Any]]] = []
+    for period in periods:
+        if not isinstance(period, Mapping) or period.get("period_basis") != "FY":
+            continue
+        fiscal_year = _text(period.get("fiscal_year"))
+        if not fiscal_year:
+            continue
+        fiscal_year = fiscal_year.upper()
+        columns.append(
+            (fiscal_year if fiscal_year.startswith("FY") else f"FY{fiscal_year}", period)
+        )
+    if not columns:
+        return "### 五年财务表（已验证完整财年）\n\n数据不足。"
+
+    metric_labels = (
+        ("revenue", "营业收入"),
+        ("net_income", "净利润"),
+        ("operating_cash_flow", "经营现金流"),
+        ("capex", "资本开支"),
+        ("free_cash_flow", "自由现金流"),
+    )
+    available_metrics = [
+        (metric_id, label)
+        for metric_id, label in metric_labels
+        if any(period.get(metric_id) is not None for _, period in columns)
+    ]
+    lines = [
+        "### 五年财务表（已验证完整财年）",
+        "| 指标 | " + " | ".join(year for year, _ in columns) + " |",
+        "|---|" + "---:|" * len(columns),
+    ]
+    for metric_id, label in available_metrics:
+        values = [
+            _currency_display(period.get(metric_id))
+            if period.get(metric_id) is not None
+            else "不可用"
+            for _, period in columns
+        ]
+        lines.append(f"| {label} | " + " | ".join(values) + " |")
+
+    summary = context.get("annual_financial_summary", {})
+    summary = summary if isinstance(summary, Mapping) else {}
+    cagr_labels = (
+        ("revenue_cagr", "收入 CAGR"),
+        ("net_income_cagr", "净利润 CAGR"),
+        ("free_cash_flow_cagr", "FCF CAGR"),
+    )
+    for key, label in cagr_labels:
+        value = _percentage_points(summary.get(key))
+        if value is not None:
+            lines.append(f"- {label}：{value:.2f}%")
+    return "\n".join(lines)
+
+
+def _decision_basis_markdown(context: Mapping[str, Any]) -> str:
+    summary = _deterministic_summary(context)
+    lines = [
+        "### 判断依据",
+        f"- 经营质量：{summary['quality']}",
+        f"- 相对自身历史估值：{summary['valuation']}",
+        f"- 市场隐含预期：{summary['expectations']}",
+        f"- 研究动作：{summary['action']}",
+        "",
+        _reevaluation_conditions_markdown(context),
+    ]
+    return "\n".join(lines)
+
+
+def _scope_markdown(context: Mapping[str, Any]) -> str:
+    company = context.get("company", {})
+    company = company if isinstance(company, Mapping) else {}
+    horizon = (
+        _text(context.get("horizon"))
+        or _text(company.get("horizon"))
+        or _text(company.get("investment_horizon"))
+    )
+    lines = [
+        "### 研究范围",
+        f"- 研究对象：{_markdown_cell(company.get('name') or company.get('company'))}",
+        f"- 股票代码：{_markdown_cell(company.get('ticker'))}",
+    ]
+    if horizon:
+        lines.append(f"- 请求研究期限：{_markdown_cell(horizon)}")
+    return "\n".join(lines)
+
+
 def _render_report_from_context(
     context: Mapping[str, Any], report_draft: ReportDraft
 ) -> str:
@@ -1624,6 +1755,7 @@ def _render_report_from_context(
         and profile.get("reporting_profile") == "foreign_private_issuer_ifrs"
     ):
         profile_kind = "foreign_private_issuer_ifrs"
+    strict_lite = profile_kind in {None, "standard_operating"}
     profile_metrics = context_payload.get("profile_metrics")
     verdict = context_payload.get("verdict", {})
     if not isinstance(verdict, Mapping):
@@ -1647,6 +1779,53 @@ def _render_report_from_context(
             "reverse_dcf",
         }:
             continue
+        if strict_lite:
+            if field == "execution_summary":
+                sections.extend(
+                    (
+                        "## 0. 封面与研究元数据",
+                        "",
+                        _research_metadata_markdown(context_payload),
+                        "",
+                        "## 1. 一页结论",
+                        "",
+                    )
+                )
+            elif field == "company_quality":
+                sections.extend(
+                    (
+                        "## 2. 公司与研究范围",
+                        "",
+                        _scope_markdown(context_payload),
+                        "",
+                    )
+                )
+            elif field == "financial_trend":
+                sections.extend(
+                    (
+                        "## 3. 历史经营与财务质量",
+                        "",
+                        _annual_financial_table_markdown(context_payload),
+                        "",
+                        "## 4. 最新经营状态",
+                        "",
+                    )
+                )
+            elif field == "current_valuation":
+                sections.extend(("## 5. 估值", ""))
+            elif field == "key_risks":
+                sections.extend(("## 6. 主要风险与监控条件", ""))
+            elif field == "sources_and_method":
+                sections.extend(
+                    (
+                        "## 7. 综合判断与重新评估条件",
+                        "",
+                        _decision_basis_markdown(context_payload),
+                        "",
+                        "## 8. 数据来源、方法与技术附录",
+                        "",
+                    )
+                )
         sections.extend((f"## {heading}", ""))
         if field == "execution_summary":
             sections.extend(
@@ -1706,7 +1885,7 @@ def _render_report_from_context(
                 if context_payload.get("annual_financial_summary"):
                     sections.extend(
                         (
-                            "TTM 数据与下图完整财年数据期间不同，不可直接视为同一期数据。",
+                            "TTM 数据与完整财年数据期间不同，不可直接视为同一期数据。",
                             "",
                         )
                     )

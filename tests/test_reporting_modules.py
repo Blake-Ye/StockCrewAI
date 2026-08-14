@@ -1058,6 +1058,33 @@ def test_markdown_renderer_keeps_sections_terms_visuals_and_fixed_hash() -> None
     assert "完整财年起止：FY2021（2021-01-01）至 FY2025（2025-12-31）" in report
 
 
+def test_strict_lite_annual_financial_table_and_section_order() -> None:
+    report = render_validated_report(
+        build_report_context(**_reader_focused_inputs()),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+    headings = [
+        "## 0. 封面与研究元数据",
+        "## 1. 一页结论",
+        "## 2. 公司与研究范围",
+        "## 3. 历史经营与财务质量",
+        "## 4. 最新经营状态",
+        "## 5. 估值",
+        "## 6. 主要风险与监控条件",
+        "## 7. 综合判断与重新评估条件",
+        "## 8. 数据来源、方法与技术附录",
+    ]
+
+    assert [report.index(value) for value in headings] == sorted(
+        report.index(value) for value in headings
+    )
+    assert "| 公司名称 |" in report
+    assert "| 指标 | FY2021 | FY2022 | FY2023 | FY2024 | FY2025 |" in report
+    assert "收入 CAGR" in report
+    assert "TTM 数据与完整财年数据期间不同" in report
+    assert "status=ready" not in report.split("## 8. 数据来源", 1)[0]
+
+
 def test_markdown_renderer_puts_company_identity_in_title() -> None:
     report = render_validated_report(
         build_report_context(**_reader_focused_inputs()),
