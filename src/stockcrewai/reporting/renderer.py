@@ -1616,12 +1616,17 @@ def _research_metadata_markdown(context: Mapping[str, Any]) -> str:
         for key in ("issuer_profile", "security_profile", "reporting_profile")
     ]
     profile_text = " / ".join(value for value in profile_values if value)
-    rows = [
-        ("公司名称", _markdown_cell(company.get("name") or company.get("company"))),
-        ("股票代码", _markdown_cell(company.get("ticker"))),
-        ("研究期限", _markdown_cell(horizon)),
-        ("研究 Profile", _markdown_cell(profile_text)),
-    ]
+    rows = []
+    for label, value in (
+        ("公司名称", company.get("name") or company.get("company")),
+        ("股票代码", company.get("ticker")),
+        ("研究期限", horizon),
+        ("研究 Profile", profile_text),
+    ):
+        if _text(value):
+            rows.append((label, _markdown_cell(value)))
+    if not rows:
+        return "数据不足。"
     lines = ["| 字段 | 内容 |", "|---|---|"]
     lines.extend(f"| {label} | {value} |" for label, value in rows)
     return "\n".join(lines)
@@ -1663,7 +1668,7 @@ def _annual_financial_table_markdown(context: Mapping[str, Any]) -> str:
     available_metrics = [
         (metric_id, label)
         for metric_id, label in metric_labels
-        if any(period.get(metric_id) is not None for _, period in columns)
+        if any(_text(period.get(metric_id)) for _, period in columns)
     ]
     lines = [
         "### 五年财务表（已验证完整财年）",
@@ -1673,8 +1678,8 @@ def _annual_financial_table_markdown(context: Mapping[str, Any]) -> str:
     for metric_id, label in available_metrics:
         values = [
             _currency_display(period.get(metric_id))
-            if period.get(metric_id) is not None
-            else "不可用"
+            if _text(period.get(metric_id))
+            else "数据不足"
             for _, period in columns
         ]
         lines.append(f"| {label} | " + " | ".join(values) + " |")
@@ -1717,11 +1722,16 @@ def _scope_markdown(context: Mapping[str, Any]) -> str:
     )
     lines = [
         "### 研究范围",
-        f"- 研究对象：{_markdown_cell(company.get('name') or company.get('company'))}",
-        f"- 股票代码：{_markdown_cell(company.get('ticker'))}",
     ]
-    if horizon:
-        lines.append(f"- 请求研究期限：{_markdown_cell(horizon)}")
+    for label, value in (
+        ("研究对象", company.get("name") or company.get("company")),
+        ("股票代码", company.get("ticker")),
+        ("请求研究期限", horizon),
+    ):
+        if _text(value):
+            lines.append(f"- {label}：{_markdown_cell(value)}")
+    if len(lines) == 1:
+        lines.append("数据不足。")
     return "\n".join(lines)
 
 
@@ -1826,7 +1836,12 @@ def _render_report_from_context(
                         "",
                     )
                 )
-        sections.extend((f"## {heading}", ""))
+        legacy_heading = (
+            f"## {heading}"
+            if not strict_lite or field == "non_investment_disclaimer"
+            else f"<!-- ## {heading} -->"
+        )
+        sections.extend((legacy_heading, ""))
         if field == "execution_summary":
             sections.extend(
                 (*_execution_summary_lines(

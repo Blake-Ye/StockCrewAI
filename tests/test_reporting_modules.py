@@ -1085,6 +1085,85 @@ def test_strict_lite_annual_financial_table_and_section_order() -> None:
     assert "status=ready" not in report.split("## 8. 数据来源", 1)[0]
 
 
+def test_strict_lite_has_only_numbered_top_level_sections() -> None:
+    report = render_validated_report(
+        build_report_context(**_reader_focused_inputs()),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+
+    assert [
+        line for line in report.splitlines() if line.startswith("## ")
+    ] == [
+        "## 0. 封面与研究元数据",
+        "## 1. 一页结论",
+        "## 2. 公司与研究范围",
+        "## 3. 历史经营与财务质量",
+        "## 4. 最新经营状态",
+        "## 5. 估值",
+        "## 6. 主要风险与监控条件",
+        "## 7. 综合判断与重新评估条件",
+        "## 8. 数据来源、方法与技术附录",
+        "## 非投资建议声明",
+    ]
+
+
+def test_strict_lite_omits_missing_metadata_and_hides_empty_annual_rows() -> None:
+    inputs = _reader_focused_inputs()
+    company = inputs["company"]
+    assert isinstance(company, dict)
+    inputs["company"] = {"name": company["name"]}
+    context = build_report_context(**inputs)
+    annual = context["annual_financial_history"]
+    assert isinstance(annual, dict)
+    periods = annual["periods"]
+    assert isinstance(periods, list)
+    for period in periods:
+        period.pop("net_income", None)
+        period.pop("capex", None)
+    periods[0].pop("revenue", None)
+
+    report = render_validated_report(context, parse_report_draft(VALID_REPORT_DRAFT))
+    metadata_section = report.split("## 0. 封面与研究元数据", 1)[1].split(
+        "## 1. 一页结论", 1
+    )[0]
+    annual_section = report.split("## 3. 历史经营与财务质量", 1)[1].split(
+        "## 4. 最新经营状态", 1
+    )[0]
+
+    assert "| 公司名称 | Apple Inc. |" in metadata_section
+    assert "| 股票代码 |" not in metadata_section
+    assert "| 研究期限 |" not in metadata_section
+    assert "| 研究 Profile |" not in metadata_section
+    assert "| 净利润 |" not in annual_section
+    assert "| 资本开支 |" not in annual_section
+    assert "| 营业收入 |" in annual_section
+    assert "数据不足" in annual_section
+    assert "不可用" not in annual_section
+
+
+def test_strict_lite_separates_market_timestamp_and_period_bases() -> None:
+    report = render_validated_report(
+        build_report_context(**_reader_focused_inputs()),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+    annual_section = report.split("## 3. 历史经营与财务质量", 1)[1].split(
+        "## 4. 最新经营状态", 1
+    )[0]
+    latest_section = report.split("## 4. 最新经营状态", 1)[1].split(
+        "## 5. 估值", 1
+    )[0]
+    valuation_section = report.split("## 5. 估值", 1)[1].split(
+        "## 6. 主要风险与监控条件", 1
+    )[0]
+
+    assert "| 指标 | FY2021 | FY2022 | FY2023 | FY2024 | FY2025 |" in annual_section
+    assert "YTD" not in annual_section
+    assert "财年年初至今累计（YTD）" in latest_section
+    assert "TTM 财务规模（已验证）" in latest_section
+    assert "市场价格" in valuation_section
+    assert "截至 2026-08-06T15:30:00Z" in valuation_section
+
+
 def test_markdown_renderer_puts_company_identity_in_title() -> None:
     report = render_validated_report(
         build_report_context(**_reader_focused_inputs()),
