@@ -400,6 +400,73 @@ def test_report_metric_preserves_calculation_period_basis() -> None:
     assert metric["period_basis"] == "YTD"
 
 
+def _context_with_evidence_period_bases(
+    first_basis: str | None, second_basis: str | None
+) -> dict[str, object]:
+    inputs = _canonical_context_inputs()
+    calculations = inputs["calculations"]
+    source_metadata = inputs["source_metadata"]
+    assert isinstance(calculations, list)
+    assert isinstance(source_metadata, dict)
+    facts = source_metadata["facts"]
+    assert isinstance(facts, dict)
+    inputs["calculations"] = [
+        {
+            key: value
+            for key, value in calculations[0].items()
+            if key != "period_basis"
+        }
+        | {
+            "input_evidence_ids": ["ev_revenue", "ev_eps"],
+        },
+    ]
+    for evidence_id, basis in (
+        ("ev_revenue", first_basis),
+        ("ev_eps", second_basis),
+    ):
+        evidence = next(
+            evidence
+            for evidence in facts.values()
+            if evidence.get("evidence_id") == evidence_id
+        )
+        assert isinstance(evidence, dict)
+        if basis is None:
+            evidence.pop("period_basis", None)
+        else:
+            evidence["period_basis"] = basis
+    return build_report_context(**inputs)
+
+
+def test_report_metric_uses_common_evidence_period_basis() -> None:
+    context = _context_with_evidence_period_bases("YTD", "YTD")
+
+    metric = next(
+        metric for metric in context["metrics"] if metric["metric_id"] == "operating_margin"
+    )
+
+    assert metric["period_basis"] == "YTD"
+
+
+def test_report_metric_rejects_mixed_evidence_period_basis() -> None:
+    context = _context_with_evidence_period_bases("FY", "TTM")
+
+    metric = next(
+        metric for metric in context["metrics"] if metric["metric_id"] == "operating_margin"
+    )
+
+    assert metric.get("period_basis") is None
+
+
+def test_report_metric_rejects_missing_evidence_period_basis() -> None:
+    context = _context_with_evidence_period_bases("YTD", None)
+
+    metric = next(
+        metric for metric in context["metrics"] if metric["metric_id"] == "operating_margin"
+    )
+
+    assert metric.get("period_basis") is None
+
+
 def test_normalized_financial_kpis_without_basis_are_unavailable_and_caption_is_insufficient() -> None:
     context = build_report_context(**_reader_focused_inputs())
     for metric in context["metrics"]:

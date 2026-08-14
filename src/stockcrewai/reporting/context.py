@@ -599,11 +599,13 @@ def _evidence_as_of(
 def _evidence_period_basis(
     evidence_ids: list[str], evidence_index: Mapping[str, Mapping[str, Any]]
 ) -> str | None:
+    period_bases: list[str] = []
     for evidence_id in evidence_ids:
         period_basis = _text(evidence_index.get(evidence_id, {}).get("period_basis"))
-        if period_basis:
-            return period_basis
-    return None
+        if period_basis is None:
+            return None
+        period_bases.append(period_basis)
+    return period_bases[0] if len(set(period_bases)) == 1 else None
 
 
 def _metric_from_payload(

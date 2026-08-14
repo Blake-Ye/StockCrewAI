@@ -106,3 +106,31 @@
 ## Fix round 2 Concerns
 
 - 未扩展公开 schema 以外的字段，也未进行非必要视觉优化；旧输入缺少 `period_basis` 时按不可比较处理，避免以日期或 `as_of` 猜测 FY/YTD/TTM。
+
+## Fix round 3：evidence period basis 一致性
+
+### RED
+
+- 命令：`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_reporting_modules.py -k "evidence_period_basis or calculation_period_basis"`
+- 结果：`2 failed, 2 passed, 71 deselected`；混合 `FY/TTM` 及 `YTD/缺失` 时，修复前仍返回第一个 evidence 的 basis，证明顺序会影响结果。
+
+### GREEN
+
+- 聚焦命令同上：`4 passed, 71 deselected`，覆盖两证据同 `YTD`、`FY+TTM` 混合、`YTD+缺失`，以及 calculation 自带 `YTD`。
+- 命令：`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_reporting_modules.py tests/test_report_visuals.py`
+- 结果：`95 passed, 12 subtests passed in 6.88s`。
+- 命令：`git diff --check`
+- 结果：通过。
+
+### 修复与范围
+
+- `_evidence_period_basis` 现在仅在每个 input evidence 都有非空 `period_basis` 且唯一集合大小为 1 时返回共同值；缺失或混合均返回 `None`。calculation 自带明确 basis 仍优先原样保留；不使用 first/nonempty fallback，不从日期或 `as_of` 推断。
+- 本轮仅修改 `src/stockcrewai/reporting/context.py` 与 `tests/test_reporting_modules.py`；未修改图表生产代码，既有 `/private/tmp/stockcrewai-report-qa/` PNG 无需重生成。
+
+## Fix round 3 Commit
+
+- `fix: require consistent evidence period basis`
+
+## Fix round 3 Concerns
+
+- 无新增 concern；本轮严格限制为 evidence period basis 判据与真实 Context 行为测试。
