@@ -67,3 +67,42 @@
 ## Fix round 1 Concerns
 
 - 未继续进行非必要的字体、配色或刻度密度优化；当前修复聚焦期间口径一致性、标准图注和三张 PNG QA。
+
+## Fix round 2：保留 period_basis
+
+### RED
+
+- 命令：`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_report_visuals.py tests/test_reporting_modules.py -k "mixed_period_basis or same_as_of_basis_is_ytd or normalized_financial_kpis or report_metric_preserves_calculation_period_basis or strict_lite_chart_captions"`
+- 结果：`4 failed, 2 passed, 86 deselected`；修复前确认 Context 丢失输入 `YTD`，normalized 指标缺 basis 仍生成图，缺 basis 图注仍将 `as_of` 当作期间口径，标准图注不能显示共同 `FY`。
+- 为验证“截止日期独立于 basis”追加断言后：`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_reporting_modules.py -k "normalized_financial_kpis_without_basis"` 结果 `1 failed, 71 deselected`，修复前截止显示为“数据不足”。
+
+### GREEN
+
+- 聚焦修复后：`6 passed, 86 deselected`；截止日期断言修复后：`1 passed, 71 deselected`。
+- 命令：`UV_CACHE_DIR=/private/tmp/stockcrewai-uv-cache uv run --no-sync pytest -q tests/test_report_visuals.py tests/test_reporting_modules.py`
+- 结果：`92 passed, 12 subtests passed in 6.81s`。
+- 命令：`git diff --check`
+- 结果：通过。
+
+### 修复、schema 兼容与 QA
+
+- `ReportMetric` 新增可选 `period_basis: StrictStr | None`；输入计算 payload 的已有 `period_basis` 以及 Evidence 元数据中的已有 `period_basis` 会被原样保留，缺失时保持空值并在 JSON 中省略；不根据 `as_of` 或日期格式猜测口径。
+- `financial_kpis` 删除 `as_of` 作为 basis 的兜底；所有实际绘制指标必须有相同明确 `period_basis`/`period`，且 `period_end`/`as_of` 时点签名一致，否则整图不生成。图 1 期间缺 basis 输出“数据不足”；截止日期仍可从共同 `as_of`/`period_end` 独立确定。
+- 标准 `_reader_focused_inputs()` fixture 补齐 `period_basis=FY`，真实 normalized Context 仍生成 exactly 三张图；未修改 Flow、tools、Gate 或 Crew。
+- QA PNG 路径：`/private/tmp/stockcrewai-report-qa/`（未进入 Git）。重新生成结果为 `annual_financial_trend`、`financial_kpis`、`historical_pe` 三个 key；尺寸分别为 855×658、1399×514、768×423。目视观察：财务 KPI 三面板标签/数值清晰无裁切重叠；五年图保持单一共享指数纵轴、首年=100、图例和年度标签完整；P/E 图参考线、图例和最新点完整可见。
+
+## Fix round 2 修改文件
+
+- `src/stockcrewai/reporting/context.py`
+- `src/stockcrewai/reporting/visuals.py`
+- `src/stockcrewai/reporting/renderer.py`
+- `tests/test_report_visuals.py`
+- `tests/test_reporting_modules.py`
+
+## Fix round 2 Commit
+
+- `fix: preserve report metric period basis`
+
+## Fix round 2 Concerns
+
+- 未扩展公开 schema 以外的字段，也未进行非必要视觉优化；旧输入缺少 `period_basis` 时按不可比较处理，避免以日期或 `as_of` 猜测 FY/YTD/TTM。

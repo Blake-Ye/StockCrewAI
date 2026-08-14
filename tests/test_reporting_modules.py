@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from stockcrewai.reporting.context import build_report_context
 from stockcrewai.reporting.renderer import (
     _SOURCE_METHOD_NOTE,
+    _chart_caption_markdown,
     _risk_claim_markdown,
     build_deterministic_report_draft,
     build_narrative_context,
@@ -62,6 +63,7 @@ def _canonical_context_inputs() -> dict[str, object]:
                 "formula_id": "operating_margin",
                 "display_result": "25.00%",
                 "unit": "ratio",
+                "period_basis": "FY",
                 "status": "available",
                 "validation_status": "valid",
                 "input_evidence_ids": ["ev_revenue"],
@@ -181,10 +183,11 @@ def _reader_focused_inputs() -> dict[str, object]:
             {
                 "calculation_id": f"calc_{metric_id}",
                 "formula_id": metric_id,
-                "display_result": display_value,
-                "unit": "ratio",
-                "status": "available",
-                "validation_status": "valid",
+                    "display_result": display_value,
+                    "unit": "ratio",
+                    "period_basis": "FY",
+                    "status": "available",
+                    "validation_status": "valid",
                 "input_evidence_ids": ["ev_revenue"],
                 **(
                     {"adjustment_basis": "raw"}
@@ -378,7 +381,41 @@ def test_context_is_json_safe_and_matches_fixed_fixture_hash() -> None:
         "reverse_dcf",
     }
     json.dumps(context, ensure_ascii=False, allow_nan=False)
-    assert _sha256_json(context) == "7764796a13927456c6e228f19fbcfbe8d32256d617a6b2d5ac94ded97a5a7acc"
+    assert _sha256_json(context) == "ae3dc938001c68df0bca9ebf5054849afef999a3c4b8d171a791004b82e94c7d"
+
+
+def test_report_metric_preserves_calculation_period_basis() -> None:
+    inputs = _canonical_context_inputs()
+    calculations = inputs["calculations"]
+    assert isinstance(calculations, list)
+    inputs["calculations"] = [
+        {**calculations[0], "period_basis": "YTD"},
+    ]
+
+    context = build_report_context(**inputs)
+
+    metric = next(
+        metric for metric in context["metrics"] if metric["metric_id"] == "operating_margin"
+    )
+    assert metric["period_basis"] == "YTD"
+
+
+def test_normalized_financial_kpis_without_basis_are_unavailable_and_caption_is_insufficient() -> None:
+    context = build_report_context(**_reader_focused_inputs())
+    for metric in context["metrics"]:
+        if metric["section"] == "financial":
+            metric.pop("period_basis", None)
+
+    visuals = build_report_visuals(context=context)
+    caption = _chart_caption_markdown(
+        context,
+        "financial_kpis",
+        {"financial_kpis": {"observations": ["收入同比保持正增长"]}},
+    )
+
+    assert "financial_kpis" not in visuals
+    assert "期间：数据不足" in caption
+    assert "截止：2025-12-31" in caption
 
 
 def test_reverse_dcf_context_preserves_million_usd_display_units() -> None:
@@ -1785,7 +1822,7 @@ def test_strict_lite_chart_captions_are_standardized_and_complete() -> None:
     assert "图 3：五年历史 P/E" in report
     assert "研究问题：" in report
     assert "限制与反证：" in report
-    assert "期间：as_of（as_of=2025-12-31）" in report
+    assert "期间：FY（as_of=2025-12-31）" in report
     assert "单位：百分比（%）" in report
     assert "来源：sec:test-revenue" in report
     assert "截止：2025-12-31" in report

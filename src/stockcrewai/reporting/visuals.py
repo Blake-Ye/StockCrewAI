@@ -129,13 +129,10 @@ def _financial_period_signature(
     period_end = _period_text(record.get("period_end"))
     as_of = _period_text(record.get("as_of"))
     if period_basis is None:
-        # ReportMetric has no period_basis; as_of is its only explicit comparable marker.
-        if record.get("section") != "financial":
-            return None
-        period_basis = "as_of"
+        return None
     if as_of is None:
         return None
-    if record.get("section") != "financial" and period_end is None:
+    if period_end is None and record.get("section") != "financial":
         return None
     return period_basis, period_end or "", as_of
 
@@ -144,9 +141,9 @@ def _financial_periods_consistent(
     records: Mapping[str, Mapping[str, Any]],
 ) -> bool:
     signatures = [_financial_period_signature(record) for record in records.values()]
-    return bool(signatures) and all(signature is not None for signature in signatures) and len(
-        {signature for signature in signatures if signature is not None}
-    ) == 1
+    return bool(signatures) and all(signature is not None for signature in signatures) and (
+        len({signature for signature in signatures if signature is not None}) == 1
+    )
 
 
 def _is_verified(record: Mapping[str, Any]) -> bool:

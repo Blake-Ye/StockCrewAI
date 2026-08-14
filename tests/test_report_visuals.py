@@ -275,7 +275,8 @@ class ReportVisualsTests(unittest.TestCase):
         financial_metrics = _financial_metrics()
         for record in financial_metrics:
             record.update(
-                period_basis="FY",
+                section="financial",
+                period_basis="YTD",
                 period_end="2025-12-31",
                 as_of="2025-12-31",
             )
@@ -284,6 +285,32 @@ class ReportVisualsTests(unittest.TestCase):
             for record in financial_metrics
             if record["metric_id"] == "cash_conversion"
         )["period_basis"] = "TTM"
+
+        visuals = builder(financial_metrics=financial_metrics)
+
+        self.assertNotIn("financial_kpis", visuals)
+
+    def test_financial_kpis_generate_when_same_as_of_basis_is_ytd(self):
+        builder = self._builder()
+        financial_metrics = _financial_metrics()
+        for record in financial_metrics:
+            record.update(
+                section="financial",
+                period_basis="YTD",
+                period_end="2025-12-31",
+                as_of="2025-12-31",
+            )
+
+        visuals = builder(financial_metrics=financial_metrics)
+
+        self.assertIn("financial_kpis", visuals)
+
+    def test_normalized_financial_kpis_require_explicit_period_basis(self):
+        builder = self._builder()
+        financial_metrics = _financial_metrics()
+        for record in financial_metrics:
+            record["section"] = "financial"
+            record.pop("period_basis")
 
         visuals = builder(financial_metrics=financial_metrics)
 

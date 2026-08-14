@@ -376,6 +376,9 @@ class ReportMetric(BaseModel):
     unit: StrictStr
     as_of: StrictStr
     period_end: StrictStr | None = None
+    period_basis: StrictStr | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     source_reference: StrictStr
     evidence_ids: list[StrictStr]
     calculation_id: StrictStr | None = None
@@ -593,6 +596,16 @@ def _evidence_as_of(
     return None
 
 
+def _evidence_period_basis(
+    evidence_ids: list[str], evidence_index: Mapping[str, Mapping[str, Any]]
+) -> str | None:
+    for evidence_id in evidence_ids:
+        period_basis = _text(evidence_index.get(evidence_id, {}).get("period_basis"))
+        if period_basis:
+            return period_basis
+    return None
+
+
 def _metric_from_payload(
     *,
     section: str,
@@ -604,6 +617,7 @@ def _metric_from_payload(
     evidence_index: Mapping[str, Mapping[str, Any]],
     direct_source: Any = None,
     direct_as_of: Sequence[Any] = (),
+    period_basis: Any = None,
     require_direct_source: bool = False,
     provenance_type: str = "calculation",
     adjustment_basis: Any = None,
@@ -631,6 +645,7 @@ def _metric_from_payload(
         require_direct=require_direct_source,
     )
     as_of = _evidence_as_of(ids, evidence_index, direct_as_of)
+    basis = _text(period_basis) or _evidence_period_basis(ids, evidence_index)
     if not source or not as_of:
         return None
     try:
@@ -640,6 +655,7 @@ def _metric_from_payload(
             display_value=display,
             unit=unit_text,
             as_of=as_of,
+            period_basis=basis,
             source_reference=source,
             evidence_ids=ids,
             calculation_id=calculation,
@@ -1150,6 +1166,7 @@ def build_report_context(
                 evidence_index=evidence_index,
                 direct_source=calculation.get("source_reference"),
                 direct_as_of=(calculation.get("as_of"), calculation.get("period_end")),
+                period_basis=calculation.get("period_basis"),
                 adjustment_basis=(
                     calculation.get("adjustment_basis")
                     if calculation.get("formula_id") == "share_dilution"

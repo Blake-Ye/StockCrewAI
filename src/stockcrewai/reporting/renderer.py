@@ -1608,6 +1608,8 @@ def _caption_sources(context: Mapping[str, Any], key: str) -> str:
 
 def _financial_period_metadata(
     context: Mapping[str, Any],
+    *,
+    require_period_basis: bool = True,
 ) -> tuple[str, str, str] | None:
     metric_ids = frozenset(
         {
@@ -1629,12 +1631,9 @@ def _financial_period_metadata(
         period_basis = _text(metric.get("period_basis")) or _text(metric.get("period"))
         period_end = _text(metric.get("period_end")) or ""
         as_of = _text(metric.get("as_of"))
-        if period_basis is None:
-            # ReportMetric has no period_basis; use its explicit as_of marker.
-            period_basis = "as_of"
-        if as_of is None:
+        if (require_period_basis and period_basis is None) or as_of is None:
             return None
-        signatures.append((period_basis, period_end, as_of))
+        signatures.append((period_basis or "", period_end, as_of))
     if not signatures or len(set(signatures)) != 1:
         return None
     return signatures[0]
@@ -1645,6 +1644,8 @@ def _financial_period_caption(context: Mapping[str, Any]) -> str:
     if metadata is None:
         return "数据不足"
     period_basis, period_end, as_of = metadata
+    if not period_basis:
+        return "数据不足"
     if period_end and period_end != as_of:
         point = f"period_end={period_end}；as_of={as_of}"
     elif period_end:
@@ -1678,7 +1679,7 @@ def _caption_cutoff(context: Mapping[str, Any], key: str) -> str:
                     return max(dates)
         return "数据不足"
 
-    metadata = _financial_period_metadata(context)
+    metadata = _financial_period_metadata(context, require_period_basis=False)
     if metadata is None:
         return "数据不足"
     _, period_end, as_of = metadata
