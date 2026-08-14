@@ -2093,3 +2093,85 @@ def test_sources_method_ignores_llm_audit_claim() -> None:
     assert "本报告使用经审计财务数据" not in method_section
     assert "经审计财务数据" not in method_section
     assert _SOURCE_METHOD_NOTE in method_section
+
+
+def test_strict_lite_risk_monitoring_table_caps_main_rows_and_escapes_cells() -> None:
+    inputs = _reader_focused_inputs()
+    claims = inputs["validated_claims"]
+    source_metadata = inputs["source_metadata"]
+    assert isinstance(claims, list)
+    assert isinstance(source_metadata, dict)
+    risk_claims = [
+        {
+            "claim_id": f"claim_strict_risk_{index}",
+            "category": "risk",
+            "statement": statement,
+            "evidence_ids": [f"ev_strict_risk_{index}"],
+            "calculation_ids": [],
+            "confidence": 0.8,
+        }
+        for index, statement in enumerate(
+            (
+                "风险一 | 第一行\n第二行",
+                "风险二",
+                "风险三",
+                "风险四",
+            ),
+            start=1,
+        )
+    ]
+    inputs["validated_claims"] = [*claims, *risk_claims]
+    inputs["source_metadata"] = {
+        **source_metadata,
+        "risk_filings": [
+            {
+                "evidence_id": f"ev_strict_risk_{index}",
+                "source_reference": (
+                    f"https://www.sec.gov/Archives/edgar/data/1/risk-{index}.html"
+                ),
+            }
+            for index in range(1, 5)
+        ],
+    }
+
+    report = render_validated_report(
+        build_report_context(**inputs),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+    risk_section = report.split("## 6. 主要风险与监控条件", 1)[1].split(
+        "## 7. 综合判断", 1
+    )[0]
+    main_risks, appendix = risk_section.split("### 风险附录", 1)
+
+    assert "| 风险 | 影响路径 | 监控指标 | 来源 |" in risk_section
+    assert risk_section.count("<tr>") == 0
+    assert "风险一 \\| 第一行<br>第二行" in main_risks
+    assert "风险二" in main_risks
+    assert "风险三" in main_risks
+    assert "风险四" not in main_risks
+    assert "风险四" in appendix
+    assert "https://www.sec.gov/Archives/edgar/data/1/risk-1.html" in main_risks
+
+
+def test_strict_lite_conclusion_uses_four_blocks_and_keeps_advice_outside_body() -> None:
+    report = render_validated_report(
+        build_report_context(**_reader_focused_inputs()),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+
+    assert "## 7. 综合判断与重新评估条件" in report
+    assert "## 8. 数据来源、方法与技术附录" in report
+    assert "## 9. 非投资建议声明" in report
+    conclusion = report.split("## 7. 综合判断与重新评估条件", 1)[1].split(
+        "## 8. 数据来源、方法与技术附录", 1
+    )[0]
+    assert "### 已验证事实" in conclusion
+    assert "### 确定性比较" in conclusion
+    assert "### 确定性判断" in conclusion
+    assert "### 重新评估条件" in conclusion
+    assert "### 方法与审计元数据" not in conclusion
+    assert "### 判断规则" not in conclusion
+
+    report_body = report.split("## 9. 非投资建议声明", 1)[0]
+    for advice in ("买入", "卖出", "持有"):
+        assert advice not in report_body

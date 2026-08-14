@@ -1802,6 +1802,7 @@ class ReportContractTests(unittest.TestCase):
 
     def _reader_focused_context_inputs(self):
         inputs = self._canonical_context_inputs()
+        inputs["source_metadata"]["facts"]["revenue"]["period_basis"] = "FY"
         inputs["deterministic_verdict"] = {
             "status": "ready",
             "overall_rating": "expensive",
@@ -1821,6 +1822,7 @@ class ReportContractTests(unittest.TestCase):
                 "formula_id": metric_id,
                 "display_result": display_value,
                 "unit": "ratio",
+                "period_basis": "FY",
                 "status": "available",
                 "validation_status": "valid",
                 "input_evidence_ids": ["ev_revenue"],

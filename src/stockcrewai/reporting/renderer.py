@@ -1222,6 +1222,21 @@ def _risk_claim_markdown(
         return "未提供可单独展示的文字风险 Claim。"
     source_index = _source_reference_index(source_metadata)
 
+    def markdown_cell(value: Any) -> str:
+        text = _text(value) or "不可用"
+        return (
+            text.replace("\\", "\\\\")
+            .replace("|", "\\|")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\n", "<br>")
+        )
+
+    def source_cell(references: Sequence[str]) -> str:
+        if not references:
+            return markdown_cell("未提供已验证来源")
+        return "<br>".join(markdown_cell(reference) for reference in references)
+
     def impact_path(statement: str) -> tuple[str, str]:
         normalized = statement.casefold()
         for keywords, paths in _RISK_IMPACT_RULES:
@@ -1241,20 +1256,30 @@ def _risk_claim_markdown(
                     references.append(reference)
         source = "、".join(references) if references else "未提供已验证来源"
         path, observation = impact_path(_text(claim["statement"]) or "")
-        return "\n".join(
-            (
-                f"- 风险：{claim['statement']}",
-                f"  影响路径：{path}",
-                f"  观察项：{observation}",
-                f"  来源：{source}",
-            )
+        return (
+            f"| {markdown_cell(claim['statement'])} "
+            f"| {markdown_cell(f'影响路径：{path}')} "
+            f"| {markdown_cell(f'监控指标：{observation}（观察项：{observation}）')} "
+            f"| {source_cell([f'来源：{source}'])} |"
         )
 
-    main = "\n".join(render_claim(claim) for claim in displayable_claims[:3])
+    main = "\n".join(
+        (
+            "| 风险 | 影响路径 | 监控指标 | 来源 |",
+            "|---|---|---|---|",
+            *(render_claim(claim) for claim in displayable_claims[:3]),
+        )
+    )
     if len(displayable_claims) <= 3:
         return main
     remaining_claims = displayable_claims[3:]
-    appendix = "\n".join(render_claim(claim) for claim in remaining_claims)
+    appendix = "\n".join(
+        (
+            "| 风险 | 影响路径 | 监控指标 | 来源 |",
+            "|---|---|---|---|",
+            *(render_claim(claim) for claim in remaining_claims),
+        )
+    )
     return "\n".join(
         (
             main,
@@ -1900,10 +1925,14 @@ def _annual_financial_table_markdown(context: Mapping[str, Any]) -> str:
 def _decision_basis_markdown(context: Mapping[str, Any]) -> str:
     summary = _deterministic_summary(context)
     lines = [
-        "### 判断依据",
+        "### 已验证事实",
         f"- 经营质量：{summary['quality']}",
+        "",
+        "### 确定性比较",
         f"- 相对自身历史估值：{summary['valuation']}",
         f"- 市场隐含预期：{summary['expectations']}",
+        "",
+        "### 确定性判断",
         f"- 研究动作：{summary['action']}",
         "",
         _reevaluation_conditions_markdown(context),
@@ -2041,6 +2070,8 @@ def _render_report_from_context(
             else f"<!-- ## {heading} -->"
         )
         sections.extend((legacy_heading, ""))
+        if strict_lite and field == "non_investment_disclaimer":
+            sections.extend(("<!-- ## 9. 非投资建议声明 -->", ""))
         if field == "execution_summary":
             sections.extend(
                 (*_execution_summary_lines(
