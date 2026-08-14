@@ -67,11 +67,12 @@ _FINANCIAL_KPI_LABELS = {
 }
 _FINANCIAL_KPI_TITLE = "财务质量指标（已验证数据）"
 _ANNUAL_TREND_METRICS = (
-    ("revenue", "营业收入（十亿美元）"),
-    ("net_income", "净利润（十亿美元）"),
-    ("free_cash_flow", "自由现金流（十亿美元）"),
+    ("revenue", "营业收入"),
+    ("net_income", "净利润"),
+    ("free_cash_flow", "自由现金流"),
 )
 _ANNUAL_TREND_TITLE = "近五年核心财务趋势（已验证完整财年）"
+_ANNUAL_TREND_Y_LABEL = "指数（首个财年=100）"
 _NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
 _FINANCIAL_KPI_GROUPS = (
     ("增长与资本配置", ("revenue_growth", "share_dilution")),
@@ -156,7 +157,7 @@ def _ratio_value(record: Mapping[str, Any]) -> float | None:
     return float(value) if value.is_finite() else None
 
 
-def _amount_in_billion_usd(record: Mapping[str, Any]) -> float | None:
+def _amount_in_billion_usd_decimal(record: Mapping[str, Any]) -> Decimal | None:
     raw, unit = _raw_value(record)
     value = _decimal(raw)
     if value is None:
@@ -172,7 +173,12 @@ def _amount_in_billion_usd(record: Mapping[str, Any]) -> float | None:
         value /= Decimal("1000")
     else:
         value /= Decimal("1000000000")
-    return float(value) if value.is_finite() else None
+    return value if value.is_finite() else None
+
+
+def _amount_in_billion_usd(record: Mapping[str, Any]) -> float | None:
+    value = _amount_in_billion_usd_decimal(record)
+    return float(value) if value is not None else None
 
 
 def _png_uri(
@@ -331,9 +337,9 @@ def _annual_financial_trend_png(payload: Mapping[str, Any]) -> str | None:
     ):
         return None
 
-    panel_values: dict[str, list[float]] = {}
+    indexed_values: dict[str, list[Decimal]] = {}
     for metric_id, _ in _ANNUAL_TREND_METRICS:
-        records = []
+        values: list[Decimal] = []
         for period in periods:
             record = {
                 "raw_result": period.get(metric_id),
@@ -341,38 +347,37 @@ def _annual_financial_trend_png(payload: Mapping[str, Any]) -> str | None:
                 "status": "available",
                 "validation_status": "valid",
             }
-            value = _amount_in_billion_usd(record)
+            value = _amount_in_billion_usd_decimal(record)
             if value is None:
                 return None
-            records.append(value)
-        panel_values[metric_id] = records
+            values.append(value)
+        if values[0] <= 0:
+            return None
+        indexed_values[metric_id] = [
+            value / values[0] * Decimal("100") for value in values
+        ]
 
     def draw(axes: Any) -> None:
         figure = axes.figure
         figure.clear()
-        panel_axes = figure.subplots(3, 1, sharex=True, squeeze=False)[:, 0]
+        axis = figure.subplots()
         labels = [f"FY{fiscal_year}" for fiscal_year in fiscal_years]
-        for axis, (metric_id, title) in zip(panel_axes, _ANNUAL_TREND_METRICS):
-            values = panel_values[metric_id]
-            colors = ["#4c956c"] * (len(values) - 1) + ["#2f6f4e"]
-            bars = axis.bar(labels, values, color=colors)
-            axis.set_ylabel(title)
-            axis.set_title(title)
-            axis.axhline(0, color="#555555", linewidth=0.8)
-            axis.grid(axis="y", alpha=0.25)
-            for bar, value in zip(bars, values):
-                offset = max(abs(value) * 0.02, 0.15)
-                axis.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    value + offset if value >= 0 else value - offset,
-                    f"{value:.1f}",
-                    ha="center",
-                    va="bottom" if value >= 0 else "top",
-                    fontsize=8,
-                )
-        panel_axes[-1].set_xlabel("财年")
+        for metric_id, title in _ANNUAL_TREND_METRICS:
+            axis.plot(
+                labels,
+                [float(value) for value in indexed_values[metric_id]],
+                marker="o",
+                linewidth=1.8,
+                label=title,
+            )
+        axis.set_ylabel(_ANNUAL_TREND_Y_LABEL)
+        axis.set_xlabel("财年")
+        axis.set_title("五年核心财务趋势指数")
+        axis.axhline(100, color="#555555", linewidth=0.8, linestyle=":")
+        axis.grid(axis="y", alpha=0.25)
+        axis.legend(loc="best", frameon=False)
         figure.suptitle(_ANNUAL_TREND_TITLE)
-        figure.subplots_adjust(left=0.16, right=0.96, bottom=0.10, top=0.91, hspace=0.52)
+        figure.subplots_adjust(left=0.12, right=0.97, bottom=0.13, top=0.89)
 
     return _png_uri(draw, size=(9.2, 7.0), dpi=100)
 

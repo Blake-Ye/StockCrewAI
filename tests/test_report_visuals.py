@@ -372,8 +372,26 @@ class ReportVisualsTests(unittest.TestCase):
             ),
         )
 
-    def test_annual_trend_has_three_panels_and_five_fiscal_year_bars(self):
+    def test_annual_trend_normalizes_series_on_one_shared_index_axis(self):
         module = importlib.import_module("stockcrewai.reporting.visuals")
+        annual = _annual_financial_history()
+        periods = annual["periods"]
+        expected_values = {
+            "revenue": [100.0, 120.0, 180.0, 160.0, 250.0],
+            "net_income": [100.0, 80.0, 120.0, 150.0, 200.0],
+            "free_cash_flow": [100.0, 150.0, 120.0, 160.0, 200.0],
+        }
+        for period, values in zip(
+            periods,
+            zip(
+                expected_values["revenue"],
+                expected_values["net_income"],
+                expected_values["free_cash_flow"],
+            ),
+        ):
+            period["revenue"] = str(int(values[0] * 1_000_000_000))
+            period["net_income"] = str(int(values[1] * 10_000_000))
+            period["free_cash_flow"] = str(int(values[2] * 5_000_000))
         rendered = {}
 
         def inspect_png_uri(draw, *, size, **kwargs):
@@ -388,28 +406,42 @@ class ReportVisualsTests(unittest.TestCase):
 
         with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
             self.assertEqual(
-                module._annual_financial_trend_png(_annual_financial_history()),
+                module._annual_financial_trend_png(annual),
                 "captured",
             )
 
         axes = rendered["axes"]
-        self.assertEqual(len(axes), 3)
+        self.assertEqual(len(axes), 1)
+        axis = axes[0]
+        self.assertEqual(axis.get_ylabel(), "指数（首个财年=100）")
+        data_lines = [line for line in axis.lines if len(line.get_ydata()) == 5]
+        self.assertEqual(len(data_lines), 3)
         self.assertEqual(
-            [axis.get_title() for axis in axes],
-            ["营业收入（十亿美元）", "净利润（十亿美元）", "自由现金流（十亿美元）"],
+            [list(line.get_ydata()) for line in data_lines],
+            [
+                expected_values["revenue"],
+                expected_values["net_income"],
+                expected_values["free_cash_flow"],
+            ],
         )
-        self.assertTrue(all(len(axis.patches) == 5 for axis in axes))
-        for axis in axes:
-            self.assertEqual(len(axis.texts), 5)
-            self.assertNotIn("最新", "".join(text.get_text() for text in axis.texts))
-            self.assertNotEqual(
-                axis.patches[-1].get_facecolor(),
-                axis.patches[-2].get_facecolor(),
-            )
         self.assertEqual(
-            axes[0].figure._suptitle.get_text(),
-            "近五年核心财务趋势（已验证完整财年）",
+            [text.get_text() for text in axis.get_legend().get_texts()],
+            ["营业收入", "净利润", "自由现金流"],
         )
+
+    def test_annual_trend_omits_chart_when_first_year_value_is_nonpositive_or_invalid(
+        self,
+    ):
+        builder = self._builder()
+
+        for first_value in ("0", "not-a-number"):
+            with self.subTest(first_value=first_value):
+                annual = _annual_financial_history()
+                annual["periods"][0]["net_income"] = first_value
+
+                visuals = builder(annual_financial_history=annual)
+
+                self.assertNotIn("annual_financial_trend", visuals)
 
     def _assert_png_uris(self, visuals):
         for key, uri in visuals.items():

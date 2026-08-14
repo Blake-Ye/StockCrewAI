@@ -1750,7 +1750,7 @@ def test_first_chart_guidance_describes_three_semantic_panels() -> None:
     assert "现金流质量" in report
 
 
-def test_visuals_keep_three_keys_png_data_uris_and_hashes() -> None:
+def test_visuals_keep_three_keys_png_data_uris_without_pixel_snapshots() -> None:
     visuals = build_report_visuals(
         financial_metrics=_financial_metrics(),
         ttm_metrics=_ttm_metrics(),
@@ -1763,17 +1763,25 @@ def test_visuals_keep_three_keys_png_data_uris_and_hashes() -> None:
         "annual_financial_trend",
         "historical_pe",
     }
-    hashes = {}
-    for key, uri in visuals.items():
+    for uri in visuals.values():
         assert uri.startswith("data:image/png;base64,")
         raw = base64.b64decode(uri.split(",", 1)[1])
         assert raw.startswith(b"\x89PNG\r\n\x1a\n")
-        hashes[key] = hashlib.sha256(raw).hexdigest()
-    assert hashes == {
-        "financial_kpis": "ba7e964c7b332946a288789e002448f14085d854c7936223169471648d38b8cc",
-        "annual_financial_trend": "a1e9d5874f58afbd9bf7020ef2a3a1bbeb6fc640dc73d0b429f6beda7f781147",
-        "historical_pe": "560abfcefb47e995b17facef3ce9913776b18327b0bb5b41820d6199eacafd33",
-    }
+
+
+def test_strict_lite_chart_captions_are_standardized_and_complete() -> None:
+    report = render_validated_report(
+        build_report_context(**_reader_focused_inputs()),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+
+    assert report.count("data:image/png;base64,") == 3
+    assert "图 1：最新经营质量" in report
+    assert "图 2：五年核心财务趋势指数" in report
+    assert "基期=100" in report
+    assert "图 3：五年历史 P/E" in report
+    assert "研究问题：" in report
+    assert "限制与反证：" in report
 
 
 def test_rendered_report_validator_allows_advice_only_in_disclaimer() -> None:

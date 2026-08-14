@@ -1543,6 +1543,169 @@ def _visual_markdown(visuals: Mapping[str, str], key: str, alt: str) -> str | No
     return f"![{alt}]({uri})"
 
 
+def _caption_sources(context: Mapping[str, Any], key: str) -> str:
+    metric_ids = {
+        "financial_kpis": frozenset(
+            {
+                "revenue_growth",
+                "operating_margin",
+                "net_margin",
+                "free_cash_flow_margin",
+                "cash_conversion",
+                "share_dilution",
+            }
+        ),
+        "annual_financial_trend": _REPORT_TREND_METRIC_IDS,
+        "historical_pe": frozenset(
+            {"pe_ratio", "historical_pe_current", "historical_pe_median"}
+        ),
+    }[key]
+    references: list[str] = []
+    metrics = context.get("metrics", [])
+    if isinstance(metrics, Sequence) and not isinstance(metrics, (str, bytes)):
+        for metric in metrics:
+            if not isinstance(metric, Mapping) or metric.get("metric_id") not in metric_ids:
+                continue
+            reference = _text(metric.get("source_reference"))
+            if reference and reference not in references:
+                references.append(reference)
+
+    if key == "annual_financial_trend" and not references:
+        annual = context.get("annual_financial_history", {})
+        evidence_ids = {
+            _text(evidence_id)
+            for period in annual.get("periods", [])
+            if isinstance(period, Mapping)
+            for evidence_id in period.get("evidence_ids", [])
+            if _text(evidence_id)
+        } if isinstance(annual, Mapping) else set()
+    elif key == "historical_pe" and not references:
+        historical = context.get("historical_valuation", {})
+        evidence_ids = {
+            _text(evidence_id)
+            for evidence_id in historical.get("input_evidence_ids", [])
+            if _text(evidence_id)
+        } if isinstance(historical, Mapping) else set()
+    else:
+        evidence_ids = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            if _text(value.get("evidence_id")) in evidence_ids:
+                reference = _text(value.get("source_reference"))
+                if reference and reference not in references:
+                    references.append(reference)
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for nested in value:
+                visit(nested)
+
+    if evidence_ids:
+        visit(context.get("source_metadata", {}))
+    return "、".join(references) or "数据不足"
+
+
+def _caption_cutoff(context: Mapping[str, Any], key: str) -> str:
+    if key == "annual_financial_trend":
+        annual = context.get("annual_financial_history", {})
+        periods = annual.get("periods", []) if isinstance(annual, Mapping) else []
+        dates = [
+            _text(period.get("filed_at")) or _text(period.get("period_end"))
+            for period in periods
+            if isinstance(period, Mapping)
+        ]
+        dates = [date for date in dates if date]
+        return max(dates) if dates else "数据不足"
+    if key == "historical_pe":
+        historical = context.get("historical_valuation", {})
+        if isinstance(historical, Mapping):
+            current_date = _text(historical.get("current_date"))
+            if current_date:
+                return current_date
+            dates = historical.get("selected_dates", [])
+            if isinstance(dates, Sequence) and not isinstance(dates, (str, bytes)):
+                dates = [_text(date) for date in dates if _text(date)]
+                if dates:
+                    return max(dates)
+        return "数据不足"
+
+    dates = []
+    metrics = context.get("metrics", [])
+    metric_ids = {
+        "revenue_growth",
+        "operating_margin",
+        "net_margin",
+        "free_cash_flow_margin",
+        "cash_conversion",
+        "share_dilution",
+    }
+    if isinstance(metrics, Sequence) and not isinstance(metrics, (str, bytes)):
+        dates = [
+            _text(metric.get("period_end")) or _text(metric.get("as_of"))
+            for metric in metrics
+            if isinstance(metric, Mapping) and metric.get("metric_id") in metric_ids
+        ]
+    dates = [date for date in dates if date]
+    return max(dates) if dates else "数据不足"
+
+
+def _chart_caption_markdown(
+    context: Mapping[str, Any], key: str, chart_context: Mapping[str, Any]
+) -> str:
+    chart = chart_context.get(key, {})
+    observations = chart.get("observations") if isinstance(chart, Mapping) else None
+    observation = (
+        "；".join(str(item) for item in observations if _text(item))
+        if isinstance(observations, Sequence) and not isinstance(observations, (str, bytes))
+        else ""
+    ) or "数据不足"
+    captions = {
+        "financial_kpis": (
+            "图 1：最新经营质量",
+            "最新经营质量是否由盈利能力与现金转换共同支持？",
+            "最新可用财务期间",
+            "百分比（%）",
+            "用于判断经营质量是否值得继续跟踪，不单独构成估值结论。",
+            "三个面板分别展示增长与资本配置、盈利能力和现金流质量，并使用独立刻度。",
+            "指标为已验证期间的口径比较，不能据此证明因果关系；缺少可比口径时以数据不足处理。",
+        ),
+        "annual_financial_trend": (
+            "图 2：五年核心财务趋势指数",
+            "五个完整财年的核心财务指标相对首年如何变化？",
+            _annual_period_range(context) or "数据不足",
+            "指数（首个财年=100；基期=100）",
+            "用于比较跨财年的相对变化，绝对金额以五年财务表为准。",
+            "近五年核心财务趋势（已验证完整财年），展示最近五个共同完整财年；绝对金额由五年财务表承担，三条序列共享指数纵轴。",
+            "指数不显示绝对金额；首年值非正或无效时不生成，也不能替代五年财务表或证明因果关系。",
+        ),
+        "historical_pe": (
+            "图 3：五年历史 P/E",
+            "当前 P/E 相对过去五年历史区间处于何处？",
+            "过去五年历史序列",
+            "P/E（倍）",
+            "用于判断估值相对自身历史位置，不作绝对价格判断。",
+            "曲线展示 TTM P/E 的历史变化，参考线用于判断当前估值相对过去五年的位置。",
+            "P/E 受盈利口径、样本日期和异常值影响，不代表未来收益；若历史摘要缺失则写数据不足。",
+        ),
+    }[key]
+    title, question, period, unit, meaning, note, limitation = captions
+    return "\n".join(
+        (
+            f"**{title}**",
+            f"- 研究问题：{question}",
+            f"- 期间：{period}",
+            f"- 单位：{unit}",
+            f"- 来源：{_caption_sources(context, key)}",
+            f"- 截止：{_caption_cutoff(context, key)}",
+            f"- 观察：{observation}",
+            f"- 投资含义：{meaning}",
+            f"- 限制与反证：{limitation}",
+            f"- 图表说明：{note}",
+        )
+    )
+
+
 def _reverse_dcf_markdown(
     payload: Mapping[str, Any], annual_summary: Mapping[str, Any] | None = None
 ) -> str:
@@ -1871,7 +2034,9 @@ def _render_report_from_context(
                     (
                         chart,
                         "",
-                        "*图表说明：三个面板分别展示增长与资本配置、盈利能力和现金流质量，并使用独立刻度。*",
+                        _chart_caption_markdown(
+                            context_payload, "financial_kpis", chart_context
+                        ),
                         "",
                     )
                 )
@@ -1916,7 +2081,9 @@ def _render_report_from_context(
                     (
                         chart,
                         "",
-                        "*图表说明：展示最近五个共同完整财年，单位为十亿美元；营业收入、净利润和自由现金流分别使用独立 y 轴，共享财年横轴。*",
+                        _chart_caption_markdown(
+                            context_payload, "annual_financial_trend", chart_context
+                        ),
                         "",
                     )
                 )
@@ -1946,7 +2113,9 @@ def _render_report_from_context(
                     (
                         chart,
                         "",
-                        "*图表说明：曲线展示 TTM P/E 的历史变化，参考线用于判断当前估值相对过去五年的位置。*",
+                        _chart_caption_markdown(
+                            context_payload, "historical_pe", chart_context
+                        ),
                         "",
                     )
                 )
