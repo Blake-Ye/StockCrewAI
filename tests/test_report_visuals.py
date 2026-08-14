@@ -28,6 +28,9 @@ def _financial_metrics():
             "status": "available",
             "validation_status": "valid",
             "calculation_id": f"calc_{metric_id}",
+            "period_basis": "FY",
+            "period_end": "2025-12-31",
+            "as_of": "2025-12-31",
             "evidence_ids": [f"ev_{metric_id}"],
             **({"adjustment_basis": "raw"} if metric_id == "share_dilution" else {}),
         }
@@ -156,6 +159,9 @@ class ReportVisualsTests(unittest.TestCase):
                 "status": "available",
                 "validation_status": "valid",
                 "calculation_id": f"calc_{metric_id}",
+                "period_basis": "FY",
+                "period_end": "2025-12-31",
+                "as_of": "2025-12-31",
                 **(
                     {"adjustment_basis": "split_adjusted"}
                     if metric_id == "share_dilution"
@@ -228,11 +234,14 @@ class ReportVisualsTests(unittest.TestCase):
         records = {
             metric_id: {
                 "display_value": f"{value:.2f}%",
-                "unit": "percentage",
-                "status": "available",
-                "validation_status": "valid",
-                "calculation_id": f"calc_{metric_id}",
-                **(
+            "unit": "percentage",
+            "status": "available",
+            "validation_status": "valid",
+            "calculation_id": f"calc_{metric_id}",
+            "period_basis": "FY",
+            "period_end": "2025-12-31",
+            "as_of": "2025-12-31",
+            **(
                     {"adjustment_basis": "total_return_adjusted"}
                     if metric_id == "share_dilution"
                     else {}
@@ -260,6 +269,49 @@ class ReportVisualsTests(unittest.TestCase):
             [text.get_text() for text in rendered["axes"][0].texts],
             ["20.00%"],
         )
+
+    def test_financial_kpis_omit_mixed_period_basis(self):
+        builder = self._builder()
+        financial_metrics = _financial_metrics()
+        for record in financial_metrics:
+            record.update(
+                period_basis="FY",
+                period_end="2025-12-31",
+                as_of="2025-12-31",
+            )
+        next(
+            record
+            for record in financial_metrics
+            if record["metric_id"] == "cash_conversion"
+        )["period_basis"] = "TTM"
+
+        visuals = builder(financial_metrics=financial_metrics)
+
+        self.assertNotIn("financial_kpis", visuals)
+
+    def test_financial_kpis_omit_missing_period_basis_or_period_metadata(self):
+        builder = self._builder()
+        financial_metrics = _financial_metrics()
+        for record in financial_metrics:
+            record.update(
+                period_basis="FY",
+                period_end="2025-12-31",
+                as_of="2025-12-31",
+            )
+        for missing_fields in (("period_basis",), ("period_end", "as_of")):
+            with self.subTest(missing_fields=missing_fields):
+                records = [record.copy() for record in financial_metrics]
+                target = next(
+                    record
+                    for record in records
+                    if record["metric_id"] == "cash_conversion"
+                )
+                for field in missing_fields:
+                    target.pop(field)
+
+                visuals = builder(financial_metrics=records)
+
+                self.assertNotIn("financial_kpis", visuals)
 
     def test_historical_pe_uses_validated_upstream_summary_values(self):
         module = importlib.import_module("stockcrewai.reporting.visuals")

@@ -1606,6 +1606,54 @@ def _caption_sources(context: Mapping[str, Any], key: str) -> str:
     return "、".join(references) or "数据不足"
 
 
+def _financial_period_metadata(
+    context: Mapping[str, Any],
+) -> tuple[str, str, str] | None:
+    metric_ids = frozenset(
+        {
+            "revenue_growth",
+            "operating_margin",
+            "net_margin",
+            "free_cash_flow_margin",
+            "cash_conversion",
+            "share_dilution",
+        }
+    )
+    signatures: list[tuple[str, str, str]] = []
+    metrics = context.get("metrics", [])
+    if not isinstance(metrics, Sequence) or isinstance(metrics, (str, bytes)):
+        return None
+    for metric in metrics:
+        if not isinstance(metric, Mapping) or metric.get("metric_id") not in metric_ids:
+            continue
+        period_basis = _text(metric.get("period_basis")) or _text(metric.get("period"))
+        period_end = _text(metric.get("period_end")) or ""
+        as_of = _text(metric.get("as_of"))
+        if period_basis is None:
+            # ReportMetric has no period_basis; use its explicit as_of marker.
+            period_basis = "as_of"
+        if as_of is None:
+            return None
+        signatures.append((period_basis, period_end, as_of))
+    if not signatures or len(set(signatures)) != 1:
+        return None
+    return signatures[0]
+
+
+def _financial_period_caption(context: Mapping[str, Any]) -> str:
+    metadata = _financial_period_metadata(context)
+    if metadata is None:
+        return "数据不足"
+    period_basis, period_end, as_of = metadata
+    if period_end and period_end != as_of:
+        point = f"period_end={period_end}；as_of={as_of}"
+    elif period_end:
+        point = period_end
+    else:
+        point = f"as_of={as_of}"
+    return f"{period_basis}（{point}）"
+
+
 def _caption_cutoff(context: Mapping[str, Any], key: str) -> str:
     if key == "annual_financial_trend":
         annual = context.get("annual_financial_history", {})
@@ -1630,24 +1678,11 @@ def _caption_cutoff(context: Mapping[str, Any], key: str) -> str:
                     return max(dates)
         return "数据不足"
 
-    dates = []
-    metrics = context.get("metrics", [])
-    metric_ids = {
-        "revenue_growth",
-        "operating_margin",
-        "net_margin",
-        "free_cash_flow_margin",
-        "cash_conversion",
-        "share_dilution",
-    }
-    if isinstance(metrics, Sequence) and not isinstance(metrics, (str, bytes)):
-        dates = [
-            _text(metric.get("period_end")) or _text(metric.get("as_of"))
-            for metric in metrics
-            if isinstance(metric, Mapping) and metric.get("metric_id") in metric_ids
-        ]
-    dates = [date for date in dates if date]
-    return max(dates) if dates else "数据不足"
+    metadata = _financial_period_metadata(context)
+    if metadata is None:
+        return "数据不足"
+    _, period_end, as_of = metadata
+    return as_of or period_end or "数据不足"
 
 
 def _chart_caption_markdown(
@@ -1664,7 +1699,7 @@ def _chart_caption_markdown(
         "financial_kpis": (
             "图 1：最新经营质量",
             "最新经营质量是否由盈利能力与现金转换共同支持？",
-            "最新可用财务期间",
+            _financial_period_caption(context),
             "百分比（%）",
             "用于判断经营质量是否值得继续跟踪，不单独构成估值结论。",
             "三个面板分别展示增长与资本配置、盈利能力和现金流质量，并使用独立刻度。",

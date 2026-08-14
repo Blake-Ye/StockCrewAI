@@ -113,6 +113,42 @@ def _record_id(record: Mapping[str, Any]) -> str | None:
     return str(value).strip() if value not in (None, "") else None
 
 
+def _period_text(value: Any) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    result = str(value).strip()
+    return result or None
+
+
+def _financial_period_signature(
+    record: Mapping[str, Any],
+) -> tuple[str, str, str] | None:
+    period_basis = _period_text(record.get("period_basis")) or _period_text(
+        record.get("period")
+    )
+    period_end = _period_text(record.get("period_end"))
+    as_of = _period_text(record.get("as_of"))
+    if period_basis is None:
+        # ReportMetric has no period_basis; as_of is its only explicit comparable marker.
+        if record.get("section") != "financial":
+            return None
+        period_basis = "as_of"
+    if as_of is None:
+        return None
+    if record.get("section") != "financial" and period_end is None:
+        return None
+    return period_basis, period_end or "", as_of
+
+
+def _financial_periods_consistent(
+    records: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    signatures = [_financial_period_signature(record) for record in records.values()]
+    return bool(signatures) and all(signature is not None for signature in signatures) and len(
+        {signature for signature in signatures if signature is not None}
+    ) == 1
+
+
 def _is_verified(record: Mapping[str, Any]) -> bool:
     status = record.get("status")
     validation_status = record.get("validation_status")
@@ -229,6 +265,8 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
         not in _SHARE_ADJUSTMENT_BASES
     ):
         verified_records.pop("share_dilution", None)
+    if not _financial_periods_consistent(verified_records):
+        return None
 
     panel_data: list[tuple[str, list[str], list[float]]] = []
     for title, metric_ids in _FINANCIAL_KPI_GROUPS:

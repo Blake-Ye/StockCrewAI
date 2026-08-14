@@ -255,6 +255,9 @@ def _financial_metrics() -> list[dict[str, object]]:
             "status": "available",
             "validation_status": "valid",
             "calculation_id": f"calc_{metric_id}",
+            "period_basis": "FY",
+            "period_end": "2025-12-31",
+            "as_of": "2025-12-31",
             "evidence_ids": [f"ev_{metric_id}"],
         }
         for metric_id, value in values.items()
@@ -1782,6 +1785,14 @@ def test_strict_lite_chart_captions_are_standardized_and_complete() -> None:
     assert "图 3：五年历史 P/E" in report
     assert "研究问题：" in report
     assert "限制与反证：" in report
+    assert "期间：as_of（as_of=2025-12-31）" in report
+    assert "单位：百分比（%）" in report
+    assert "来源：sec:test-revenue" in report
+    assert "截止：2025-12-31" in report
+    assert "观察：收入同比保持正增长" in report
+    assert "投资含义：用于判断经营质量是否值得继续跟踪" in report
+    assert "限制与反证：指标为已验证期间的口径比较" in report
+    assert "最新可用财务期间" not in report
 
 
 def test_rendered_report_validator_allows_advice_only_in_disclaimer() -> None:
