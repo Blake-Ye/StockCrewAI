@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from calendar import monthrange
 from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_EVEN, localcontext
@@ -92,6 +93,12 @@ class HistoricalValuationToolInput(BaseModel):
     financial_snapshots: list[PointInTimeFinancialSnapshot] = Field(
         default_factory=list
     )
+    current_pe_ratio: Any | None = None
+    current_price: Any | None = None
+    current_price_date: Any | None = None
+    current_price_evidence_id: Any | None = None
+    current_ttm_eps: Any | None = None
+    current_financial_evidence_ids: list[Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -183,6 +190,26 @@ def _as_date(value: Any) -> date | None:
             ).date()
         except ValueError:
             return None
+
+
+def _ratio_decimal(value: Any) -> Decimal | None:
+    raw_value, _ = _raw_value_and_ids(value)
+    result = _as_decimal(raw_value)
+    if result is not None:
+        return result
+    if isinstance(raw_value, str):
+        text = raw_value.strip()
+        if text.endswith(("x", "X", "倍")):
+            return _as_decimal(text[:-1].strip())
+    return None
+
+
+def _is_month_end(value: date) -> bool:
+    return value.day == monthrange(value.year, value.month)[1]
+
+
+def _month_end(value: date) -> date:
+    return date(value.year, value.month, monthrange(value.year, value.month)[1])
 
 
 def _valid_evidence_id(value: Any) -> bool:
@@ -315,6 +342,12 @@ class HistoricalValuationTool(BaseTool):
         metric: str = "pe_ratio",
         historical_prices: list[HistoricalPricePoint] | None = None,
         financial_snapshots: list[PointInTimeFinancialSnapshot] | None = None,
+        current_pe_ratio: Any | None = None,
+        current_price: Any | None = None,
+        current_price_date: Any | None = None,
+        current_price_evidence_id: Any | None = None,
+        current_ttm_eps: Any | None = None,
+        current_financial_evidence_ids: list[Any] | None = None,
         **aliases: Any,
     ) -> HistoricalValuationResult:
         if historical_prices is None:
@@ -324,6 +357,14 @@ class HistoricalValuationTool(BaseTool):
                 aliases.get("snapshots")
                 or aliases.get("point_in_time_snapshots")
                 or aliases.get("point_in_time_financial_snapshots")
+            )
+        if current_pe_ratio is None:
+            current_pe_ratio = aliases.get("current_value", aliases.get("current_pe"))
+        if current_price_date is None:
+            current_price_date = aliases.get("current_date")
+        if current_financial_evidence_ids is None:
+            current_financial_evidence_ids = aliases.get(
+                "current_evidence_ids", aliases.get("current_financial_ids", [])
             )
         metric_name = str(metric or "pe_ratio").strip().lower()
         reasons: list[str] = []
@@ -394,6 +435,62 @@ class HistoricalValuationTool(BaseTool):
         requested_as_of = _as_date(as_of)
         if as_of is not None and requested_as_of is None:
             reasons.append("invalid_as_of_date")
+
+        current_values_provided = any(
+            value is not None
+            for value in (
+                current_pe_ratio,
+                current_price,
+                current_price_date,
+                current_price_evidence_id,
+                current_ttm_eps,
+            )
+        ) or bool(current_financial_evidence_ids)
+        current_date = _as_date(current_price_date)
+        current_price_value, nested_price_ids = _raw_value_and_ids(current_price)
+        current_price_decimal = _as_decimal(current_price_value)
+        current_eps_value, nested_eps_ids = _raw_value_and_ids(current_ttm_eps)
+        current_eps_decimal = _as_decimal(current_eps_value)
+        current_pe_decimal = _ratio_decimal(current_pe_ratio)
+        current_price_ids = _evidence_ids(current_price_evidence_id)
+        _append_unique(current_price_ids, nested_price_ids)
+        current_financial_ids = _evidence_ids(current_financial_evidence_ids)
+        _append_unique(current_financial_ids, nested_eps_ids)
+        if current_values_provided:
+            if current_date is None:
+                reasons.append("invalid_current_price_date")
+            if current_price is not None and (
+                current_price_decimal is None or current_price_decimal <= 0
+            ):
+                reasons.append("invalid_current_price")
+            if current_pe_decimal is None:
+                if (
+                    current_price_decimal is not None
+                    and current_price_decimal > 0
+                    and current_eps_decimal is not None
+                    and current_eps_decimal > 0
+                ):
+                    current_pe_decimal = current_price_decimal / current_eps_decimal
+                else:
+                    reasons.append("invalid_current_pe_ratio")
+            elif current_pe_decimal <= 0:
+                reasons.append("invalid_current_pe_ratio")
+            if (
+                not current_price_ids
+                or not all(_valid_evidence_id(item) for item in current_price_ids)
+            ):
+                reasons.append("invalid_current_price_evidence_id")
+            if (
+                not current_financial_ids
+                or not all(_valid_evidence_id(item) for item in current_financial_ids)
+            ):
+                reasons.append("invalid_current_financial_evidence_id")
+            if (
+                requested_as_of is not None
+                and current_date is not None
+                and current_date > requested_as_of
+            ):
+                reasons.append("current_price_after_as_of")
         if reasons:
             return self._result(
                 status="unavailable",
@@ -413,7 +510,7 @@ class HistoricalValuationTool(BaseTool):
                 warnings=warnings,
             )
         parsed_prices.sort(key=lambda item: item[0])
-        analysis_date = requested_as_of or parsed_prices[-1][0]
+        analysis_date = requested_as_of or current_date or parsed_prices[-1][0]
         eligible_prices = [item for item in parsed_prices if item[0] <= analysis_date]
         if not eligible_prices:
             return self._result(
@@ -430,17 +527,17 @@ class HistoricalValuationTool(BaseTool):
         monthly: dict[int, tuple[date, Decimal, list[str]]] = {}
         for point in eligible_prices:
             month_key = point[0].year * 12 + point[0].month
-            monthly[month_key] = point
-        latest_month = eligible_prices[-1][0].year * 12 + eligible_prices[-1][0].month
-        first_month = latest_month - (HISTORICAL_VALUATION_REQUIRED_MONTHS - 1)
+            if (
+                analysis_date.year == point[0].year
+                and analysis_date.month == point[0].month
+                and not _is_month_end(analysis_date)
+            ):
+                continue
+            monthly[month_key] = (_month_end(point[0]), point[1], point[2])
         selected_prices = sorted(
-            (
-                point
-                for month_key, point in monthly.items()
-                if first_month <= month_key <= latest_month
-            ),
+            monthly.values(),
             key=lambda item: item[0],
-        )
+        )[-HISTORICAL_VALUATION_REQUIRED_MONTHS:]
         if len(selected_prices) < HISTORICAL_VALUATION_REQUIRED_MONTHS:
             return self._result(
                 status="not_applicable",
@@ -526,21 +623,31 @@ class HistoricalValuationTool(BaseTool):
             )
 
         ordered = sorted(values)
-        current_value = values[-1]
+        if current_values_provided:
+            assert current_pe_decimal is not None
+            current_value = current_pe_decimal
+            output_current_date = current_date.isoformat() if current_date else None
+        else:
+            current_value = values[-1]
+            output_current_date = series[-1]["date"]
         with localcontext() as context:
             context.prec = 28
             context.rounding = ROUND_HALF_EVEN
             current_percentile = _percentile(ordered, current_value)
         if len(monthly) > HISTORICAL_VALUATION_REQUIRED_MONTHS:
             warnings.append("only the 60 latest monthly observations were used")
+        if current_values_provided:
+            for evidence_id in current_price_ids + current_financial_ids:
+                if _valid_evidence_id(evidence_id) and evidence_id not in input_ids:
+                    input_ids.append(evidence_id)
         return self._result(
             status="ok",
             company_name=company_name,
             ticker=ticker,
             metric=metric_name,
             period_basis="TTM",
-            current_value=series[-1]["pe_ratio"],
-            current_date=series[-1]["date"],
+            current_value=_plain(current_value),
+            current_date=output_current_date,
             series=series,
             five_year_median=_plain(_quantile(ordered, Decimal("0.5"))),
             percentile_25=_plain(_quantile(ordered, Decimal("0.25"))),

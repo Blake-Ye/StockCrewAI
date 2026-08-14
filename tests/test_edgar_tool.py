@@ -157,6 +157,177 @@ class Direct20FFacts(DirectFYFacts):
     ]
 
 
+def _annual_metadata(
+    concept_name,
+    tag,
+    fiscal_year,
+    value,
+    filed_at,
+    accession,
+    *,
+    currency="USD",
+    period_start=None,
+    period_end=None,
+    form="10-K",
+):
+    return {
+        "concept_name": concept_name,
+        "tag_used": tag,
+        "value": value,
+        "unit": currency,
+        "currency": currency,
+        "period": f"{fiscal_year}-FY",
+        "period_type": "duration",
+        "period_start": period_start or date(fiscal_year, 1, 1),
+        "period_end": period_end or date(fiscal_year, 12, 31),
+        "filing_date": filed_at,
+        "form_type": form,
+        "accession": accession,
+        "fiscal_year": fiscal_year,
+        "fiscal_period": "FY",
+        "source_reference": SOURCE,
+    }
+
+
+class AnnualFacts:
+    tags = {
+        "revenue": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+        "net_income": "us-gaap:NetIncomeLoss",
+        "operating_cash_flow": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+        "capex": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+    }
+
+    def __init__(self, *, missing_capex_year=None, currency_conflict=False):
+        self.records = []
+        for fiscal_year in range(2021, 2026):
+            filed_at = date(fiscal_year + 1, 2, 1)
+            period_start = date(fiscal_year, 1, 3) if fiscal_year == 2021 else date(fiscal_year, 1, 1)
+            period_end = date(fiscal_year + 1, 1, 1) if fiscal_year == 2025 else date(fiscal_year, 12, 31)
+            value_index = fiscal_year - 2020
+            values = {
+                "revenue": str(value_index * 10_000_000_000),
+                "net_income": str(value_index * 1_000_000_000),
+                "operating_cash_flow": str(value_index * 2_000_000_000),
+                "capex": str(-(value_index * 500_000_000)),
+            }
+            for concept_name, tag in self.tags.items():
+                if concept_name == "capex" and fiscal_year == missing_capex_year:
+                    continue
+                currency = "EUR" if currency_conflict and fiscal_year == 2025 else "USD"
+                self.records.append(
+                    _annual_metadata(
+                        concept_name,
+                        tag,
+                        fiscal_year,
+                        values[concept_name],
+                        filed_at,
+                        f"acc-{concept_name}-{fiscal_year}",
+                        currency=currency,
+                        period_start=period_start,
+                        period_end=period_end,
+                    )
+                )
+
+        self.records.append(
+            _annual_metadata(
+                "revenue",
+                self.tags["revenue"],
+                2024,
+                "999999999999",
+                date(2025, 3, 1),
+                "acc-revenue-2024-amendment",
+                form=" 10-k/a ",
+            )
+        )
+        self.records.append(
+            _annual_metadata(
+                "revenue",
+                self.tags["revenue"],
+                2024,
+                "777777777777",
+                date(2025, 4, 1),
+                "acc-revenue-2024-quarterly",
+                form=" 10-q ",
+            )
+        )
+        self.records.append(
+            _annual_metadata(
+                "revenue",
+                self.tags["revenue"],
+                2025,
+                "888888888888",
+                date(2026, 9, 1),
+                "acc-revenue-2025-future",
+            )
+        )
+
+    def get_concept(self, concept, period=None, return_metadata=False):
+        candidates = [
+            record
+            for record in self.records
+            if record["concept_name"] == concept
+            and (period is None or record["period"] == period)
+        ]
+        if not candidates:
+            return None
+        selected = max(candidates, key=lambda record: record["filing_date"])
+        return dict(selected) if return_metadata else selected["value"]
+
+    def get_fact(self, tag, period=None):
+        normalized_tag = str(tag).split(":", 1)[-1]
+        for record in self.records:
+            if (
+                record["tag_used"].split(":", 1)[-1] == normalized_tag
+                and (period is None or record["period"] == period)
+            ):
+                return SimpleNamespace(**record)
+        return None
+
+    def get_all_facts(self):
+        return [SimpleNamespace(**record) for record in self.records]
+
+
+class NamespacedAnnualFacts(AnnualFacts):
+    def get_all_facts(self):
+        facts = []
+        for record in self.records:
+            namespaced = dict(record)
+            namespaced["concept"] = namespaced.pop("tag_used")
+            namespaced["concept_name"] = None
+            facts.append(SimpleNamespace(**namespaced))
+        return facts
+
+
+class OlderUSDRecentEURFacts(AnnualFacts):
+    def __init__(self):
+        self.records = []
+        tags = AnnualFacts.tags
+        for fiscal_year in range(2015, 2025):
+            currency = "USD" if fiscal_year <= 2019 else "EUR"
+            value_index = fiscal_year - 2014
+            values = {
+                "revenue": str(value_index * 10_000_000_000),
+                "net_income": str(value_index * 1_000_000_000),
+                "operating_cash_flow": str(value_index * 2_000_000_000),
+                "capex": str(-(value_index * 500_000_000)),
+            }
+            for concept_name, tag in tags.items():
+                self.records.append(
+                    _annual_metadata(
+                        concept_name,
+                        tag,
+                        fiscal_year,
+                        values[concept_name],
+                        date(fiscal_year + 1, 2, 1),
+                        f"acc-{concept_name}-{fiscal_year}",
+                        currency=currency,
+                    )
+                )
+
+    def get_all_facts(self):
+        return [SimpleNamespace(**record) for record in self.records]
+
+
 class OptionalADRFacts(DirectFYFacts):
     records = [
         *DirectFYFacts.records,
@@ -484,6 +655,138 @@ class EdgarToolTTMTests(unittest.TestCase):
                 self.assertTrue(direct.evidence_id.startswith("ev_"))
                 self.assertIn("direct_ttm", direct.evidence_id)
                 self.assertEqual(direct.source_reference, SOURCE)
+
+    def test_collects_five_common_complete_fiscal_years_with_provenance(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+            result = EdgarTool(
+                edgar_module=OfflineEdgar(AnnualFacts()),
+                as_of=date(2026, 8, 8),
+            ).run(ticker="AAPL")
+
+        history = result.annual_financial_history
+        self.assertEqual(history["status"], "ok")
+        self.assertEqual(history["validation_status"], "valid")
+        self.assertEqual(history["currency"], "USD")
+        self.assertEqual(
+            [period["fiscal_year"] for period in history["periods"]],
+            [2021, 2022, 2023, 2024, 2025],
+        )
+        latest = history["periods"][-1]
+        self.assertEqual(latest["period_basis"], "FY")
+        self.assertEqual(latest["period_end"], "2026-01-01")
+        self.assertEqual(latest["filed_at"], "2026-02-01")
+        self.assertEqual(latest["capex"], "2500000000")
+        self.assertEqual(latest["free_cash_flow"], "7500000000")
+        self.assertEqual(len(latest["evidence_ids"]), 4)
+        self.assertEqual(
+            latest["calculation_id"], "calc_annual_fcf_2025"
+        )
+        self.assertEqual(
+            latest["calculation_provenance"]["formula"],
+            "free_cash_flow = operating_cash_flow - positive_capex",
+        )
+        self.assertEqual(
+            history["periods"][-2]["revenue"], "999999999999"
+        )
+        self.assertNotEqual(latest["revenue"], "888888888888")
+        self.assertTrue(
+            all(period["filed_at"] <= "2026-08-08" for period in history["periods"])
+        )
+
+    def test_collects_namespaced_financial_fact_concepts_without_concept_name(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+            result = EdgarTool(
+                edgar_module=OfflineEdgar(NamespacedAnnualFacts()),
+                as_of=date(2026, 8, 8),
+            ).run(ticker="AAPL")
+
+        history = result.annual_financial_history
+        self.assertEqual(history["status"], "ok")
+        self.assertEqual(history["currency"], "USD")
+        self.assertEqual(
+            [period["fiscal_year"] for period in history["periods"]],
+            [2021, 2022, 2023, 2024, 2025],
+        )
+
+    def test_incomplete_or_conflicting_annual_history_is_not_applicable(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        for facts, reason_code in (
+            (AnnualFacts(missing_capex_year=2023), "insufficient_complete_fiscal_years"),
+            (AnnualFacts(currency_conflict=True), "unsupported_currency"),
+        ):
+            with self.subTest(facts=type(facts).__name__):
+                with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+                    result = EdgarTool(
+                        edgar_module=OfflineEdgar(facts),
+                        as_of=date(2026, 8, 8),
+                    ).run(ticker="AAPL")
+
+                history = result.annual_financial_history
+                self.assertEqual(history["status"], "not_applicable")
+                self.assertEqual(history["reason_code"], reason_code)
+                self.assertEqual(history["validation_status"], "unvalidated")
+                self.assertEqual(history["periods"], [])
+
+    def test_recent_foreign_currency_window_does_not_fallback_to_older_usd(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+            result = EdgarTool(
+                edgar_module=OfflineEdgar(OlderUSDRecentEURFacts()),
+                as_of=date(2026, 8, 8),
+            ).run(ticker="AAPL")
+
+        history = result.annual_financial_history
+        self.assertEqual(history["status"], "not_applicable")
+        self.assertEqual(history["reason_code"], "unsupported_currency")
+        self.assertEqual(history["periods"], [])
+
+    def test_annual_history_excludes_10q_and_accepts_normalized_10k_amendment(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+            result = EdgarTool(
+                edgar_module=OfflineEdgar(AnnualFacts()),
+                as_of=date(2026, 8, 8),
+            ).run(ticker="AAPL")
+
+        history = result.annual_financial_history
+        amended_2024 = next(
+            period for period in history["periods"] if period["fiscal_year"] == 2024
+        )
+        self.assertEqual(amended_2024["revenue"], "999999999999")
+
+    def test_annual_history_rejects_short_or_mismatched_period_windows(self):
+        from stockcrewai.tools.edgar_tool import EdgarTool
+
+        short_duration = AnnualFacts()
+        for record in short_duration.records:
+            if record["fiscal_year"] == 2023:
+                record["period_end"] = date(2023, 3, 31)
+
+        mismatched_window = AnnualFacts()
+        for record in mismatched_window.records:
+            if record["fiscal_year"] == 2023 and record["concept_name"] == "capex":
+                record["period_start"] = date(2023, 1, 2)
+
+        for facts in (short_duration, mismatched_window):
+            with self.subTest(facts=facts):
+                with patch.dict(os.environ, {"EDGAR_IDENTITY": "offline test"}):
+                    result = EdgarTool(
+                        edgar_module=OfflineEdgar(facts),
+                        as_of=date(2026, 8, 8),
+                    ).run(ticker="AAPL")
+
+                history = result.annual_financial_history
+                self.assertEqual(history["status"], "not_applicable")
+                self.assertEqual(
+                    history["reason_code"], "insufficient_complete_fiscal_years"
+                )
 
     def test_collects_direct_20f_ttm_inputs_with_full_provenance(self):
         from stockcrewai.tools.edgar_tool import EdgarTool

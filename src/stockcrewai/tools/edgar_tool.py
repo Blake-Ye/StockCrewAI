@@ -70,6 +70,13 @@ TTM_FACT_CONCEPTS = (
     "capex",
     "diluted_eps",
 )
+ANNUAL_FACT_CONCEPTS = (
+    "revenue",
+    "net_income",
+    "operating_cash_flow",
+    "capex",
+)
+ANNUAL_FORMS = frozenset({"10-K", "10-K/A"})
 TTM_ROLES = ("latest_fy", "current_ytd", "prior_ytd")
 DIRECT_TTM_ROLE = "direct_ttm"
 SUBSTANTIVE_8K_ITEMS = frozenset(
@@ -291,6 +298,7 @@ class EdgarResult(BaseModel):
     corporate_action_scan_status: CorporateActionScanStatus = "unavailable"
     corporate_actions: list[CorporateAction] = Field(default_factory=list)
     historical_financial_snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    annual_financial_history: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     errors: list[EdgarError] = Field(default_factory=list)
 
@@ -643,6 +651,7 @@ class EdgarTool(BaseTool):
     _as_of: date = PrivateAttr(default_factory=date.today)
     _corporate_action_scan_status: CorporateActionScanStatus = PrivateAttr(default="unavailable")
     _corporate_actions: list[CorporateAction] = PrivateAttr(default_factory=list)
+    _annual_financial_history: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     def __init__(
         self,
@@ -1570,6 +1579,281 @@ class EdgarTool(BaseTool):
                 inputs[metric_id] = by_role
         return inputs
 
+    def _collect_annual_financial_history(
+        self,
+        container: Any,
+        company_cik: str,
+        ticker: str | None,
+    ) -> dict[str, Any]:
+        """收集最近五个共同完整财年，并在本层确定性计算年度 FCF。"""
+
+        def unavailable(reason_code: str) -> dict[str, Any]:
+            return {
+                "status": "unavailable",
+                "reason_code": reason_code,
+                "currency": None,
+                "periods": [],
+                "validation_status": "unvalidated",
+            }
+
+        def not_applicable(reason_code: str) -> dict[str, Any]:
+            return {
+                "status": "not_applicable",
+                "reason_code": reason_code,
+                "currency": None,
+                "periods": [],
+                "validation_status": "unvalidated",
+            }
+
+        get_all_facts = getattr(container, "get_all_facts", None)
+        if not callable(get_all_facts):
+            return unavailable("company_facts_unavailable")
+        try:
+            all_facts = list(get_all_facts() or [])
+        except Exception:
+            return unavailable("company_facts_fetch_failed")
+
+        source = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company_cik}.json"
+        tag_aliases = {
+            "revenue": (
+                "revenue",
+                "revenues",
+                "salesrevenuenet",
+                "revenuefromcontractwithcustomerexcludingassessedtax",
+            ),
+            "net_income": (
+                "netincome",
+                "netincomeloss",
+                "profitloss",
+            ),
+            "operating_cash_flow": (
+                "operatingcashflow",
+                "netcashprovidedbyusedinoperatingactivities",
+                "netcashprovidedbyusedinoperatingactivitiescontinuingoperations",
+            ),
+            "capex": (
+                "capex",
+                "capitalexpenditures",
+                "paymentstoacquirepropertyplantandequipment",
+                "paymentstoacquireproductiveassets",
+            ),
+        }
+
+        def fact_value(fact: Any, *names: str) -> Any:
+            if isinstance(fact, Mapping):
+                for name in names:
+                    value = fact.get(name)
+                    if value is not None:
+                        return value
+                return None
+            for name in names:
+                value = _read_attr(fact, name)
+                if value is not None:
+                    return value
+            return None
+
+        def metric_id_for(fact: Any) -> str | None:
+            values = (
+                fact_value(fact, "concept_name", "metric_id"),
+                fact_value(fact, "concept", "tag_used", "xbrl_tag", "label"),
+            )
+            for value in values:
+                concept = str(value or "").split(":", 1)[-1]
+                normalized = re.sub(r"[^a-z0-9]", "", concept.lower())
+                for metric_id, aliases in tag_aliases.items():
+                    if normalized in aliases:
+                        return metric_id
+            return None
+
+        def currency_for(fact: Any) -> str | None:
+            raw = fact_value(fact, "currency", "currency_code", "unit")
+            match = re.search(r"\b([A-Z]{3})\b", str(raw or "").upper())
+            return match.group(1) if match else None
+
+        records: list[dict[str, Any]] = []
+        for fact in all_facts:
+            metric_id = metric_id_for(fact)
+            if metric_id is None:
+                continue
+            period = str(fact_value(fact, "period") or "").strip()
+            fiscal_year = fact_value(fact, "fiscal_year")
+            fiscal_period = fact_value(fact, "fiscal_period")
+            if period and (fiscal_year is None or fiscal_period is None):
+                match = re.fullmatch(r"(\d{4})-(FY|Q[1-4])", period.upper())
+                if match:
+                    fiscal_year = fiscal_year or int(match.group(1))
+                    fiscal_period = fiscal_period or match.group(2)
+            try:
+                fiscal_year = int(fiscal_year)
+            except (TypeError, ValueError):
+                continue
+            fiscal_period = str(fiscal_period or "").upper()
+            period_type = str(fact_value(fact, "period_type") or "").lower()
+            period_start = _as_date(fact_value(fact, "period_start"))
+            period_end = _as_date(fact_value(fact, "period_end"))
+            filed_at = _as_date(fact_value(fact, "filing_date", "filed_at"))
+            form = fact_value(fact, "form_type", "form")
+            accession = fact_value(fact, "accession", "accession_number")
+            currency = currency_for(fact)
+            form = str(form or "").strip().upper()
+            if (
+                fiscal_period != "FY"
+                or period_type != "duration"
+                or period_start is None
+                or period_end is None
+                or period_start > period_end
+                or filed_at is None
+                or filed_at > self._as_of
+                or form not in ANNUAL_FORMS
+                or not accession
+                or currency is None
+            ):
+                continue
+            duration_days = (period_end - period_start).days
+            if not 300 <= duration_days <= 400:
+                continue
+            try:
+                value = Decimal(_decimal_string(fact_value(fact, "value", "numeric_value")))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if not value.is_finite():
+                continue
+            accession = str(accession).strip()
+            records.append(
+                {
+                    "metric_id": metric_id,
+                    "fiscal_year": fiscal_year,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "filed_at": filed_at.isoformat(),
+                    "form": form,
+                    "accession_number": accession,
+                    "currency": currency,
+                    "value": value,
+                    "source_reference": str(
+                        fact_value(fact, "source_reference", "source") or source
+                    ),
+                    "evidence_id": (
+                        f"ev_{_safe_id(ticker or company_cik)}_annual_{metric_id}_"
+                        f"{fiscal_year}_{_safe_id(filed_at.isoformat())}_"
+                        f"{_safe_id(accession)}"
+                    ),
+                }
+            )
+
+        if not records:
+            return not_applicable("insufficient_complete_fiscal_years")
+
+        by_metric_year: dict[tuple[str, int], dict[str, Any]] = {}
+        for record in records:
+            key = (record["metric_id"], record["fiscal_year"])
+            previous = by_metric_year.get(key)
+            if previous is None or (
+                record["filed_at"],
+                record["period_end"],
+                record["accession_number"],
+            ) > (
+                previous["filed_at"],
+                previous["period_end"],
+                previous["accession_number"],
+            ):
+                by_metric_year[key] = record
+
+        complete_years: dict[int, dict[str, dict[str, Any]]] = {}
+        for fiscal_year in sorted({record["fiscal_year"] for record in records}):
+            selected = {
+                metric_id: by_metric_year.get((metric_id, fiscal_year))
+                for metric_id in ANNUAL_FACT_CONCEPTS
+            }
+            if any(record is None for record in selected.values()):
+                continue
+            currencies = {record["currency"] for record in selected.values()}
+            period_windows = {
+                (record["period_start"], record["period_end"])
+                for record in selected.values()
+            }
+            if len(currencies) != 1 or len(period_windows) != 1:
+                continue
+            complete_years[fiscal_year] = selected  # type: ignore[assignment]
+
+        if not complete_years:
+            return not_applicable("insufficient_complete_fiscal_years")
+
+        recent_years = sorted(complete_years, reverse=True)[:5]
+        if len(recent_years) < 5:
+            complete_currencies = {
+                next(iter({record["currency"] for record in selected.values()}))
+                for selected in complete_years.values()
+            }
+            return not_applicable(
+                "unsupported_currency"
+                if complete_currencies - {"USD"}
+                else "insufficient_complete_fiscal_years"
+            )
+        recent_currencies = {
+            next(iter({record["currency"] for record in complete_years[fiscal_year].values()}))
+            for fiscal_year in recent_years
+        }
+        if recent_currencies != {"USD"}:
+            return not_applicable("unsupported_currency")
+        selected_currency = "USD"
+        selected_years = [
+            fiscal_year
+            for fiscal_year in sorted(complete_years, reverse=True)
+            if next(iter({record["currency"] for record in complete_years[fiscal_year].values()}))
+            == selected_currency
+        ][:5]
+
+        periods: list[dict[str, Any]] = []
+        for fiscal_year in sorted(selected_years):
+            selected = complete_years[fiscal_year]
+            capex = abs(selected["capex"]["value"])
+            operating_cash_flow = selected["operating_cash_flow"]["value"]
+            free_cash_flow = operating_cash_flow - capex
+            evidence_ids = [
+                selected[metric_id]["evidence_id"] for metric_id in ANNUAL_FACT_CONCEPTS
+            ]
+            periods.append(
+                {
+                    "fiscal_year": fiscal_year,
+                    "period_start": selected["revenue"]["period_start"],
+                    "period_end": selected["revenue"]["period_end"],
+                    "filed_at": max(
+                        selected[metric_id]["filed_at"]
+                        for metric_id in ANNUAL_FACT_CONCEPTS
+                    ),
+                    "period_basis": "FY",
+                    "currency": selected_currency,
+                    "revenue": _decimal_string(selected["revenue"]["value"]),
+                    "net_income": _decimal_string(selected["net_income"]["value"]),
+                    "operating_cash_flow": _decimal_string(operating_cash_flow),
+                    "capex": _decimal_string(capex),
+                    "free_cash_flow": _decimal_string(free_cash_flow),
+                    "evidence_ids": evidence_ids,
+                    "calculation_id": f"calc_annual_fcf_{fiscal_year}",
+                    "calculation_provenance": {
+                        "formula": (
+                            "free_cash_flow = operating_cash_flow - positive_capex"
+                        ),
+                        "input_metric_ids": list(ANNUAL_FACT_CONCEPTS),
+                        "input_evidence_ids": evidence_ids,
+                        "capex_normalization": "positive_cash_outflow=abs(capex)",
+                    },
+                    "source_references": [
+                        selected[metric_id]["source_reference"]
+                        for metric_id in ANNUAL_FACT_CONCEPTS
+                    ],
+                    "validation_status": "valid",
+                }
+            )
+        return {
+            "status": "ok",
+            "reason_code": None,
+            "currency": selected_currency,
+            "periods": periods,
+            "validation_status": "valid",
+        }
+
     def _collect_facts(
         self,
         company: Any,
@@ -1587,6 +1871,13 @@ class EdgarTool(BaseTool):
         self._corporate_actions = []
         container = company.get_facts()
         if container is None:
+            self._annual_financial_history = {
+                "status": "unavailable",
+                "reason_code": "company_facts_unavailable",
+                "currency": None,
+                "periods": [],
+                "validation_status": "unvalidated",
+            }
             return facts, ["SEC Company Facts 不可用"], [], {}
         (
             self._corporate_action_scan_status,
@@ -1967,6 +2258,9 @@ class EdgarTool(BaseTool):
                     source_reference=str(source_references[0]),
                     validation_status="valid",
                 )
+        self._annual_financial_history = self._collect_annual_financial_history(
+            container, company_cik, ticker
+        )
         return (
             facts,
             warnings,
@@ -2007,10 +2301,12 @@ class EdgarTool(BaseTool):
             filings: list[EdgarFilingEvidence] = []
             historical_financial_snapshots: list[dict[str, Any]] = []
             ttm_inputs: dict[str, dict[str, EdgarFact]] = {}
+            annual_financial_history: dict[str, Any] = {}
             warnings: list[str] = []
             errors: list[EdgarError] = []
             self._corporate_action_scan_status = "unavailable"
             self._corporate_actions = []
+            self._annual_financial_history = {}
             try:
                 (
                     facts,
@@ -2022,6 +2318,7 @@ class EdgarTool(BaseTool):
                     company_cik,
                     official_ticker,
                 )
+                annual_financial_history = self._annual_financial_history
             except Exception as exc:
                 errors.append(self._error("facts_fetch_failed", str(exc)))
             try:
@@ -2068,6 +2365,7 @@ class EdgarTool(BaseTool):
                 corporate_action_scan_status=self._corporate_action_scan_status,
                 corporate_actions=list(self._corporate_actions),
                 historical_financial_snapshots=historical_financial_snapshots,
+                annual_financial_history=annual_financial_history,
                 warnings=warnings,
                 errors=errors,
             )

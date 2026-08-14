@@ -297,7 +297,7 @@ class MarketPriceTool(BaseTool):
 
         if not selected:
             raise ValueError("历史收盘价缺失")
-        recent_points = sorted(selected.values(), key=lambda point: point[0])[-60:]
+        recent_points = sorted(selected.values(), key=lambda point: point[0])[-61:]
         return [
             {
                 "date": date_text,

@@ -65,22 +65,13 @@ _FINANCIAL_KPI_LABELS = {
     "cash_conversion": "现金转换率",
     "share_dilution": "股份变化",
 }
-_TTM_IDS = (
-    "revenue",
-    "operating_income",
-    "net_income",
-    "operating_cash_flow",
-    "free_cash_flow",
-)
-_TTM_LABELS = {
-    "revenue": "收入",
-    "operating_income": "营业利润",
-    "net_income": "净利润",
-    "operating_cash_flow": "经营现金流",
-    "free_cash_flow": "自由现金流",
-}
 _FINANCIAL_KPI_TITLE = "财务质量指标（已验证数据）"
-_TTM_AXIS_LABEL = "金额（十亿美元）"
+_ANNUAL_TREND_METRICS = (
+    ("revenue", "营业收入（十亿美元）"),
+    ("net_income", "净利润（十亿美元）"),
+    ("free_cash_flow", "自由现金流（十亿美元）"),
+)
+_ANNUAL_TREND_TITLE = "近五年核心财务趋势（已验证完整财年）"
 _NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
 _FINANCIAL_KPI_GROUPS = (
     ("增长与资本配置", ("revenue_growth", "share_dilution")),
@@ -297,32 +288,93 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
     return _png_uri(draw, size=(12.0, 4.8))
 
 
-def _ttm_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
-    values = [_amount_in_billion_usd(records[metric_id]) for metric_id in _TTM_IDS]
-    if any(value is None for value in values):
+def _annual_financial_trend_png(payload: Mapping[str, Any]) -> str | None:
+    if payload.get("status") != "ok" or payload.get("validation_status") != "valid":
+        return None
+    raw_periods = payload.get("periods")
+    if not isinstance(raw_periods, Sequence) or isinstance(raw_periods, (str, bytes)):
+        return None
+    if len(raw_periods) != 5:
+        return None
+    periods = [period for period in raw_periods if isinstance(period, Mapping)]
+    if len(periods) != 5:
+        return None
+    if any(
+        period.get("period_basis") != "FY"
+        or period.get("validation_status") != "valid"
+        or not str(period.get("currency") or "").strip()
+        for period in periods
+    ):
+        return None
+    currency = str(payload.get("currency") or "").strip()
+    if currency.upper() != "USD":
+        return None
+    if any(str(period.get("currency") or "").strip().upper() != "USD" for period in periods):
+        return None
+    currency = "USD"
+    fiscal_years = [period.get("fiscal_year") for period in periods]
+    if len(set(fiscal_years)) != 5:
+        return None
+    try:
+        fiscal_years = [int(fiscal_year) for fiscal_year in fiscal_years]
+    except (TypeError, ValueError):
+        return None
+    if fiscal_years != sorted(fiscal_years):
+        return None
+    if any(
+        not isinstance(period.get("evidence_ids"), Sequence)
+        or isinstance(period.get("evidence_ids"), (str, bytes))
+        or len(period["evidence_ids"]) != 4
+        or not str(period.get("calculation_id") or "").strip()
+        or not isinstance(period.get("calculation_provenance"), Mapping)
+        for period in periods
+    ):
         return None
 
-    def draw(axes: Any) -> None:
-        bars = axes.bar(
-            [_TTM_LABELS[metric_id] for metric_id in _TTM_IDS],
-            values,
-            color="#4c956c",
-        )
-        axes.set_ylabel(_TTM_AXIS_LABEL)
-        axes.set_title("过去十二个月（TTM）财务规模")
-        axes.tick_params(axis="x", rotation=20)
-        axes.grid(axis="y", alpha=0.25)
-        for bar, value in zip(bars, values):
-            axes.text(
-                bar.get_x() + bar.get_width() / 2,
-                value,
-                f"{value:.1f}",
-                ha="center",
-                va="bottom",
-                fontsize=8,
-            )
+    panel_values: dict[str, list[float]] = {}
+    for metric_id, _ in _ANNUAL_TREND_METRICS:
+        records = []
+        for period in periods:
+            record = {
+                "raw_result": period.get(metric_id),
+                "unit": currency,
+                "status": "available",
+                "validation_status": "valid",
+            }
+            value = _amount_in_billion_usd(record)
+            if value is None:
+                return None
+            records.append(value)
+        panel_values[metric_id] = records
 
-    return _png_uri(draw, size=(8.0, 4.2))
+    def draw(axes: Any) -> None:
+        figure = axes.figure
+        figure.clear()
+        panel_axes = figure.subplots(3, 1, sharex=True, squeeze=False)[:, 0]
+        labels = [f"FY{fiscal_year}" for fiscal_year in fiscal_years]
+        for axis, (metric_id, title) in zip(panel_axes, _ANNUAL_TREND_METRICS):
+            values = panel_values[metric_id]
+            colors = ["#4c956c"] * (len(values) - 1) + ["#2f6f4e"]
+            bars = axis.bar(labels, values, color=colors)
+            axis.set_ylabel(title)
+            axis.set_title(title)
+            axis.axhline(0, color="#555555", linewidth=0.8)
+            axis.grid(axis="y", alpha=0.25)
+            for bar, value in zip(bars, values):
+                offset = max(abs(value) * 0.02, 0.15)
+                axis.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    value + offset if value >= 0 else value - offset,
+                    f"{value:.1f}",
+                    ha="center",
+                    va="bottom" if value >= 0 else "top",
+                    fontsize=8,
+                )
+        panel_axes[-1].set_xlabel("财年")
+        figure.suptitle(_ANNUAL_TREND_TITLE)
+        figure.subplots_adjust(left=0.16, right=0.96, bottom=0.10, top=0.91, hspace=0.52)
+
+    return _png_uri(draw, size=(9.2, 7.0), dpi=100)
 
 
 def _historical_tick_data(
@@ -370,16 +422,16 @@ def _historical_pe_png(payload: Mapping[str, Any]) -> str | None:
     points.sort(key=lambda item: item[0])
     if len(points) < 60:
         return None
-    if points[-1][0] != current_date.strip():
-        return None
-    if points[-1][1] != current_value:
-        return None
     points = points[-60:]
     values = [float(value) for _, value in points]
+    current_point = (current_date.strip(), current_value)
+    current_is_historical_tail = points[-1] == current_point
+    tick_points = points if current_is_historical_tail else [*points, current_point]
 
     def draw(axes: Any) -> None:
         x_values = list(range(len(points)))
-        tick_indices, tick_labels = _historical_tick_data(points)
+        current_x = x_values[-1] if current_is_historical_tail else len(points)
+        tick_indices, tick_labels = _historical_tick_data(tick_points)
         axes.plot(x_values, values, color="#3568a8", linewidth=1.5, label="P/E（倍）")
         axes.axhline(
             float(percentile_25),
@@ -400,11 +452,11 @@ def _historical_pe_png(payload: Mapping[str, Any]) -> str | None:
             label=f"75分位 {percentile_75:.2f}x",
         )
         axes.scatter(
-            [x_values[-1]], [float(current_value)], color="#111827", zorder=3, label="最新"
+            [current_x], [float(current_value)], color="#111827", zorder=3, label="最新"
         )
         axes.annotate(
             f"最新 {current_value:.2f}x",
-            (x_values[-1], float(current_value)),
+            (current_x, float(current_value)),
             xytext=(-45, 10),
             textcoords="offset points",
             fontsize=8,
@@ -424,6 +476,7 @@ def build_report_visuals(
     financial_metrics: Any = None,
     ttm_metrics: Any = None,
     historical_payload: Mapping[str, Any] | None = None,
+    annual_financial_history: Mapping[str, Any] | None = None,
     *,
     calculations: Any = None,
     ttm: Any = None,
@@ -434,10 +487,11 @@ def build_report_visuals(
     """从已验证的确定性输入生成内嵌 PNG；缺一图输入只省略该图。"""
     if context is not None:
         financial_metrics = context.get("metrics", financial_metrics)
-        ttm_metrics = context.get("ttm", context.get("ttm_metrics", ttm_metrics))
         historical_payload = context.get("historical_valuation", historical_payload)
+        annual_financial_history = context.get(
+            "annual_financial_history", annual_financial_history
+        )
     financial_metrics = calculations if financial_metrics is None else financial_metrics
-    ttm_metrics = ttm if ttm_metrics is None else ttm_metrics
     historical_payload = (
         historical_valuation if historical_payload is None else historical_payload
     )
@@ -457,11 +511,6 @@ def build_report_visuals(
         not in _SHARE_ADJUSTMENT_BASES
     ):
         financial_records.pop("share_dilution", None)
-    ttm_records = {
-        metric_id: record
-        for record in _records(ttm_metrics, collection_keys=("metrics", "calculations"))
-        if (metric_id := _record_id(record)) in _TTM_IDS and _is_verified(record)
-    }
     visuals: dict[str, str] = {}
     if _FINANCIAL_REQUIRED_IDS.issubset(financial_records):
         if (
@@ -472,15 +521,20 @@ def build_report_visuals(
             )
         ) is not None:
             visuals["financial_kpis"] = uri
-    if len(ttm_records) == len(_TTM_IDS):
+    profile = context.get("profile") if isinstance(context, Mapping) else None
+    issuer_profile = (
+        profile.get("issuer_profile") if isinstance(profile, Mapping) else None
+    )
+    annual_allowed = not isinstance(profile, Mapping) or issuer_profile == "standard_operating"
+    if annual_allowed and isinstance(annual_financial_history, Mapping):
         if (
             uri := _render_to_output_dir(
-                "ttm_scale",
+                "annual_financial_trend",
                 output_path,
-                lambda: _ttm_png(ttm_records),
+                lambda: _annual_financial_trend_png(annual_financial_history),
             )
         ) is not None:
-            visuals["ttm_scale"] = uri
+            visuals["annual_financial_trend"] = uri
     if isinstance(historical_payload, Mapping):
         if (
             uri := _render_to_output_dir(

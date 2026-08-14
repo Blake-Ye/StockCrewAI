@@ -467,7 +467,7 @@ class MarketPriceToolTests(unittest.TestCase):
         )
         self.assertNotEqual(historical_prices[-1]["date"], "2026-08-31")
 
-    def test_opt_in_history_returns_latest_monthly_close_for_recent_60_points(self):
+    def test_opt_in_history_returns_latest_monthly_close_for_recent_61_points(self):
         from stockcrewai.tools.market_price_tool import MarketPriceTool
 
         yfinance = _MonthlyHistoryYFinance()
@@ -479,13 +479,13 @@ class MarketPriceToolTests(unittest.TestCase):
 
         self.assertEqual(result.status, "ok")
         self.assertEqual(result.market_price, "219.75")
-        self.assertEqual(len(result.historical_prices), 60)
+        self.assertEqual(len(result.historical_prices), 61)
         self.assertEqual(
             result.historical_prices[0],
             {
-                "date": "2019-02-28",
-                "price": "1001",
-                "evidence_id": "ev_market_price_history_AAPL_2019-02",
+                "date": "2019-01-31",
+                "price": "1000",
+                "evidence_id": "ev_market_price_history_AAPL_2019-01",
             },
         )
         self.assertEqual(

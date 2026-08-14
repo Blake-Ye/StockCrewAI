@@ -32,6 +32,7 @@ REPORT_ERROR_CODES = (
     "report_draft_forbidden_number",
     "report_draft_forbidden_rating",
     "report_draft_forbidden_advice",
+    "report_draft_unsupported_inference",
     "report_guardrail_retries_exhausted",
     "report_provider_error",
     "report_renderer_error",
@@ -77,6 +78,9 @@ _REPORT_STATUS_RE = re.compile(
     r"(?:status|确定性状态|确定性结论)\s*[:=：]|"
     r"\b(?:ready|blocked|insufficient_data)\b",
     re.IGNORECASE,
+)
+_REPORT_UNSUPPORTED_INFERENCE_RE = re.compile(
+    r"不断提升|持续扩张|导致|由于|资本开支|营运资金|显著|大幅"
 )
 
 
@@ -137,6 +141,15 @@ class ReportDraft(BaseModel):
         violation = _draft_text_violation(value)
         if violation is not None:
             raise ValueError(violation)
+        return value
+
+    @field_validator("financial_trend")
+    @classmethod
+    def validate_financial_trend(cls, value: str) -> str:
+        if _REPORT_UNSUPPORTED_INFERENCE_RE.search(value):
+            raise ValueError(
+                "report_draft_unsupported_inference: 财务趋势不得包含未验证推断。"
+            )
         return value
 
     @field_validator("non_investment_disclaimer")

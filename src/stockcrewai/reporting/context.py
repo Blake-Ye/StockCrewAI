@@ -4,7 +4,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 from pydantic import (
@@ -154,6 +154,197 @@ def _validated_ttm_fcf(value: Any) -> Decimal | None:
     return None
 
 
+def _verified_annual_financial_history(value: Any) -> dict[str, Any]:
+    """只接受已验证的五期共同 FY 历史，拒绝在报告层补算或补值。"""
+    if not isinstance(value, Mapping):
+        return {}
+    if value.get("status") != "ok" or value.get("validation_status") != "valid":
+        return {}
+    currency = _text(value.get("currency"))
+    raw_periods = value.get("periods")
+    if (
+        not currency
+        or currency.upper() != "USD"
+        or not isinstance(raw_periods, Sequence)
+        or isinstance(
+        raw_periods, (str, bytes)
+        )
+        or len(raw_periods) != 5
+    ):
+        return {}
+    currency = "USD"
+
+    normalized_periods: list[dict[str, Any]] = []
+    fiscal_years: set[int] = set()
+    for raw_period in raw_periods:
+        if not isinstance(raw_period, Mapping):
+            return {}
+        try:
+            fiscal_year = int(raw_period.get("fiscal_year"))
+        except (TypeError, ValueError):
+            return {}
+        if fiscal_year in fiscal_years or raw_period.get("period_basis") != "FY":
+            return {}
+        if (
+            raw_period.get("validation_status") != "valid"
+            or (_text(raw_period.get("currency")) or "").upper() != currency
+            or not all(
+                _text(raw_period.get(key))
+                for key in ("period_start", "period_end", "filed_at")
+            )
+        ):
+            return {}
+        evidence_ids = _ids(raw_period.get("evidence_ids"))
+        calculation_id = _text(raw_period.get("calculation_id"))
+        provenance = raw_period.get("calculation_provenance")
+        if (
+            len(evidence_ids) != 4
+            or not calculation_id
+            or calculation_id != f"calc_annual_fcf_{fiscal_year}"
+            or not isinstance(provenance, Mapping)
+            or _text(provenance.get("formula"))
+            != "free_cash_flow = operating_cash_flow - positive_capex"
+            or _ids(provenance.get("input_evidence_ids")) != evidence_ids
+        ):
+            return {}
+        decimals: dict[str, Decimal] = {}
+        for key in (
+            "revenue",
+            "net_income",
+            "operating_cash_flow",
+            "capex",
+            "free_cash_flow",
+        ):
+            try:
+                decimal_value = Decimal(str(raw_period.get(key)))
+            except (InvalidOperation, TypeError, ValueError):
+                return {}
+            if not decimal_value.is_finite():
+                return {}
+            decimals[key] = decimal_value
+        if decimals["capex"] < 0:
+            return {}
+        if (
+            decimals["operating_cash_flow"] - decimals["capex"]
+            != decimals["free_cash_flow"]
+        ):
+            return {}
+        fiscal_years.add(fiscal_year)
+        normalized_periods.append(
+            {
+                "fiscal_year": fiscal_year,
+                "period_start": _text(raw_period.get("period_start")),
+                "period_end": _text(raw_period.get("period_end")),
+                "filed_at": _text(raw_period.get("filed_at")),
+                "period_basis": "FY",
+                "currency": currency,
+                **{
+                    key: format(decimal_value, "f")
+                    for key, decimal_value in decimals.items()
+                },
+                "evidence_ids": evidence_ids,
+                "calculation_id": calculation_id,
+                "calculation_provenance": _json_safe_context(provenance),
+                "validation_status": "valid",
+            }
+        )
+    normalized_periods.sort(key=lambda period: period["fiscal_year"])
+    return {
+        "status": "ok",
+        "reason_code": None,
+        "currency": currency,
+        "periods": normalized_periods,
+        "validation_status": "valid",
+    }
+
+
+def _annual_cagr(start: Decimal, end: Decimal) -> Decimal | None:
+    if start <= 0 or end <= 0:
+        return None
+    try:
+        with localcontext() as context:
+            context.prec = 40
+            return (end / start) ** (Decimal(1) / Decimal(4)) - Decimal(1)
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def _annual_financial_summary(
+    annual_payload: Mapping[str, Any], reverse_payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    periods = annual_payload.get("periods")
+    if (
+        annual_payload.get("status") != "ok"
+        or annual_payload.get("validation_status") != "valid"
+        or not isinstance(periods, Sequence)
+        or isinstance(periods, (str, bytes))
+        or len(periods) != 5
+    ):
+        return {}
+
+    values: list[dict[str, Decimal]] = []
+    for period in periods:
+        if not isinstance(period, Mapping) or period.get("period_basis") != "FY":
+            return {}
+        period_values: dict[str, Decimal] = {}
+        for metric_id in ("revenue", "net_income", "free_cash_flow"):
+            raw_value = period.get(metric_id)
+            if raw_value is None or isinstance(raw_value, (bool, float)):
+                return {}
+            try:
+                value = Decimal(str(raw_value))
+            except (InvalidOperation, TypeError, ValueError):
+                return {}
+            if not value.is_finite():
+                return {}
+            period_values[metric_id] = value
+        values.append(period_values)
+
+    cagr = {
+        metric_id: _annual_cagr(values[0][metric_id], values[-1][metric_id])
+        for metric_id in ("revenue", "net_income", "free_cash_flow")
+    }
+    if any(value is None for value in cagr.values()):
+        return {}
+
+    summary: dict[str, Any] = {
+        "start_fiscal_year": periods[0]["fiscal_year"],
+        "end_fiscal_year": periods[-1]["fiscal_year"],
+        "revenue_cagr": _percentage_text(cagr["revenue"]),
+        "net_income_cagr": _percentage_text(cagr["net_income"]),
+        "free_cash_flow_cagr": _percentage_text(cagr["free_cash_flow"]),
+        "latest_fcf_direction": (
+            "up"
+            if values[-1]["free_cash_flow"] > values[-2]["free_cash_flow"]
+            else "down"
+            if values[-1]["free_cash_flow"] < values[-2]["free_cash_flow"]
+            else "flat"
+        ),
+        "validation_status": "valid",
+        "basis_note": (
+            "CAGR 基于五个完整 FY 历史；反向 DCF 以 TTM FCF 为起点，"
+            "二者口径不同，仅作方向比较，不是预测。"
+        ),
+    }
+
+    implied_growth_raw = reverse_payload.get("implied_growth")
+    if (
+        reverse_payload.get("status") == "ok"
+        and reverse_payload.get("validation_status") == "valid"
+        and implied_growth_raw is not None
+        and not isinstance(implied_growth_raw, (bool, float))
+    ):
+        try:
+            implied_growth = Decimal(str(implied_growth_raw))
+        except (InvalidOperation, TypeError, ValueError):
+            implied_growth = None
+        if implied_growth is not None and implied_growth.is_finite():
+            summary["expectation_gap_percentage_points"] = _percentage_text(
+                implied_growth - cagr["free_cash_flow"]
+            )
+    return summary
+
+
 def _validated_reverse_dcf_fcf(value: Mapping[str, Any]) -> Decimal | None:
     if (
         value.get("status") != "ok"
@@ -249,6 +440,11 @@ class ReportContext(BaseModel):
     source_metadata: dict[str, Any] = Field(default_factory=dict)
     verdict: dict[str, Any] = Field(default_factory=dict)
     ttm: dict[str, Any] = Field(default_factory=dict)
+    annual_financial_history: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
+    annual_financial_summary: dict[str, Any] = Field(default_factory=dict)
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
     reit_metrics: dict[str, Any] | None = None
@@ -317,7 +513,11 @@ def _evidence_index(source_metadata: Mapping[str, Any]) -> dict[str, Mapping[str
             evidence_id = _text(record.get(key))
             if evidence_id and evidence_id not in index:
                 index[evidence_id] = record
-        for nested_key in ("financial_evidence_ids", "input_evidence_ids"):
+        for nested_key in (
+            "financial_evidence_ids",
+            "input_evidence_ids",
+            "evidence_ids",
+        ):
             nested_ids = record.get(nested_key, [])
             if isinstance(nested_ids, Sequence) and not isinstance(
                 nested_ids, (str, bytes)
@@ -336,6 +536,7 @@ def _evidence_index(source_metadata: Mapping[str, Any]) -> dict[str, Mapping[str
         "historical_prices",
         "risk_filings",
         "historical_financial_snapshots",
+        "annual_financial_history",
         "ttm_evidence",
         "ttm_metrics",
     ):
@@ -596,6 +797,10 @@ def _percent_display(value: Any) -> str | None:
     return f"{decimal_value * Decimal('100'):.2f}%"
 
 
+def _percentage_text(value: Decimal) -> str:
+    return f"{value * Decimal('100'):.2f}"
+
+
 def _currency_display(value: Any) -> str:
     """把 DCF 金额按报告单位显示，避免把长整数直接交给读者。"""
     raw = _text(value)
@@ -788,6 +993,7 @@ def build_report_context(
     ticker: Any = None,
     financial_calculations: Any = None,
     ttm: Any = None,
+    annual_financial_history: Any = None,
 ) -> dict[str, Any]:
     """构造 Report Crew 与 Renderer 共享的唯一 JSON-safe 输入。"""
     company_payload = dict(company or {})
@@ -829,6 +1035,19 @@ def build_report_context(
         or is_spac_profile
         or profile_reporting == _FOREIGN_REPORTING_PROFILE
     )
+    annual_input = (
+        annual_financial_history
+        if annual_financial_history is not None
+        else source_payload.get("annual_financial_history")
+    )
+    annual_payload = _verified_annual_financial_history(annual_input)
+    if isinstance(policy_profile, Mapping) and profile_issuer != "standard_operating":
+        annual_payload = {}
+    annual_summary = _annual_financial_summary(annual_payload, reverse_payload)
+    if annual_payload:
+        source_payload["annual_financial_history"] = annual_payload
+    else:
+        source_payload.pop("annual_financial_history", None)
     policy_decisions = policy_payload.get("policy_decisions")
     if not isinstance(policy_decisions, list):
         policy_decisions = []
@@ -1142,6 +1361,8 @@ def build_report_context(
             }
         ),
         ttm=_verified_ttm_context(ttm_payload),
+        annual_financial_history=annual_payload,
+        annual_financial_summary=annual_summary,
         historical_valuation=(
             {}
             if "historical_valuation" in not_applicable_metrics

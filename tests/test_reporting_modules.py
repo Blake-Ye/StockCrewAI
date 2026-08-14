@@ -12,11 +12,13 @@ from types import SimpleNamespace
 from stockcrewai.reporting.context import build_report_context
 from stockcrewai.reporting.renderer import (
     _SOURCE_METHOD_NOTE,
+    _risk_claim_markdown,
     build_deterministic_report_draft,
     build_narrative_context,
     render_validated_report,
 )
 from stockcrewai.reporting.validator import (
+    REPORT_DRAFT_FIELDS,
     parse_report_draft,
     validate_rendered_report,
     validate_report_draft,
@@ -232,6 +234,7 @@ def _reader_focused_inputs() -> dict[str, object]:
             }.items()
         ],
     }
+    inputs["annual_financial_history"] = _annual_financial_history()
     return inputs
 
 
@@ -281,6 +284,55 @@ def _ttm_metrics() -> list[dict[str, object]]:
     ]
 
 
+def _annual_financial_history() -> dict[str, object]:
+    periods = []
+    for fiscal_year in range(2021, 2026):
+        value_index = fiscal_year - 2020
+        periods.append(
+            {
+                "fiscal_year": fiscal_year,
+                "period_start": f"{fiscal_year}-01-01",
+                "period_end": f"{fiscal_year}-12-31",
+                "filed_at": f"{fiscal_year + 1}-02-01",
+                "period_basis": "FY",
+                "currency": "USD",
+                "revenue": str(value_index * 10_000_000_000),
+                "net_income": str(value_index * 1_000_000_000),
+                "operating_cash_flow": str(value_index * 2_000_000_000),
+                "capex": str(value_index * 500_000_000),
+                "free_cash_flow": str(value_index * 1_500_000_000),
+                "evidence_ids": [
+                    f"ev_revenue_{fiscal_year}",
+                    f"ev_net_income_{fiscal_year}",
+                    f"ev_operating_cash_flow_{fiscal_year}",
+                    f"ev_capex_{fiscal_year}",
+                ],
+                "calculation_id": f"calc_annual_fcf_{fiscal_year}",
+                "calculation_provenance": {
+                    "formula": "free_cash_flow = operating_cash_flow - positive_capex",
+                    "input_metric_ids": [
+                        "operating_cash_flow",
+                        "capex",
+                    ],
+                    "input_evidence_ids": [
+                        f"ev_revenue_{fiscal_year}",
+                        f"ev_net_income_{fiscal_year}",
+                        f"ev_operating_cash_flow_{fiscal_year}",
+                        f"ev_capex_{fiscal_year}",
+                    ],
+                },
+                "validation_status": "valid",
+            }
+        )
+    return {
+        "status": "ok",
+        "reason_code": None,
+        "currency": "USD",
+        "periods": periods,
+        "validation_status": "valid",
+    }
+
+
 def _historical_payload() -> dict[str, object]:
     start = date(2021, 8, 31)
     series = [
@@ -323,7 +375,7 @@ def test_context_is_json_safe_and_matches_fixed_fixture_hash() -> None:
         "reverse_dcf",
     }
     json.dumps(context, ensure_ascii=False, allow_nan=False)
-    assert _sha256_json(context) == "a81ff33edee2f7208e21f601f131d95060ca1875ba196dc9a4a50f43d8791128"
+    assert _sha256_json(context) == "7764796a13927456c6e228f19fbcfbe8d32256d617a6b2d5ac94ded97a5a7acc"
 
 
 def test_reverse_dcf_context_preserves_million_usd_display_units() -> None:
@@ -624,6 +676,24 @@ def test_report_context_preserves_validated_historical_summary_values() -> None:
     }
 
 
+def test_report_historical_current_pe_uses_realtime_date_not_series_month_start() -> None:
+    inputs = _reader_focused_inputs()
+    historical = inputs["historical_valuation"]
+    assert isinstance(historical, dict)
+    historical["series"][-1]["date"] = "2026-07-31"
+    historical["current_date"] = "2026-08-12"
+    historical["current_value"] = "40"
+
+    report = render_validated_report(
+        build_report_context(**inputs),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+    historical_section = report.split("## 历史估值", 1)[1].split("## 反向 DCF", 1)[0]
+
+    assert "历史当前 P/E：40.00x（截至 2026-08-12" in historical_section
+    assert "截至 2026-07-31" not in historical_section
+
+
 def test_report_metric_projection_preserves_share_adjustment_basis() -> None:
     inputs = _canonical_context_inputs()
     source_metadata = inputs["source_metadata"]
@@ -700,18 +770,28 @@ def test_narrative_context_is_bounded_and_matches_fixed_fixture_hash() -> None:
         "valuation",
         "risk",
     ]
-    assert _sha256_json(narrative) == "e25f06b4b11cd5316357866f3e515a1daf3a7fdc8f5991da8b0d9c35665f7116"
+    assert _sha256_json(narrative) == "1c31fc86b85fd2ba4e19ba20d658fdce737955d65a6def4e0a28becb7b82ea00"
 
 
 def test_chart_context_exposes_number_free_observations() -> None:
     narrative = build_narrative_context(build_report_context(**_reader_focused_inputs()))
     chart_context = narrative["chart_context"]
 
-    assert tuple(chart_context) == ("financial_kpis", "ttm_scale", "historical_pe")
+    assert tuple(chart_context) == (
+        "financial_kpis",
+        "annual_financial_trend",
+        "historical_pe",
+    )
     assert chart_context["financial_kpis"]["available"] is True
     assert "收入同比保持正增长" in chart_context["financial_kpis"]["observations"]
-    assert chart_context["ttm_scale"]["available"] is True
-    assert "经营现金流高于净利润" in chart_context["ttm_scale"]["observations"]
+    assert chart_context["annual_financial_trend"]["available"] is True
+    assert chart_context["annual_financial_trend"]["observations"] == [
+        "营业收入五年总体增长",
+        "净利润五年总体增长",
+        "自由现金流五年总体增长",
+        "五年自由现金流全部为正",
+        "最新自由现金流高于最新净利润",
+    ]
     assert chart_context["historical_pe"]["available"] is True
     assert "当前市盈率高于五年中位数" in chart_context["historical_pe"]["observations"]
     for item in chart_context.values():
@@ -736,18 +816,12 @@ def test_chart_context_marks_observations_unavailable_without_inputs() -> None:
         "observations": [],
     }
 
-    missing_ttm = deepcopy(_reader_focused_inputs())
-    ttm = missing_ttm["ttm"]
-    assert isinstance(ttm, dict)
-    ttm_metrics = ttm["metrics"]
-    assert isinstance(ttm_metrics, list)
-    ttm["metrics"] = [
-        metric for metric in ttm_metrics if metric.get("metric_id") != "operating_cash_flow"
-    ]
-    ttm_chart_context = build_narrative_context(
-        build_report_context(**missing_ttm)
+    missing_annual = deepcopy(_reader_focused_inputs())
+    missing_annual.pop("annual_financial_history")
+    annual_chart_context = build_narrative_context(
+        build_report_context(**missing_annual)
     )["chart_context"]
-    assert ttm_chart_context["ttm_scale"] == {
+    assert annual_chart_context["annual_financial_trend"] == {
         "available": False,
         "observations": [],
     }
@@ -767,23 +841,114 @@ def test_chart_context_marks_observations_unavailable_without_inputs() -> None:
 
 @pytest.mark.parametrize(
     ("field", "invalid_value"),
-    (("validation_status", "invalid"), ("period_basis", "FY")),
+    (("validation_status", "invalid"), ("period_basis", "TTM")),
 )
-def test_chart_context_requires_valid_ttm_period(field: str, invalid_value: str) -> None:
+def test_chart_context_requires_valid_annual_period(field: str, invalid_value: str) -> None:
     inputs = _reader_focused_inputs()
-    ttm = inputs["ttm"]
-    assert isinstance(ttm, dict)
-    ttm_metrics = ttm["metrics"]
-    assert isinstance(ttm_metrics, list)
-    target = next(metric for metric in ttm_metrics if metric["metric_id"] == "net_income")
+    annual = inputs["annual_financial_history"]
+    assert isinstance(annual, dict)
+    periods = annual["periods"]
+    assert isinstance(periods, list)
+    target = next(period for period in periods if period["fiscal_year"] == 2023)
     target[field] = invalid_value
 
     chart_context = build_narrative_context(build_report_context(**inputs))["chart_context"]
 
-    assert chart_context["ttm_scale"] == {
+    assert chart_context["annual_financial_trend"] == {
         "available": False,
         "observations": [],
     }
+
+
+def test_report_context_rejects_non_usd_annual_history() -> None:
+    inputs = _reader_focused_inputs()
+    annual = deepcopy(inputs["annual_financial_history"])
+    assert isinstance(annual, dict)
+    annual["currency"] = "EUR"
+    periods = annual["periods"]
+    assert isinstance(periods, list)
+    for period in periods:
+        period["currency"] = "EUR"
+    inputs["annual_financial_history"] = annual
+
+    context = build_report_context(**inputs)
+
+    assert "annual_financial_history" not in context
+    assert build_narrative_context(context)["chart_context"][
+        "annual_financial_trend"
+    ] == {"available": False, "observations": []}
+
+
+def test_report_context_calculates_annual_cagr_and_expectation_gap() -> None:
+    context = build_report_context(**_reader_focused_inputs())
+
+    summary = context["annual_financial_summary"]
+    assert summary == {
+        "start_fiscal_year": 2021,
+        "end_fiscal_year": 2025,
+        "revenue_cagr": "49.53",
+        "net_income_cagr": "49.53",
+        "free_cash_flow_cagr": "49.53",
+        "latest_fcf_direction": "up",
+        "validation_status": "valid",
+        "basis_note": (
+            "CAGR 基于五个完整 FY 历史；反向 DCF 以 TTM FCF 为起点，"
+            "二者口径不同，仅作方向比较，不是预测。"
+        ),
+        "expectation_gap_percentage_points": "-38.53",
+    }
+    assert all("%" not in summary[key] for key in (
+        "revenue_cagr",
+        "net_income_cagr",
+        "free_cash_flow_cagr",
+        "expectation_gap_percentage_points",
+    ))
+
+
+def test_report_context_marks_latest_fcf_down() -> None:
+    inputs = _reader_focused_inputs()
+    annual = inputs["annual_financial_history"]
+    assert isinstance(annual, dict)
+    periods = annual["periods"]
+    assert isinstance(periods, list)
+    periods[-1]["operating_cash_flow"] = "7500000000"
+    periods[-1]["free_cash_flow"] = "5000000000"
+
+    summary = build_report_context(**inputs)["annual_financial_summary"]
+
+    assert summary["latest_fcf_direction"] == "down"
+
+
+def test_report_context_uses_empty_annual_summary_without_valid_history() -> None:
+    context = build_report_context(**_canonical_context_inputs())
+
+    assert context["annual_financial_summary"] == {}
+
+
+def test_financial_trend_rejects_unsupported_inference_terms_only() -> None:
+    terms = ("不断提升", "持续扩张", "导致", "由于", "资本开支", "营运资金", "显著", "大幅")
+    for term in terms:
+        invalid = json.loads(VALID_REPORT_DRAFT)
+        invalid["financial_trend"] = f"财务趋势包含{term}。"
+        passed, code = validate_report_draft(
+            SimpleNamespace(raw=json.dumps(invalid, ensure_ascii=False))
+        )
+        assert passed is False
+        assert code == "report_draft_unsupported_inference"
+
+        for field in REPORT_DRAFT_FIELDS:
+            if field == "financial_trend":
+                continue
+            unaffected = json.loads(VALID_REPORT_DRAFT)
+            unaffected[field] = (
+                f"本文不构成投资建议，{term}。"
+                if field == "non_investment_disclaimer"
+                else f"该字段包含{term}。"
+            )
+            passed, _ = validate_report_draft(
+                SimpleNamespace(raw=json.dumps(unaffected, ensure_ascii=False))
+            )
+            assert passed is True
 
 
 def test_renderer_places_chart_reasoning_after_each_matching_chart() -> None:
@@ -810,18 +975,13 @@ def test_renderer_places_chart_reasoning_after_each_matching_chart() -> None:
     ]
     assert len(chart_positions) == 3
     assert chart_positions[0] < report.index("公司质量关系")
-    assert chart_positions[1] < report.index("现金流关系")
-    assert chart_positions[2] < report.index("估值关系")
+    assert "现金流关系" not in report
+    assert "估值关系" not in report
+    assert "整体增长但存在波动" in report
     execution_summary = report.split("## 公司质量", 1)[0]
     assert "data:image/png;base64," not in execution_summary
-    for marker in ("公司质量关系", "现金流关系", "估值关系"):
-        assert report.count(marker) == 1
-    for draft_text in (
-        draft.company_quality,
-        draft.financial_trend,
-        draft.historical_valuation,
-    ):
-        assert f"**图表推导：** 根据上图及其对应的已验证数据，{draft_text}" in report
+    assert report.count("公司质量关系") == 1
+    assert f"**图表推导：** 根据上图及其对应的已验证数据，{draft.company_quality}" in report
 
 
 def test_renderer_keeps_chart_reasoning_fields_without_visuals(monkeypatch) -> None:
@@ -840,12 +1000,9 @@ def test_renderer_keeps_chart_reasoning_fields_without_visuals(monkeypatch) -> N
     )
 
     assert "根据上图" not in report
-    for draft_text in (
-        draft.company_quality,
-        draft.financial_trend,
-        draft.historical_valuation,
-    ):
-        assert f"**数据解读：** 根据已验证数据，{draft_text}" in report
+    assert f"**数据解读：** 根据已验证数据，{draft.company_quality}" in report
+    assert draft.financial_trend not in report
+    assert draft.historical_valuation not in report
 
 
 def test_chart_reasoning_uses_data_interpretation_when_current_percentile_missing() -> None:
@@ -865,7 +1022,8 @@ def test_chart_reasoning_uses_data_interpretation_when_current_percentile_missin
     historical_section = report.split("## 历史估值", 1)[1].split("## 反向 DCF", 1)[0]
 
     assert "data:image/png;base64," in historical_section
-    assert "**数据解读：** 根据已验证数据，" in historical_section
+    assert "以下数据用于相对自身历史估值比较" in historical_section
+    assert "重新评估条件" in historical_section
     assert "根据上图" not in historical_section
     assert "图表推导" not in historical_section
 
@@ -888,7 +1046,8 @@ def test_markdown_renderer_keeps_sections_terms_visuals_and_fixed_hash() -> None
         "非投资建议声明",
     ):
         assert f"## {heading}" in report
-    assert "- **结论：** 当前估值高于过去五年中位水平" in report
+    assert "- **相对自身历史估值：** 偏高" in report
+    assert "- **市场隐含预期：** 低" in report
     assert "P/E（市盈率）" in report
     assert "FCF Yield（自由现金流收益率）" in report
     assert "TTM（过去十二个月）" in report
@@ -896,7 +1055,7 @@ def test_markdown_renderer_keeps_sections_terms_visuals_and_fixed_hash() -> None
     assert report.count("data:image/png;base64,") == 3
     report_without_images = re.sub(r"data:image/png;base64,[A-Za-z0-9+/=]+", "", report)
     assert "999" not in report_without_images
-    assert _sha256_json(report) == "a318e1e00d650c42b30217693667574bbbcf7bf540d6d35bf7043281a0e552ac"
+    assert "完整财年起止：FY2021（2021-01-01）至 FY2025（2025-12-31）" in report
 
 
 def test_markdown_renderer_puts_company_identity_in_title() -> None:
@@ -941,7 +1100,7 @@ def test_execution_summary_hides_audit_metadata_and_moves_it_to_method_section()
     assert "high_valuation" in method_section
 
 
-def test_financial_trend_uses_ttm_fcf_instead_of_ordinary_period_fcf() -> None:
+def test_financial_trend_uses_annual_trend_and_keeps_ttm_fcf_list() -> None:
     inputs = _reader_focused_inputs()
     source_metadata = inputs["source_metadata"]
     assert isinstance(source_metadata, dict)
@@ -977,6 +1136,7 @@ def test_financial_trend_uses_ttm_fcf_instead_of_ordinary_period_fcf() -> None:
 
     assert "TTM 财务规模（已验证）" in financial_trend
     assert "自由现金流：220.00 亿美元" in financial_trend
+    assert "营业利润：" not in financial_trend
     assert "100.00 亿美元" not in financial_trend
 
 
@@ -1020,7 +1180,11 @@ def test_renderer_formats_ttm_and_reverse_dcf_amounts_using_record_units(
     reverse_section = report.split("## 反向 DCF", 1)[1].split("## 主要风险", 1)[0]
 
     assert "自由现金流：220.00 亿美元" in trend
-    assert "| 基础自由现金流（TTM） | 220.00 亿美元 |" in reverse_section
+    assert "| 基础自由现金流（TTM，模型起点） | 220.00 亿美元 |" in reverse_section
+    assert "| 历史 FY FCF CAGR | 49.53% |" in reverse_section
+    assert "| 隐含增长率 | 11.00% |" in reverse_section
+    assert "| 差值（百分点） | -38.53 个百分点 |" in reverse_section
+    assert "方向性对照" in reverse_section
 
 
 def test_share_dilution_body_matches_visual_adjustment_basis_boundary() -> None:
@@ -1151,13 +1315,29 @@ def test_execution_summary_explains_verified_valuation_relationships() -> None:
     )
     execution_summary = report.split("## 公司质量", 1)[0]
 
-    assert "当前 P/E" in execution_summary
-    assert "16.10x" in execution_summary
-    assert "15.60x" in execution_summary
-    assert "高于" in execution_summary
-    assert "72.50%" in execution_summary
-    assert "反向 DCF" in execution_summary
-    assert "11.00%" in execution_summary
+    assert execution_summary.count("- **") == 4
+    assert "- **经营质量：** 强" in execution_summary
+    assert "- **相对自身历史估值：** 偏高" in execution_summary
+    assert "- **市场隐含预期：** 低" in execution_summary
+    assert "- **研究动作：** 加入观察名单并跟踪关键指标" in execution_summary
+
+
+def test_spac_execution_summary_uses_applicability_labels() -> None:
+    inputs = _reader_focused_inputs()
+    inputs["policy_context"] = {"profile": {"security_profile": "spac"}}
+
+    report = render_validated_report(
+        build_report_context(**inputs),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+    execution_summary = report.split("## 公司质量", 1)[0]
+
+    assert "- **经营质量：** 数据不足" in execution_summary
+    assert "- **估值适用性：** 不适用" in execution_summary
+    assert "- **市场预期评估：** 不适用" in execution_summary
+    assert "- **研究动作：** 等待补充证据" in execution_summary
+    assert "当前估值" not in execution_summary
+    assert "历史估值" not in execution_summary
 
 
 def test_report_uses_compact_reader_facing_copy_without_duplicate_audit_prose() -> None:
@@ -1173,14 +1353,11 @@ def test_report_uses_compact_reader_facing_copy_without_duplicate_audit_prose() 
     )
     execution_summary = report.split("## 公司质量", 1)[0]
 
-    assert "- **结论：** 当前估值高于过去五年中位水平" in execution_summary
-    assert "- **风险水平：** 中等风险" not in execution_summary
-    assert "- **研究状态：** 估值偏贵" in execution_summary
-    assert (
-        "当前 P/E 为 16.10x，高于五年中位数 15.60x，"
-        "处于过去五年估值样本的 72.50% 分位。"
-    ) in execution_summary
-    assert "反向 DCF 显示，自由现金流年复合增长要求约为 11.00%。" in execution_summary
+    assert "- **经营质量：** 强" in execution_summary
+    assert "- **相对自身历史估值：** 偏高" in execution_summary
+    assert "- **市场隐含预期：** 低" in execution_summary
+    assert "- **研究动作：** 加入观察名单并跟踪关键指标" in execution_summary
+    assert execution_summary.count("- **") == 4
     assert "总体判断：" not in execution_summary
     assert "结论仅基于已验证数据和 Claim" not in execution_summary
     assert "数字已由规范化指标展示。" not in report
@@ -1201,12 +1378,11 @@ def test_summary_turns_verified_valuation_into_observation_conditions() -> None:
     )
     summary = report.split("## 公司质量", 1)[0]
 
-    assert "- **结论：** 当前估值高于过去五年中位水平，估值并不便宜。" in summary
-    assert "- **研究状态：** 估值偏贵" in summary
-    assert "- **重新评估条件：**" in summary
-    assert "P/E 回落至 15.60x 附近" in summary
-    assert "TTM 自由现金流增长接近 11.00%" not in summary
-    assert "- **结论：** 估值偏贵" not in summary
+    assert summary.count("- **") == 4
+    assert "相对自身历史估值" in summary
+    assert "研究动作" in summary
+    assert "当前 P/E" not in summary
+    assert "重新评估条件" not in summary
 
 
 def test_execution_summary_omits_unavailable_valuation_relationships() -> None:
@@ -1242,7 +1418,9 @@ def test_risks_are_capped_and_visible_claims_show_existing_sec_sources() -> None
         {
             "claim_id": f"claim_risk_{index}",
             "category": "risk",
-            "statement": f"风险陈述 {index}",
+            "statement": (
+                f"关税风险陈述 {index}" if index == 1 else f"风险陈述 {index}"
+            ),
             "evidence_ids": [f"ev_risk_{index}"],
             "calculation_ids": [],
             "confidence": 0.8,
@@ -1272,13 +1450,40 @@ def test_risks_are_capped_and_visible_claims_show_existing_sec_sources() -> None
     )[0]
     main_risks, appendix = risk_section.split("### 风险附录", 1)
 
-    for index in range(1, 6):
+    assert "主要风险叙述来自已验证 Claim。" not in risk_section
+    for index in range(1, 4):
         assert f"风险陈述 {index}" in main_risks
-    for index in range(6, 8):
+    for index in range(4, 8):
         assert f"风险陈述 {index}" not in main_risks
         assert f"风险陈述 {index}" in appendix
     for index in range(1, 8):
         assert f"来源：sec:test-risk-{index}" in risk_section
+    assert "影响路径：成本上升可能压低毛利率并推高库存压力" in risk_section
+    assert "观察项：毛利率、库存周转与关税披露" in risk_section
+    for index in range(2, 8):
+        assert "影响路径：需结合SEC风险更新判断财务影响" in risk_section
+        assert "观察项：SEC风险更新和对应财务指标" in risk_section
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected_path"),
+    [
+        ("蜂窝网络运营商/信用风险", "需结合SEC风险更新判断财务影响"),
+        ("AI 网络安全风险", "事件与监管要求可能增加安全及合规费用"),
+        ("AI 算力投入风险", "投入需求可能推高资本开支并影响毛利率"),
+        ("宏观经济与供应链风险", "需求变化可能影响收入增长与利润率"),
+        ("关税与贸易限制风险", "成本上升可能压低毛利率并推高库存压力"),
+        ("关键组件、有限来源与供应中断风险", "成本上升可能压低毛利率并推高库存压力"),
+    ],
+)
+def test_risk_impact_paths_use_specific_keyword_priority(
+    statement: str, expected_path: str
+) -> None:
+    markdown = _risk_claim_markdown(
+        [{"category": "risk", "statement": statement}],
+    )
+
+    assert f"影响路径：{expected_path}" in markdown
 
 
 def test_risks_filter_non_displayable_claims_before_main_cap() -> None:
@@ -1333,10 +1538,11 @@ def test_risks_filter_non_displayable_claims_before_main_cap() -> None:
     main_risks, appendix = risk_section.split("### 风险附录", 1)
 
     assert "风险数字为 12%。" not in risk_section
-    for index in range(1, 6):
+    for index in range(1, 4):
         assert f"可展示风险陈述 {index}" in main_risks
-    assert "可展示风险陈述 6" not in main_risks
-    assert "可展示风险陈述 6" in appendix
+    for index in range(4, 7):
+        assert f"可展示风险陈述 {index}" not in main_risks
+        assert f"可展示风险陈述 {index}" in appendix
     assert "<details>" in appendix
     assert "<summary>展开查看其余风险" in appendix
 
@@ -1350,7 +1556,13 @@ def test_context_summary_uses_deterministic_conclusion_not_draft_summary() -> No
 
     assert "研究范围由已验证输入限定。" not in execution_summary
     assert "结论仅基于已验证数据和 Claim；缺失输入不作推断。" not in execution_summary
-    assert "- **关键数据：**" in execution_summary
+    assert execution_summary.count("- **") == 4
+    assert "总体判断" not in execution_summary
+    assert "风险等级" not in execution_summary
+    assert "行动参考" not in execution_summary
+    assert "status=" not in execution_summary
+    assert "Profile：" not in execution_summary
+    assert "Policy version：" not in execution_summary
 
 
 def test_legacy_summary_moves_status_and_rule_to_method_section() -> None:
@@ -1380,12 +1592,14 @@ def test_legacy_summary_moves_status_and_rule_to_method_section() -> None:
     assert "触发规则：" not in execution_summary
     assert "研究范围由已验证输入限定。" not in execution_summary
     assert "结论仅基于已验证数据和 Claim；缺失输入不作推断。" not in execution_summary
-    assert "当前 P/E 为 12.00x，高于五年中位数 10.00x" in execution_summary
-    assert "处于过去五年估值样本的 72.50% 分位" in execution_summary
-    assert "反向 DCF 显示，自由现金流年复合增长要求约为 11.00%。" in execution_summary
+    assert execution_summary.count("- **") == 4
+    assert "经营质量：** 数据不足" in execution_summary
+    assert "市场隐含预期：** 数据不足" in execution_summary
+    assert "研究动作：** 等待补充证据" in execution_summary
     assert "### 方法与审计元数据" in method_section
     assert "status=ready" in method_section
     assert "触发规则代码：high_valuation" in method_section
+    assert "市场隐含预期" in method_section
 
 
 def test_legacy_summary_omits_unavailable_valuation_relationships() -> None:
@@ -1434,10 +1648,15 @@ def test_visuals_keep_three_keys_png_data_uris_and_hashes() -> None:
     visuals = build_report_visuals(
         financial_metrics=_financial_metrics(),
         ttm_metrics=_ttm_metrics(),
+        annual_financial_history=_annual_financial_history(),
         historical_payload=_historical_payload(),
     )
 
-    assert set(visuals) == {"financial_kpis", "ttm_scale", "historical_pe"}
+    assert set(visuals) == {
+        "financial_kpis",
+        "annual_financial_trend",
+        "historical_pe",
+    }
     hashes = {}
     for key, uri in visuals.items():
         assert uri.startswith("data:image/png;base64,")
@@ -1446,7 +1665,7 @@ def test_visuals_keep_three_keys_png_data_uris_and_hashes() -> None:
         hashes[key] = hashlib.sha256(raw).hexdigest()
     assert hashes == {
         "financial_kpis": "ba7e964c7b332946a288789e002448f14085d854c7936223169471648d38b8cc",
-        "ttm_scale": "82305a87783b8c81366bceacb561f029645b28539e52977d2da788f0eabd88b3",
+        "annual_financial_trend": "a1e9d5874f58afbd9bf7020ef2a3a1bbeb6fc640dc73d0b429f6beda7f781147",
         "historical_pe": "560abfcefb47e995b17facef3ce9913776b18327b0bb5b41820d6199eacafd33",
     }
 
@@ -1459,7 +1678,7 @@ def test_rendered_report_validator_allows_advice_only_in_disclaimer() -> None:
     assert validate_rendered_report(contaminated, "ready")[0] is False
 
 
-def test_execution_summary_reports_verified_risk_without_unquantified_level() -> None:
+def test_execution_summary_keeps_only_four_deterministic_conclusions() -> None:
     inputs = _reader_focused_inputs()
     claims = inputs["validated_claims"]
     assert isinstance(claims, list)
@@ -1481,7 +1700,8 @@ def test_execution_summary_reports_verified_risk_without_unquantified_level() ->
     )
     summary = report.split("## 公司质量", 1)[0]
 
-    assert "风险状态：已识别风险，但尚未建立量化评分。" in summary
+    assert summary.count("- **") == 4
+    assert "风险状态：" not in summary
     assert "风险等级：中等风险" not in report
     assert "风险水平：中等风险" not in summary
 
@@ -1522,7 +1742,9 @@ def test_research_status_comes_only_from_verdict_rating(
     )
     summary = report.split("## 公司质量", 1)[0]
 
-    assert f"- **研究状态：** {expected_status}" in summary
+    assert summary.count("- **") == 4
+    assert "- **研究动作：** 加入观察名单并跟踪关键指标" in summary
+    assert expected_status not in summary
 
 
 def test_unknown_verdict_rating_does_not_guess_research_status() -> None:
@@ -1538,7 +1760,8 @@ def test_unknown_verdict_rating_does_not_guess_research_status() -> None:
     )
     summary = report.split("## 公司质量", 1)[0]
 
-    assert "- **研究状态：**" not in summary
+    assert summary.count("- **") == 4
+    assert "研究动作" in summary
 
 
 def test_reverse_dcf_summary_uses_model_years_and_cagr_language() -> None:
@@ -1552,9 +1775,11 @@ def test_reverse_dcf_summary_uses_model_years_and_cagr_language() -> None:
         parse_report_draft(VALID_REPORT_DRAFT),
     )
     summary = report.split("## 公司质量", 1)[0]
+    reverse_section = report.split("## 反向 DCF", 1)[1].split("## 主要风险", 1)[0]
 
-    assert "未来 10 年自由现金流年复合增长要求" in summary
-    assert "11.00%" in summary
+    assert summary.count("- **") == 4
+    assert "未来 10 年自由现金流年复合增长要求" in reverse_section
+    assert "11.00%" in reverse_section
     assert "TTM 自由现金流增长接近" not in report
     assert "下一期" not in report
 
@@ -1591,8 +1816,9 @@ def test_summary_distinguishes_request_horizon_from_dcf_horizon() -> None:
     )
     summary = report.split("## 公司质量", 1)[0]
 
-    assert "用户关注期限是 3 年" in summary
-    assert "10 年反向 DCF 只是长期估值参照，不是该请求期限的预测" in summary
+    assert summary.count("- **") == 4
+    assert "用户关注期限是 3 年" not in summary
+    assert "10 年反向 DCF 只是长期估值参照，不是该请求期限的预测" not in summary
 
 
 def test_first_financial_chart_has_ytd_comparison_and_ttm_basis_note() -> None:

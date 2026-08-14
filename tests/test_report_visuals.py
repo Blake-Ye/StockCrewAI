@@ -57,6 +57,55 @@ def _ttm_metrics():
     ]
 
 
+def _annual_financial_history():
+    periods = []
+    for fiscal_year in range(2021, 2026):
+        value_index = fiscal_year - 2020
+        periods.append(
+            {
+                "fiscal_year": fiscal_year,
+                "period_start": f"{fiscal_year}-01-01",
+                "period_end": f"{fiscal_year}-12-31",
+                "filed_at": f"{fiscal_year + 1}-02-01",
+                "period_basis": "FY",
+                "currency": "USD",
+                "revenue": str(value_index * 10_000_000_000),
+                "net_income": str(value_index * 1_000_000_000),
+                "operating_cash_flow": str(value_index * 2_000_000_000),
+                "capex": str(value_index * 500_000_000),
+                "free_cash_flow": str(value_index * 1_500_000_000),
+                "evidence_ids": [
+                    f"ev_revenue_{fiscal_year}",
+                    f"ev_net_income_{fiscal_year}",
+                    f"ev_operating_cash_flow_{fiscal_year}",
+                    f"ev_capex_{fiscal_year}",
+                ],
+                "calculation_id": f"calc_annual_fcf_{fiscal_year}",
+                "calculation_provenance": {
+                    "formula": "free_cash_flow = operating_cash_flow - positive_capex",
+                    "input_metric_ids": [
+                        "operating_cash_flow",
+                        "capex",
+                    ],
+                    "input_evidence_ids": [
+                        f"ev_revenue_{fiscal_year}",
+                        f"ev_net_income_{fiscal_year}",
+                        f"ev_operating_cash_flow_{fiscal_year}",
+                        f"ev_capex_{fiscal_year}",
+                    ],
+                },
+                "validation_status": "valid",
+            }
+        )
+    return {
+        "status": "ok",
+        "reason_code": None,
+        "currency": "USD",
+        "periods": periods,
+        "validation_status": "valid",
+    }
+
+
 def _historical_payload():
     start = date(2021, 8, 31)
     series = [
@@ -78,7 +127,7 @@ def _historical_payload():
     }
 
 
-_LEGACY_VISUAL_KEYS = {"financial_kpis", "ttm_scale", "historical_pe"}
+_VISUAL_KEYS = {"financial_kpis", "annual_financial_trend", "historical_pe"}
 _PNG_PREFIX = "data:image/png;base64,"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -268,21 +317,31 @@ class ReportVisualsTests(unittest.TestCase):
         self.assertIsNotNone(uri)
         self.assertLess(len(uri), 64 * 1024)
 
-    def test_historical_pe_rejects_latest_date_or_value_mismatch(self):
-        builder = self._builder()
-        for field, value in (
-            ("current_date", "2099-01-01"),
-            ("current_value", "999.99"),
-        ):
-            with self.subTest(field=field):
-                payload = _historical_payload()
-                payload[field] = value
-                visuals = builder(
-                    financial_metrics=_financial_metrics(),
-                    ttm_metrics=_ttm_metrics(),
-                    historical_payload=payload,
-                )
-                self.assertNotIn("historical_pe", visuals)
+    def test_historical_pe_keeps_realtime_point_separate_from_complete_series(self):
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        payload = _historical_payload()
+        payload["current_date"] = "2026-08-12"
+        payload["current_value"] = "999.99"
+        rendered = {}
+
+        def inspect_png_uri(draw, *, size, **kwargs):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                rendered["axes"] = list(figure.axes)
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
+            self.assertEqual(module._historical_pe_png(payload), "captured")
+
+        axes = rendered["axes"][0]
+        line = next(line for line in axes.lines if line.get_linestyle() == "-")
+        self.assertEqual(len(line.get_xdata()), 60)
+        self.assertEqual(len(axes.collections), 1)
+        self.assertEqual(list(axes.collections[0].get_offsets()[0]), [60.0, 999.99])
 
     def test_builds_three_deterministic_png_data_uris_from_verified_inputs(self):
         builder = self._builder()
@@ -290,11 +349,12 @@ class ReportVisualsTests(unittest.TestCase):
         visuals = builder(
             financial_metrics=_financial_metrics(),
             ttm_metrics=_ttm_metrics(),
+            annual_financial_history=_annual_financial_history(),
             historical_payload=_historical_payload(),
         )
 
         self.assertEqual(
-            set(visuals), {"financial_kpis", "ttm_scale", "historical_pe"}
+            set(visuals), _VISUAL_KEYS
         )
         for uri in visuals.values():
             self.assertTrue(uri.startswith("data:image/png;base64,"))
@@ -307,8 +367,48 @@ class ReportVisualsTests(unittest.TestCase):
             builder(
                 financial_metrics=_financial_metrics(),
                 ttm_metrics=_ttm_metrics(),
+                annual_financial_history=_annual_financial_history(),
                 historical_payload=_historical_payload(),
             ),
+        )
+
+    def test_annual_trend_has_three_panels_and_five_fiscal_year_bars(self):
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        rendered = {}
+
+        def inspect_png_uri(draw, *, size, **kwargs):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                rendered["axes"] = list(figure.axes)
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
+            self.assertEqual(
+                module._annual_financial_trend_png(_annual_financial_history()),
+                "captured",
+            )
+
+        axes = rendered["axes"]
+        self.assertEqual(len(axes), 3)
+        self.assertEqual(
+            [axis.get_title() for axis in axes],
+            ["营业收入（十亿美元）", "净利润（十亿美元）", "自由现金流（十亿美元）"],
+        )
+        self.assertTrue(all(len(axis.patches) == 5 for axis in axes))
+        for axis in axes:
+            self.assertEqual(len(axis.texts), 5)
+            self.assertNotIn("最新", "".join(text.get_text() for text in axis.texts))
+            self.assertNotEqual(
+                axis.patches[-1].get_facecolor(),
+                axis.patches[-2].get_facecolor(),
+            )
+        self.assertEqual(
+            axes[0].figure._suptitle.get_text(),
+            "近五年核心财务趋势（已验证完整财年）",
         )
 
     def _assert_png_uris(self, visuals):
@@ -334,13 +434,14 @@ class ReportVisualsTests(unittest.TestCase):
             ttm_metrics=_ttm_metrics(),
         )
 
-        self.assertEqual(set(visuals), {"financial_kpis", "ttm_scale"})
+        self.assertEqual(set(visuals), {"financial_kpis"})
 
     def test_missing_verification_fields_omit_all_charts(self):
         builder = self._builder()
         financial_metrics = _financial_metrics()
         ttm_metrics = _ttm_metrics()
         historical_payload = _historical_payload()
+        annual_financial_history = _annual_financial_history()
 
         for records in (financial_metrics, ttm_metrics):
             for record in records:
@@ -348,11 +449,14 @@ class ReportVisualsTests(unittest.TestCase):
                 record.pop("validation_status")
         historical_payload.pop("status")
         historical_payload.pop("validation_status")
+        annual_financial_history.pop("status")
+        annual_financial_history.pop("validation_status")
 
         self.assertEqual(
             builder(
                 financial_metrics=financial_metrics,
                 ttm_metrics=ttm_metrics,
+                annual_financial_history=annual_financial_history,
                 historical_payload=historical_payload,
             ),
             {},
@@ -369,10 +473,13 @@ class ReportVisualsTests(unittest.TestCase):
                 visuals = builder(
                     financial_metrics=_financial_metrics(),
                     ttm_metrics=_ttm_metrics(),
+                    annual_financial_history=_annual_financial_history(),
                     historical_payload=historical_payload,
                 )
 
-                self.assertEqual(set(visuals), {"financial_kpis", "ttm_scale"})
+                self.assertEqual(
+                    set(visuals), {"financial_kpis", "annual_financial_trend"}
+                )
 
     def test_matplotlib_uses_agg_and_writable_project_temp_config(self):
         self._builder()
@@ -404,11 +511,29 @@ class ReportVisualsTests(unittest.TestCase):
             places=3,
         )
 
+    def test_annual_trend_rejects_non_usd_currency(self):
+        builder = self._builder()
+        annual = _annual_financial_history()
+        annual["currency"] = "EUR"
+        for period in annual["periods"]:
+            period["currency"] = "EUR"
+
+        visuals = builder(
+            financial_metrics=_financial_metrics(),
+            annual_financial_history=annual,
+            historical_payload=_historical_payload(),
+        )
+
+        self.assertNotIn("annual_financial_trend", visuals)
+
     def test_chart_labels_and_historical_ticks_are_reader_friendly(self):
         module = importlib.import_module("stockcrewai.reporting.visuals")
 
         self.assertEqual(module._FINANCIAL_KPI_TITLE, "财务质量指标（已验证数据）")
-        self.assertEqual(module._TTM_AXIS_LABEL, "金额（十亿美元）")
+        self.assertEqual(
+            module._ANNUAL_TREND_TITLE,
+            "近五年核心财务趋势（已验证完整财年）",
+        )
 
         points = [
             (

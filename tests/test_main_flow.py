@@ -603,7 +603,18 @@ class MainFlowExecutionTests(unittest.TestCase):
             historical_valuation_tool.run.call_args.kwargs.get("as_of"),
             "2026-08-07",
         )
-        self.assertEqual(result["historical_valuation"]["current_date"], "2026-07-31")
+        historical_call = historical_valuation_tool.run.call_args.kwargs
+        self.assertEqual(historical_call["current_pe_ratio"], "25.00x")
+        self.assertEqual(historical_call["current_price"], "100")
+        self.assertEqual(
+            historical_call["current_price_date"], "2026-08-07T15:30:00Z"
+        )
+        self.assertEqual(
+            historical_call["current_price_evidence_id"], "ev_market_price"
+        )
+        self.assertEqual(historical_call["current_financial_evidence_ids"], ["ev_revenue"])
+        self.assertEqual(result["historical_valuation"]["current_date"], "2026-08-07")
+        self.assertEqual(result["historical_valuation"]["current_value"], "25")
         self.assertNotIn(
             "2026-08-31",
             result["historical_valuation"]["selected_dates"],

@@ -1867,6 +1867,49 @@ class ReportContractTests(unittest.TestCase):
                 }.items()
             ],
         }
+        inputs["annual_financial_history"] = {
+            "status": "ok",
+            "reason_code": None,
+            "currency": "USD",
+            "periods": [
+                {
+                    "fiscal_year": fiscal_year,
+                    "period_start": f"{fiscal_year}-01-01",
+                    "period_end": f"{fiscal_year}-12-31",
+                    "filed_at": f"{fiscal_year + 1}-02-01",
+                    "period_basis": "FY",
+                    "currency": "USD",
+                    "revenue": str((fiscal_year - 2020) * 10_000_000_000),
+                    "net_income": str((fiscal_year - 2020) * 1_000_000_000),
+                    "operating_cash_flow": str(
+                        (fiscal_year - 2020) * 2_000_000_000
+                    ),
+                    "capex": str((fiscal_year - 2020) * 500_000_000),
+                    "free_cash_flow": str((fiscal_year - 2020) * 1_500_000_000),
+                    "evidence_ids": [
+                        f"ev_revenue_{fiscal_year}",
+                        f"ev_net_income_{fiscal_year}",
+                        f"ev_operating_cash_flow_{fiscal_year}",
+                        f"ev_capex_{fiscal_year}",
+                    ],
+                    "calculation_id": f"calc_annual_fcf_{fiscal_year}",
+                    "calculation_provenance": {
+                        "formula": (
+                            "free_cash_flow = operating_cash_flow - positive_capex"
+                        ),
+                        "input_evidence_ids": [
+                            f"ev_revenue_{fiscal_year}",
+                            f"ev_net_income_{fiscal_year}",
+                            f"ev_operating_cash_flow_{fiscal_year}",
+                            f"ev_capex_{fiscal_year}",
+                        ],
+                    },
+                    "validation_status": "valid",
+                }
+                for fiscal_year in range(2021, 2026)
+            ],
+            "validation_status": "valid",
+        }
         return inputs
 
     def test_report_context_rejects_missing_and_non_ttm_period_basis(self):
@@ -1963,17 +2006,22 @@ class ReportContractTests(unittest.TestCase):
             parse_report_draft(VALID_REPORT_DRAFT),
         )
 
-        self.assertIn("- **结论：** 当前估值高于过去五年中位水平", report)
+        self.assertIn("- **经营质量：** 强", report)
+        self.assertIn("- **相对自身历史估值：** 偏高", report)
+        self.assertIn("- **市场隐含预期：** 数据不足", report)
+        self.assertIn("- **研究动作：** 等待补充证据", report)
+        self.assertNotIn("- **结论：**", report)
         self.assertNotIn("中等风险", report)
         self.assertIn("触发规则：估值偏高规则触发", report)
-        self.assertIn("- **研究状态：** 估值偏贵", report)
+        self.assertNotIn("- **研究状态：**", report)
         self.assertIn("P/E（市盈率）", report)
         self.assertIn("FCF Yield（自由现金流收益率）", report)
         self.assertIn("TTM（过去十二个月）", report)
         self.assertIn("DCF（现金流折现）", report)
         self.assertIn("反向 DCF（由市场价格倒推隐含增长）", report)
         self.assertIn("三个面板分别展示增长与资本配置、盈利能力和现金流质量", report)
-        self.assertIn("各柱均为最近十二个月数据", report)
+        self.assertIn("最近五个共同完整财年", report)
+        self.assertIn("近五年核心财务趋势（已验证完整财年）", report)
         self.assertIn("曲线展示 TTM P/E 的历史变化", report)
         self.assertEqual(report.count("data:image/png;base64,"), 3)
         self.assertNotIn("无已验证 Claim。", report)
@@ -2467,6 +2515,7 @@ class ReportContractTests(unittest.TestCase):
             "持有",
             "Python Renderer",
             "chart_context",
+            "annual_financial_trend",
             "我们可以看到",
             "这说明",
             "由此判断",
@@ -2474,6 +2523,12 @@ class ReportContractTests(unittest.TestCase):
             "不得改变确定性 Verdict",
             "available=false",
             "不得声称已直接读取图片",
+            "只能解释 chart_context.annual_financial_trend.observations",
+            "股份变化",
+            "当前/TTM 比率",
+            "图中不存在的指标",
+            "显著",
+            "大幅",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, prompt)
@@ -2487,6 +2542,7 @@ class ReportContractTests(unittest.TestCase):
         ):
             with self.subTest(removed_phrase=phrase):
                 self.assertNotIn(phrase, prompt)
+        self.assertNotIn("ttm_scale", prompt)
 
     def test_report_prompt_contains_valid_nine_field_json_example(self):
         from stockcrewai.crews.report.crew import ReportCrew, parse_report_draft

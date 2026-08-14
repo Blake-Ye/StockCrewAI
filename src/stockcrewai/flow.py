@@ -513,6 +513,7 @@ class ResearchFlowState(BaseModel):
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
     ttm: dict[str, Any] = Field(default_factory=dict)
+    annual_financial_history: dict[str, Any] = Field(default_factory=dict)
     analysis: list[dict[str, Any]] = Field(default_factory=list)
     analysis_attempts: int = 0
     analysis_diagnostics: dict[str, Any] = Field(default_factory=dict)
@@ -1417,6 +1418,16 @@ class ResearchFlow(Flow[ResearchFlowState]):
         # 估值节点只从这里读取已验证 TTM 指标；不允许再从原始
         # diluted EPS 或九个月自由现金流字段猜测口径。
         pipeline_state["ttm"] = ttm_output
+        annual_financial_history = _json_safe(
+            getattr(edgar_result, "annual_financial_history", {})
+        )
+        self.state.annual_financial_history = (
+            dict(annual_financial_history)
+            if isinstance(annual_financial_history, Mapping)
+            else {}
+        )
+        if isinstance(annual_financial_history, Mapping) and annual_financial_history:
+            pipeline_state["annual_financial_history"] = dict(annual_financial_history)
 
         validation_output = (
             validation_result.model_dump(mode="json")
@@ -1856,6 +1867,61 @@ class ResearchFlow(Flow[ResearchFlowState]):
             if isinstance(item, str) and item
         }
 
+        current_valuation_kwargs: dict[str, Any] = {}
+        valuation_calculations = valuation.get("calculations", [])
+        if isinstance(valuation_calculations, list | tuple):
+            pe_calculation = next(
+                (
+                    item
+                    for item in valuation_calculations
+                    if isinstance(item, Mapping)
+                    and item.get("formula_id") == "pe_ratio"
+                    and item.get("status") == "available"
+                    and item.get("validation_status") == "valid"
+                ),
+                None,
+            )
+            if pe_calculation is not None:
+                current_pe_ratio = pe_calculation.get("raw_result")
+                if current_pe_ratio in (None, ""):
+                    current_pe_ratio = pe_calculation.get("display_result")
+                current_price_evidence_id = (
+                    pe_calculation.get("market_price_evidence_id")
+                    or valuation.get("market_price_evidence_id")
+                    or market_price_payload.get("market_price_evidence_id")
+                    or derived_market_price_evidence_id
+                )
+                current_input_ids = pe_calculation.get("input_evidence_ids", [])
+                if isinstance(current_input_ids, str):
+                    current_input_ids = [current_input_ids]
+                if not isinstance(current_input_ids, Sequence) or isinstance(
+                    current_input_ids, (str, bytes, bytearray)
+                ):
+                    current_input_ids = []
+                current_financial_evidence_ids = [
+                    evidence_id
+                    for evidence_id in current_input_ids
+                    if evidence_id != current_price_evidence_id
+                ]
+                raw_inputs = pe_calculation.get("raw_inputs", {})
+                current_ttm_eps = (
+                    raw_inputs.get("diluted_eps")
+                    if isinstance(raw_inputs, Mapping)
+                    else None
+                )
+                current_valuation_kwargs = {
+                    "current_pe_ratio": current_pe_ratio,
+                    "current_price": market_price_kwargs.get("market_price")
+                    or pe_calculation.get("market_price")
+                    or valuation.get("market_price"),
+                    "current_price_date": market_price_kwargs.get("price_timestamp")
+                    or pe_calculation.get("price_timestamp")
+                    or valuation.get("price_timestamp"),
+                    "current_price_evidence_id": current_price_evidence_id,
+                    "current_ttm_eps": current_ttm_eps,
+                    "current_financial_evidence_ids": current_financial_evidence_ids,
+                }
+
         if self._historical_valuation_tool is None:
             self._historical_valuation_tool = HistoricalValuationTool()
         historical_kwargs = {
@@ -1870,6 +1936,8 @@ class ResearchFlow(Flow[ResearchFlowState]):
             ).date().isoformat()
         except (KeyError, TypeError, ValueError):
             pass
+        if len(historical_prices) >= 60 and self._historical_financial_snapshots:
+            historical_kwargs.update(current_valuation_kwargs)
         historical_result = self._historical_valuation_tool.run(**historical_kwargs)
         historical_valuation = _with_validation_status(
             historical_result,
@@ -2645,6 +2713,10 @@ class ResearchFlow(Flow[ResearchFlowState]):
             if isinstance(self.state.ttm, Mapping)
             else [],
         }
+        if self.state.annual_financial_history:
+            source_metadata["annual_financial_history"] = _json_safe(
+                self.state.annual_financial_history
+            )
         raw_ttm_inputs = getattr(self._edgar_result, "ttm_inputs", {})
         if isinstance(raw_ttm_inputs, Mapping):
             for by_role in raw_ttm_inputs.values():
@@ -2752,6 +2824,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             historical_valuation=self.state.historical_valuation,
             reverse_dcf=self.state.reverse_dcf,
             ttm=self.state.ttm,
+            annual_financial_history=self.state.annual_financial_history,
             source_metadata=source_metadata,
             policy_context=self.state.policy_context,
         )

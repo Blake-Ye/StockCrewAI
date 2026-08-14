@@ -109,22 +109,150 @@ class HistoricalValuationToolTests(unittest.TestCase):
             as_of="2026-08-31",
             historical_prices=self._prices(),
             financial_snapshots=self._ttm_snapshots(),
+            current_pe_ratio="100",
+            current_price_date="2026-08-31",
+            current_price_evidence_id="ev_current_price",
+            current_financial_evidence_ids=["ev_current_eps"],
         )
 
         self.assertEqual(result.status, "ok")
         self.assertEqual(result.calculation_id, "calc_historical_pe")
-        self.assertEqual(result.current_value, "60")
+        self.assertEqual(result.current_value, "100")
         self.assertEqual(result.five_year_median, "30.5")
         self.assertEqual(result.percentile_25, "15.75")
         self.assertEqual(result.percentile_75, "45.25")
         self.assertEqual(result.current_percentile, "100")
         self.assertEqual(result.history_count, 60)
+        self.assertIn("2026-08-31", result.selected_dates)
         self.assertIn("2024-02-29", result.selected_dates)
         self.assertNotIn("2024-02-15", result.selected_dates)
         self.assertEqual(
             Decimal(result.current_value) / Decimal(result.five_year_median),
-            Decimal("1.967213114754098360655737705"),
+            Decimal("3.278688524590163934426229508"),
         )
+
+    def test_mid_month_excludes_current_month_and_compares_explicit_realtime_pe(self):
+        from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
+
+        historical_prices = []
+        financial_snapshots = []
+        year, month = 2021, 8
+        for index in range(60):
+            last_day = monthrange(year, month)[1]
+            point_date = date(year, month, last_day).isoformat()
+            historical_prices.append(
+                {
+                    "date": point_date,
+                    "price": str(index + 1),
+                    "evidence_id": f"ev_complete_price_{index}",
+                }
+            )
+            financial_snapshots.append(
+                {
+                    "filed_at": point_date,
+                    "period_end": point_date,
+                    "period_basis": "TTM",
+                    "ttm_eps": "1",
+                    "financial_evidence_ids": [
+                        f"ev_complete_eps_fy_{index}",
+                        f"ev_complete_eps_current_{index}",
+                        f"ev_complete_eps_prior_{index}",
+                    ],
+                }
+            )
+            month += 1
+            if month == 13:
+                year += 1
+                month = 1
+        historical_prices.append(
+            {
+                "date": "2026-08-01",
+                "price": "999",
+                "evidence_id": "ev_incomplete_current_month",
+            }
+        )
+
+        result = HistoricalValuationTool().run(
+            ticker="AAPL",
+            as_of="2026-08-12",
+            historical_prices=historical_prices,
+            financial_snapshots=financial_snapshots,
+            current_price="200",
+            current_price_date="2026-08-12T15:30:00Z",
+            current_price_evidence_id="ev_current_price",
+            current_ttm_eps="10",
+            current_financial_evidence_ids=["ev_current_eps"],
+            current_pe_ratio="100",
+        )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.history_count, 60)
+        self.assertEqual(len(result.series), 60)
+        self.assertEqual(result.current_date, "2026-08-12")
+        self.assertEqual(result.current_value, "100")
+        self.assertEqual(result.series[-1]["date"], "2026-07-31")
+        self.assertNotIn("2026-08", {point["date"][:7] for point in result.series})
+        self.assertEqual(result.current_percentile, "100")
+        self.assertIn("ev_current_price", result.input_evidence_ids)
+        self.assertIn("ev_current_eps", result.input_evidence_ids)
+
+    def test_complete_month_start_index_is_normalized_before_snapshot_matching(self):
+        from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
+
+        historical_prices = [
+            {
+                "date": "2021-08-31",
+                "price": "1",
+                "evidence_id": "ev_price_2021_08",
+            },
+            *[
+                {
+                    **point,
+                    "date": "2026-07-01"
+                    if point["date"].startswith("2026-07")
+                    else point["date"],
+                }
+                for point in self._prices()
+                if not point["date"].startswith("2026-08")
+            ],
+            {
+                "date": "2026-08-01",
+                "price": "999",
+                "evidence_id": "ev_incomplete_august",
+            },
+        ]
+        financial_snapshots = [
+            {
+                "filed_at": "2026-07-15"
+                if point["date"] == "2026-07-01"
+                else point["date"],
+                "period_end": point["date"],
+                "period_basis": "TTM",
+                "ttm_eps": "2" if point["date"] == "2026-07-01" else "1",
+                "financial_evidence_ids": [f"ev_eps_{point['evidence_id']}"],
+            }
+            for point in historical_prices
+            if point["date"] != "2026-08-01"
+        ]
+
+        result = HistoricalValuationTool().run(
+            ticker="AAPL",
+            as_of="2026-08-12",
+            historical_prices=historical_prices,
+            financial_snapshots=financial_snapshots,
+            current_pe_ratio="100",
+            current_price_date="2026-08-12",
+            current_price_evidence_id="ev_current_price",
+            current_financial_evidence_ids=["ev_current_eps"],
+        )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.series[-1]["date"], "2026-07-31")
+        self.assertEqual(result.series[-1]["ttm_eps"], "2")
+        self.assertEqual(result.selected_dates[-1], "2026-07-31")
+        self.assertNotIn("2026-08", {point["date"][:7] for point in result.series})
+        self.assertIn("ev_price_59", result.input_evidence_ids)
+        self.assertNotIn("ev_incomplete_august", result.input_evidence_ids)
 
     def test_success_result_exposes_auditable_series_and_current_date(self):
         from stockcrewai.tools.historical_valuation_tool import HistoricalValuationTool
