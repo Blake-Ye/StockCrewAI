@@ -86,7 +86,7 @@ uv run --no-sync pytest -q
 | `RequestParserCrew` | `RequestParserAgent` | 解析公司候选、ticker、关注方向、语言和投资期限；不确认 CIK、不查网、不生成财务数字。 |
 | `AnalysisCrew` | `FinancialQualityAgent` | 解释已验证的财务 Evidence/Calculation，生成带来源 ID 的财务 Claim。 |
 | `AnalysisCrew` | `RiskAnalysisAgent` | 只解释已验证的 SEC filing 风险文本，生成带 Evidence ID 的风险 Claim。 |
-| `ReportCrew` | `ReportWriterAgent` | 组织无数字叙述草稿；最终数字、状态、来源和 Verdict 由 Python Renderer 注入。 |
+| `ReportCrew` | `ReportWriterAgent` | 组织无数字叙述草稿；最终数字、状态、来源和 Verdict 由 Python Renderer 注入。只有 Verdict 已就绪且报告守卫重试耗尽时，才允许改用不含动态事实的确定性安全草稿。 |
 
 估值、验证、Gate、Verdict 和报告数字不交给 LLM 决定。Flow 通过 `ResearchFlowState` 传递跨阶段状态，Crew 不直接修改下游 Crew 的输入。
 
@@ -150,7 +150,7 @@ ADR、SPAC 等非 `standard_operating` 证券先分类，当前不套用普通�
 | 代码/运行时 | `runtime`、`result_not_mapping` 或未满足内部契约的 Python 异常。 | 正常的 `not_applicable` 或外部服务限流。 |
 | Profile/门禁 | `profile_classification_partial`、`unsupported_category_sic`、`unsupported_security` 或 Gate 阻断。 | 认为所有指标对所有证券都必须存在，或把类别不支持写成指标 `missing`。 |
 
-外部服务失败保持为 typed error；离线测试使用注入的失败 runner，不触网。没有 fallback、静默降级、旧值回填或“先生成再警告”的路径。
+外部失败不会被零值、旧值或虚构数据掩盖。Yahoo 工具允许在同一数据源内执行有界重试和行情端点切换；只有 Verdict 已就绪且 Report Guardrail 重试耗尽时，报告阶段才允许使用不含动态事实的确定性安全草稿，并记录 `draft_source=deterministic_safe_draft` 与 `reason_code=report_guardrail_retries_exhausted`。其他 Provider、Schema、Renderer 或最终验证错误均 fail closed，返回 typed error 而不生成正式报告。
 
 ## 测试与真实性边界
 
