@@ -2,6 +2,7 @@
 name = "stockcrewai"
 version = "0.1.0"
 description = "A U.S. equity investment-research agent prototype built with CrewAI Flow, SEC EDGAR, and deterministic validation."
+license = "MIT"
 authors = [{ name = "Ziqing Ye", email = "blakevanderboom7@gmail.com" }]
 keywords = ["crewai", "ai-agent", "sec-edgar", "investment-research"]
 requires-python = ">=3.10,<3.14"
