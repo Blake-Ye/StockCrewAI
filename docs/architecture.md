@@ -18,7 +18,7 @@ src/stockcrewai/
 ├── tools/                   # EDGAR、行情、计算、验证和估值工具
 ├── services/                # 公司解析、证据存储、运行指标
 ├── pipelines/               # 证据、Profile、指标、估值、分析流水线
-├── profiles/                # 银行、REIT、保险等 Profile 适配规则
+├── profiles/                # standard_operating Profile 与特殊类别分类/阻断规则
 ├── validators/              # Analysis Gate、Claim Gate
 ├── reporting/               # 报告上下文、确定性 Renderer、图表和最终验证
 └── models/                  # Request、Evidence、Policy、Profile 等共享模型

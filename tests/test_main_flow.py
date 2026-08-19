@@ -1049,7 +1049,7 @@ class MainFlowExecutionTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["analysis"][0]["category"], "financial_quality")
         self.assertEqual(result["verdict"], {"status": "ready"})
-        self.assertIn("## 执行摘要", result["report"])
+        self.assertIn("## 1. 一页结论", result["report"])
         self.assertIn("财务质量稳定。", result["report"])
         self.assertEqual(analysis_crew.kickoff_calls, 1)
         self.assertEqual(report_crew.kickoff_calls, 1)

@@ -97,170 +97,6 @@ def _calculation(
                 "fcf_yield": Applicability.OPTIONAL,
             },
         ),
-        (
-            IssuerProfile.BANK,
-            (
-                "bank_roa",
-                "bank_roe",
-                "net_interest_margin",
-                "efficiency_ratio",
-                "cet1_ratio",
-                "loan_to_deposit",
-                "nonperforming_loan_ratio",
-                "provision_coverage",
-                "price_to_book",
-                "pe_ratio",
-                "fcf_yield",
-            ),
-            {
-                "bank_roa": Applicability.REQUIRED,
-                "bank_roe": Applicability.REQUIRED,
-                "net_interest_margin": Applicability.REQUIRED,
-                "efficiency_ratio": Applicability.REQUIRED,
-                "cet1_ratio": Applicability.OPTIONAL,
-                "loan_to_deposit": Applicability.OPTIONAL,
-                "nonperforming_loan_ratio": Applicability.OPTIONAL,
-                "provision_coverage": Applicability.OPTIONAL,
-                "price_to_book": Applicability.OPTIONAL,
-                "pe_ratio": Applicability.OPTIONAL,
-                "fcf_yield": Applicability.NOT_APPLICABLE,
-            },
-        ),
-        (
-            IssuerProfile.INSURANCE,
-            (
-                "loss_ratio",
-                "expense_ratio",
-                "combined_ratio",
-                "insurance_roe",
-                "book_value_per_share",
-                "investment_income",
-                "solvency_ratio",
-                "price_to_book",
-                "pe_ratio",
-                "fcf_yield",
-            ),
-            {
-                "loss_ratio": Applicability.REQUIRED,
-                "expense_ratio": Applicability.REQUIRED,
-                "combined_ratio": Applicability.REQUIRED,
-                "insurance_roe": Applicability.REQUIRED,
-                "book_value_per_share": Applicability.OPTIONAL,
-                "investment_income": Applicability.OPTIONAL,
-                "solvency_ratio": Applicability.OPTIONAL,
-                "price_to_book": Applicability.OPTIONAL,
-                "pe_ratio": Applicability.OPTIONAL,
-                "fcf_yield": Applicability.NOT_APPLICABLE,
-            },
-        ),
-        (
-            IssuerProfile.REIT,
-            (
-                "ffo_total",
-                "ffo_per_share",
-                "affo",
-                "same_store_noi",
-                "occupancy",
-                "net_debt_to_ebitda",
-                "dividend_coverage",
-                "price_to_ffo",
-                "pe",
-                "fcf_yield",
-            ),
-            {
-                "ffo_total": Applicability.REQUIRED,
-                "ffo_per_share": Applicability.REQUIRED,
-                "affo": Applicability.OPTIONAL,
-                "same_store_noi": Applicability.OPTIONAL,
-                "occupancy": Applicability.OPTIONAL,
-                "net_debt_to_ebitda": Applicability.OPTIONAL,
-                "dividend_coverage": Applicability.OPTIONAL,
-                "price_to_ffo": Applicability.OPTIONAL,
-                "pe": Applicability.NOT_APPLICABLE,
-                "fcf_yield": Applicability.NOT_APPLICABLE,
-            },
-        ),
-        (
-            IssuerProfile.PRE_REVENUE,
-            ("revenue_growth", "pe_ratio", "cash_burn", "runway"),
-            {
-                "revenue_growth": Applicability.NOT_APPLICABLE,
-                "pe_ratio": Applicability.NOT_APPLICABLE,
-                "cash_burn": Applicability.REQUIRED,
-                "runway": Applicability.REQUIRED,
-            },
-        ),
-        (
-            IssuerProfile.UTILITY,
-            (
-                "utility_operating_margin",
-                "rate_base",
-                "capex_intensity",
-                "interest_coverage",
-                "utility_roe",
-                "price_to_book",
-                "pe_ratio",
-                "fcf_yield",
-            ),
-            {
-                "utility_operating_margin": Applicability.REQUIRED,
-                "rate_base": Applicability.OPTIONAL,
-                "capex_intensity": Applicability.OPTIONAL,
-                "interest_coverage": Applicability.OPTIONAL,
-                "utility_roe": Applicability.OPTIONAL,
-                "price_to_book": Applicability.OPTIONAL,
-                "pe_ratio": Applicability.OPTIONAL,
-                "fcf_yield": Applicability.OPTIONAL,
-            },
-        ),
-        (
-            IssuerProfile.COMMODITY_PRODUCER,
-            (
-                "realized_price",
-                "production",
-                "realized_price_change",
-                "production_change",
-                "proved_reserves",
-                "reserve_life_years",
-                "impairment_charge",
-                "impairment_to_commodity_revenue",
-                "pe_ratio",
-            ),
-            {
-                "realized_price": Applicability.REQUIRED,
-                "production": Applicability.REQUIRED,
-                "realized_price_change": Applicability.OPTIONAL,
-                "production_change": Applicability.OPTIONAL,
-                "proved_reserves": Applicability.OPTIONAL,
-                "reserve_life_years": Applicability.OPTIONAL,
-                "impairment_charge": Applicability.OPTIONAL,
-                "impairment_to_commodity_revenue": Applicability.OPTIONAL,
-                "pe_ratio": Applicability.OPTIONAL,
-            },
-        ),
-        (
-            IssuerProfile.HOLDING_COMPANY,
-            (
-                "attributable_holdings_value",
-                "holding_company_nav",
-                "holding_company_market_cap",
-                "holding_company_nav_discount",
-                "pe_ratio",
-                "fcf_yield",
-                "historical_valuation",
-                "reverse_dcf",
-            ),
-            {
-                "attributable_holdings_value": Applicability.REQUIRED,
-                "holding_company_nav": Applicability.REQUIRED,
-                "holding_company_market_cap": Applicability.OPTIONAL,
-                "holding_company_nav_discount": Applicability.OPTIONAL,
-                "pe_ratio": Applicability.NOT_APPLICABLE,
-                "fcf_yield": Applicability.NOT_APPLICABLE,
-                "historical_valuation": Applicability.NOT_APPLICABLE,
-                "reverse_dcf": Applicability.NOT_APPLICABLE,
-            },
-        ),
     ],
 )
 def test_policy_matrix_is_profile_aware(
@@ -297,10 +133,10 @@ def test_every_policy_is_complete_versioned_aligned_and_unique() -> None:
 
 
 def test_registry_does_not_accept_or_infer_a_policy_version() -> None:
-    first = resolve_metric_policies(_profile(IssuerProfile.BANK))
+    first = resolve_metric_policies(_profile(IssuerProfile.STANDARD_OPERATING))
     second = resolve_metric_policies(
         ProfileResult(
-            issuer_profile=IssuerProfile.BANK,
+            issuer_profile=IssuerProfile.STANDARD_OPERATING,
             security_profile=SecurityProfile.COMMON_STOCK,
             reporting_profile=ReportingProfile.DOMESTIC_US_GAAP,
             coverage_level=CoverageLevel.FULL,
@@ -314,130 +150,20 @@ def test_registry_does_not_accept_or_infer_a_policy_version() -> None:
 
 
 @pytest.mark.parametrize(
-    ("security", "metric_id", "reason_code", "applicability"),
+    "issuer",
     [
-        (
-            SecurityProfile.MULTI_CLASS,
-            "market_cap",
-            "share_class_unreconciled",
-            Applicability.OPTIONAL,
-        ),
-        (
-            SecurityProfile.RECENT_LISTING,
-            "historical_valuation",
-            "insufficient_history",
-            Applicability.NOT_APPLICABLE,
-        ),
-    ],
-)
-def test_security_profile_adds_deterministic_policy(
-    security: SecurityProfile,
-    metric_id: str,
-    reason_code: str,
-    applicability: Applicability,
-) -> None:
-    profile = _profile(IssuerProfile.STANDARD_OPERATING, security=security)
-
-    policies = resolve_metric_policies(profile)
-    policy = next(item for item in policies if item.metric_id == metric_id)
-
-    assert policy.applicability is applicability
-    assert policy.reason_code == reason_code
-    assert policy.security_profile is security
-    assert policy.gate_effect.value == "non_blocking"
-
-
-def test_unsupported_fund_security_does_not_publish_stock_metrics() -> None:
-    profile = _profile(
-        IssuerProfile.STANDARD_OPERATING,
-        security=SecurityProfile.UNSUPPORTED_FUND_SECURITY,
-        coverage=CoverageLevel.UNSUPPORTED_SECURITY,
-    )
-
-    assert resolve_metric_policies(profile) == ()
-
-
-@pytest.mark.parametrize(
-    ("issuer", "security", "reporting"),
-    [
-        (
-            IssuerProfile.UNKNOWN,
-            SecurityProfile.COMMON_STOCK,
-            ReportingProfile.DOMESTIC_US_GAAP,
-        ),
-        (
-            IssuerProfile.STANDARD_OPERATING,
-            SecurityProfile.UNKNOWN,
-            ReportingProfile.DOMESTIC_US_GAAP,
-        ),
-        (
-            IssuerProfile.STANDARD_OPERATING,
-            SecurityProfile.COMMON_STOCK,
-            ReportingProfile.UNKNOWN,
-        ),
-    ],
-)
-def test_unknown_profile_dimension_does_not_publish_standard_policy(
-    issuer: IssuerProfile,
-    security: SecurityProfile,
-    reporting: ReportingProfile,
-) -> None:
-    profile = _profile(
-        issuer,
-        security=security,
-        reporting=reporting,
-        coverage=CoverageLevel.PARTIAL,
-    )
-
-    assert resolve_metric_policies(profile) == ()
-
-
-@pytest.mark.parametrize(
-    "coverage", [CoverageLevel.EVIDENCE_ONLY, CoverageLevel.UNSUPPORTED_SECURITY]
-)
-def test_non_publishable_coverage_does_not_append_special_policy(
-    coverage: CoverageLevel,
-) -> None:
-    profile = _profile(
-        IssuerProfile.STANDARD_OPERATING,
-        security=SecurityProfile.MULTI_CLASS,
-        coverage=coverage,
-    )
-
-    assert resolve_metric_policies(profile) == ()
-
-
-def test_adr_does_not_publish_standard_policy() -> None:
-    profile = _profile(IssuerProfile.STANDARD_OPERATING, security=SecurityProfile.ADR)
-
-    assert resolve_metric_policies(profile) == ()
-
-
-def test_unknown_or_evidence_only_profile_does_not_get_standard_policy() -> None:
-    unknown = _profile(
-        IssuerProfile.UNKNOWN,
-        security=SecurityProfile.UNKNOWN,
-        reporting=ReportingProfile.UNKNOWN,
-        coverage=CoverageLevel.EVIDENCE_ONLY,
-    )
-
-    assert resolve_metric_policies(unknown) == ()
-
-
-def test_foreign_unknown_security_does_not_get_adr_overlay() -> None:
-    profile = _profile(
         IssuerProfile.BANK,
-        security=SecurityProfile.UNKNOWN,
-        reporting=ReportingProfile.FOREIGN_PRIVATE_ISSUER_IFRS,
-        coverage=CoverageLevel.PARTIAL,
-    )
-
-    policies = resolve_metric_policies(profile)
-
-    assert all(
-        policy.metric_id not in {"adr_ratio", "adr_equivalent_shares", "adr_market_cap"}
-        for policy in policies
-    )
+        IssuerProfile.INSURANCE,
+        IssuerProfile.REIT,
+        IssuerProfile.UTILITY,
+        IssuerProfile.COMMODITY_PRODUCER,
+        IssuerProfile.PRE_REVENUE,
+        IssuerProfile.HOLDING_COMPANY,
+        IssuerProfile.UNKNOWN,
+    ],
+)
+def test_non_standard_issuer_does_not_publish_policies(issuer: IssuerProfile) -> None:
+    assert resolve_metric_policies(_profile(issuer)) == ()
 
 
 def test_valid_calculation_is_the_only_minimal_available_provenance() -> None:
@@ -470,47 +196,6 @@ def test_valid_calculation_requires_valid_input_evidence(
     assert decision.evidence_ids == []
     assert decision.calculation_ids == []
     assert decision.blocking is True
-
-
-def test_multiclass_market_cap_missing_is_unavailable_non_blocking() -> None:
-    policy = next(
-        policy
-        for policy in resolve_metric_policies(
-            _profile(
-                IssuerProfile.STANDARD_OPERATING,
-                security=SecurityProfile.MULTI_CLASS,
-            )
-        )
-        if policy.metric_id == "market_cap"
-    )
-
-    decision = evaluate_policy_decisions([policy], [_evidence()], [])[0]
-
-    assert decision.status == "unavailable"
-    assert decision.reason_code == "share_class_unreconciled"
-    assert decision.blocking is False
-
-
-def test_multiclass_market_cap_with_valid_inputs_is_available() -> None:
-    policy = next(
-        policy
-        for policy in resolve_metric_policies(
-            _profile(
-                IssuerProfile.STANDARD_OPERATING,
-                security=SecurityProfile.MULTI_CLASS,
-            )
-        )
-        if policy.metric_id == "market_cap"
-    )
-    calculation = _calculation("calc-market-cap", policy.formula_id)
-
-    decision = evaluate_policy_decisions([policy], [_evidence()], [calculation])[0]
-
-    assert decision.status == "available"
-    assert decision.reason_code == "validated_calculation"
-    assert decision.evidence_ids == ["ev_input"]
-    assert decision.calculation_ids == ["calc-market-cap"]
-    assert decision.blocking is False
 
 
 def test_isolated_evidence_cannot_become_an_available_calculation() -> None:

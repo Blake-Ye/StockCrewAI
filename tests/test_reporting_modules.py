@@ -1487,8 +1487,8 @@ def test_markdown_renderer_keeps_sections_terms_visuals_and_fixed_hash() -> None
         "## 0. 封面与研究元数据",
         "## 1. 一页结论",
         "## 2. 公司与研究范围",
-        "## 3. 历史经营与财务质量",
-        "## 4. 最新经营状态",
+        "## 3. 最新经营状态",
+        "## 4. 历史经营与财务质量",
         "## 5. 估值",
         "## 6. 主要风险与监控条件",
         "## 7. 综合判断与重新评估条件",
@@ -1516,8 +1516,8 @@ def test_strict_lite_annual_financial_table_and_section_order() -> None:
         "## 0. 封面与研究元数据",
         "## 1. 一页结论",
         "## 2. 公司与研究范围",
-        "## 3. 历史经营与财务质量",
-        "## 4. 最新经营状态",
+        "## 3. 最新经营状态",
+        "## 4. 历史经营与财务质量",
         "## 5. 估值",
         "## 6. 主要风险与监控条件",
         "## 7. 综合判断与重新评估条件",
@@ -1527,11 +1527,11 @@ def test_strict_lite_annual_financial_table_and_section_order() -> None:
     assert [report.index(value) for value in headings] == sorted(
         report.index(value) for value in headings
     )
-    chapter_three = _strict_lite_sections(report)["3"]
+    chapter_four = _strict_lite_sections(report)["4"]
     assert "| 公司名称 |" in report
     assert "| 指标 | FY2021 | FY2022 | FY2023 | FY2024 | FY2025 |" in report
     for label in ("收入 CAGR", "净利润 CAGR", "FCF CAGR"):
-        assert chapter_three.count(label) == 1
+        assert chapter_four.count(label) == 1
     assert "TTM 数据与完整财年数据期间不同" in report
     assert "status=ready" not in report.split("## 8. 数据来源", 1)[0]
 
@@ -1548,8 +1548,8 @@ def test_strict_lite_has_only_numbered_top_level_sections() -> None:
         "## 0. 封面与研究元数据",
         "## 1. 一页结论",
         "## 2. 公司与研究范围",
-        "## 3. 历史经营与财务质量",
-        "## 4. 最新经营状态",
+        "## 3. 最新经营状态",
+        "## 4. 历史经营与财务质量",
         "## 5. 估值",
         "## 6. 主要风险与监控条件",
         "## 7. 综合判断与重新评估条件",
@@ -1577,8 +1577,8 @@ def test_strict_lite_omits_missing_metadata_and_hides_empty_annual_rows() -> Non
     metadata_section = report.split("## 0. 封面与研究元数据", 1)[1].split(
         "## 1. 一页结论", 1
     )[0]
-    annual_section = report.split("## 3. 历史经营与财务质量", 1)[1].split(
-        "## 4. 最新经营状态", 1
+    annual_section = report.split("## 4. 历史经营与财务质量", 1)[1].split(
+        "## 5. 估值", 1
     )[0]
 
     assert "| 公司名称 | Apple Inc. |" in metadata_section
@@ -1597,11 +1597,11 @@ def test_strict_lite_separates_market_timestamp_and_period_bases() -> None:
         build_report_context(**_reader_focused_inputs()),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    annual_section = report.split("## 3. 历史经营与财务质量", 1)[1].split(
-        "## 4. 最新经营状态", 1
-    )[0]
-    latest_section = report.split("## 4. 最新经营状态", 1)[1].split(
+    annual_section = report.split("## 4. 历史经营与财务质量", 1)[1].split(
         "## 5. 估值", 1
+    )[0]
+    latest_section = report.split("## 3. 最新经营状态", 1)[1].split(
+        "## 4. 历史经营与财务质量", 1
     )[0]
     valuation_section = report.split("## 5. 估值", 1)[1].split(
         "## 6. 主要风险与监控条件", 1
@@ -1635,17 +1635,17 @@ def test_strict_lite_content_stays_in_explicit_chapter_boundaries() -> None:
         assert forbidden not in chapter_two
 
     chapter_three = sections["3"]
-    assert "五年财务表" in chapter_three
-    assert "完整财年起止" in chapter_three
-    assert "图 2" in chapter_three
-    for forbidden in ("YTD", "TTM", "图 1"):
-        assert forbidden not in chapter_three
+    assert "财年年初至今累计（YTD）" in chapter_three
+    assert "TTM 财务规模（已验证）" in chapter_three
+    assert "图 1" in chapter_three
+    assert "图 2" not in chapter_three
 
     chapter_four = sections["4"]
-    assert "财年年初至今累计（YTD）" in chapter_four
-    assert "TTM 财务规模（已验证）" in chapter_four
-    assert "图 1" in chapter_four
-    assert "图 2" not in chapter_four
+    assert "五年财务表" in chapter_four
+    assert "完整财年起止" in chapter_four
+    assert "图 2" in chapter_four
+    for forbidden in ("YTD", "TTM", "图 1"):
+        assert forbidden not in chapter_four
 
     chapter_five = sections["5"]
     assert "图 3" in chapter_five
@@ -1656,27 +1656,6 @@ def test_strict_lite_content_stays_in_explicit_chapter_boundaries() -> None:
     assert chapter_seven.count("### 重新评估条件") == 1
     assert report.count("### 重新评估条件") == 1
     assert "**图表推导：**" not in report
-
-
-def test_non_strict_lite_report_keeps_legacy_sections() -> None:
-    inputs = _reader_focused_inputs()
-    inputs["policy_context"] = {"profile": {"issuer_profile": "bank"}}
-
-    report = render_validated_report(
-        build_report_context(**inputs),
-        parse_report_draft(VALID_REPORT_DRAFT),
-    )
-
-    assert "## 执行摘要" in report
-    assert "## 公司质量" in report
-    assert "## 财务趋势" in report
-    assert "## 当前估值" in report
-    assert "## 历史估值" in report
-    assert "## 反向 DCF" in report
-    assert "## 主要风险" in report
-    assert "## 数据来源与方法" in report
-    assert "## 非投资建议声明" in report
-    assert "## 0. 封面与研究元数据" not in report
 
 
 def test_markdown_renderer_puts_company_identity_in_title() -> None:
@@ -1752,7 +1731,7 @@ def test_financial_trend_uses_annual_trend_and_keeps_ttm_fcf_list() -> None:
         build_report_context(**inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    financial_trend = _strict_lite_sections(report)["4"]
+    financial_trend = _strict_lite_sections(report)["3"]
 
     assert "TTM 财务规模（已验证）" in financial_trend
     assert "自由现金流：220.00 亿美元" in financial_trend
@@ -1797,7 +1776,7 @@ def test_renderer_formats_ttm_and_reverse_dcf_amounts_using_record_units(
         parse_report_draft(VALID_REPORT_DRAFT),
     )
     sections = _strict_lite_sections(report)
-    trend = sections["4"]
+    trend = sections["3"]
     reverse_section = sections["5"]
 
     assert "自由现金流：220.00 亿美元" in trend
@@ -1828,7 +1807,7 @@ def test_share_dilution_body_matches_visual_adjustment_basis_boundary() -> None:
         build_report_context(**split_inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    trend = _strict_lite_sections(split_report)["4"]
+    trend = _strict_lite_sections(split_report)["3"]
     assert "股份稀释率（拆分调整）：-2.00%" in trend
 
     unsupported_inputs = deepcopy(split_inputs)
@@ -1850,7 +1829,7 @@ def test_share_dilution_body_matches_visual_adjustment_basis_boundary() -> None:
         build_report_context(**unsupported_inputs),
         parse_report_draft(VALID_REPORT_DRAFT),
     )
-    unsupported_trend = _strict_lite_sections(unsupported_report)["4"]
+    unsupported_trend = _strict_lite_sections(unsupported_report)["3"]
     assert "股份稀释率" not in unsupported_trend
 
 
@@ -1937,24 +1916,6 @@ def test_execution_summary_explains_verified_valuation_relationships() -> None:
     assert "- **相对自身历史估值：** 偏高" in execution_summary
     assert "- **市场隐含预期：** 低" in execution_summary
     assert "- **研究动作：** 加入观察名单并跟踪关键指标" in execution_summary
-
-
-def test_spac_execution_summary_uses_applicability_labels() -> None:
-    inputs = _reader_focused_inputs()
-    inputs["policy_context"] = {"profile": {"security_profile": "spac"}}
-
-    report = render_validated_report(
-        build_report_context(**inputs),
-        parse_report_draft(VALID_REPORT_DRAFT),
-    )
-    execution_summary = report.split("## 公司质量", 1)[0]
-
-    assert "- **经营质量：** 数据不足" in execution_summary
-    assert "- **估值适用性：** 不适用" in execution_summary
-    assert "- **市场预期评估：** 不适用" in execution_summary
-    assert "- **研究动作：** 等待补充证据" in execution_summary
-    assert "当前估值" not in execution_summary
-    assert "历史估值" not in execution_summary
 
 
 def test_report_uses_compact_reader_facing_copy_without_duplicate_audit_prose() -> None:
@@ -2297,6 +2258,17 @@ def test_strict_lite_chart_captions_are_standardized_and_complete() -> None:
     assert "投资含义：用于判断经营质量是否值得继续跟踪" in report
     assert "限制与反证：指标为已验证期间的口径比较" in report
     assert "最新可用财务期间" not in report
+
+
+def test_strict_lite_charts_follow_caption_order() -> None:
+    report = render_validated_report(
+        build_report_context(**_reader_focused_inputs()),
+        parse_report_draft(VALID_REPORT_DRAFT),
+    )
+
+    assert report.index("图 1：最新经营质量") < report.index(
+        "图 2：五年核心财务趋势指数"
+    ) < report.index("图 3：五年历史 P/E")
 
 
 def test_rendered_report_validator_allows_advice_only_in_disclaimer() -> None:

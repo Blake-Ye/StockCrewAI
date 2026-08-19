@@ -18,18 +18,14 @@ from stockcrewai.tools.validation_tool import ValidationResult
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "profiles" / "unsupported_security"
-FIXTURE_NAMES = ("etf", "mutual_fund", "closed_end_fund")
 
 
 def _fixture(name: str) -> dict[str, Any]:
     return json.loads((FIXTURE_DIR / f"{name}.json").read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("fixture_name", FIXTURE_NAMES)
-def test_unsupported_security_fixtures_publish_profile_context_and_gate(
-    fixture_name: str,
-) -> None:
-    fixture = _fixture(fixture_name)
+def test_etf_fixture_publishes_unsupported_profile_context_and_gate() -> None:
+    fixture = _fixture("etf")
 
     assert fixture["offline"] is True
     assert fixture["no_network"] is True
@@ -122,43 +118,29 @@ def _unsupported_flow(
     }
 
 
-def test_sic_and_fund_unsupported_profiles_share_scope_gate_output() -> None:
-    events: list[Any] = []
-    fund_flow, _ = _unsupported_flow(_fixture("etf"), progress_callback=events.append)
-
-    bank_edgar = EdgarResult(status="ok", ticker="JPM", sic="6020")
-    bank_context = build_profile_policy_context(
-        source_metadata=pipeline_support.profile_metadata_from_edgar(bank_edgar),
-        facts=bank_edgar.facts,
-        calculations=[],
+def test_inline_fund_security_metadata_is_blocked_by_scope_gate() -> None:
+    fixture = _fixture("etf")
+    source_metadata = dict(fixture["source_metadata"])
+    source_metadata.update(
+        {
+            "security_type": "mutual_fund",
+            "security_class": "mutual_fund",
+        }
     )
-    bank_flow = ResearchFlow(progress_callback=events.append)
-    bank_flow.state.profile = bank_context["profile"]
-    bank_flow.state.policy_context = bank_context
-    bank_flow.state.edgar = {"sic": "6020"}
-    bank_flow._pipeline_state = {
-        "profile": bank_context["profile"],
-        "policy_context": bank_context,
-        "facts": {},
-        "calculations": [],
-    }
 
-    fund_flow.prepare_valuation(fund_flow._pipeline_state)
-    fund_event = events[-1]
-    bank_flow.prepare_valuation(bank_flow._pipeline_state)
-    bank_event = events[-1]
+    profile = classify_profiles(source_metadata)
+    context = build_profile_policy_context(source_metadata=source_metadata)
 
-    assert fund_event.actor == bank_event.actor == "Python：SEC Scope/Profile Gate"
-    assert fund_event.status == bank_event.status == "blocked"
-    assert "unsupported scope" in fund_event.output_summary
-    assert "unsupported scope" in bank_event.output_summary
+    assert profile.security_profile.value == "unsupported_fund_security"
+    assert profile.coverage_level.value == "unsupported_security"
+    assert context["policies"] == []
+    assert context["policy_decisions"] == []
+    assert context["gate"]["status"] == "unsupported"
+    assert context["gate"]["reason_codes"] == ["unsupported_security"]
 
 
-@pytest.mark.parametrize("fixture_name", FIXTURE_NAMES)
-def test_unsupported_flow_skips_ordinary_tools_and_finalizes_blocked(
-    fixture_name: str,
-) -> None:
-    flow, tools = _unsupported_flow(_fixture(fixture_name))
+def test_unsupported_flow_skips_ordinary_tools_and_finalizes_blocked() -> None:
+    flow, tools = _unsupported_flow(_fixture("etf"))
 
     valuation = flow.prepare_valuation(flow._pipeline_state)
     expected_valuation = {
@@ -264,18 +246,3 @@ def test_automatic_unsupported_metadata_uses_sec_metadata_activation(
     assert flow.state.profile["coverage_level"] == "unsupported_security"
     assert flow.state.profile["security_profile"] == "unsupported_fund_security"
     assert flow.state.profile["reporting_profile"] == "investment_company_reporting"
-
-
-def test_direct_unsupported_profile_refreshes_gate_before_route() -> None:
-    fixture = _fixture("etf")
-    flow, _ = _unsupported_flow(fixture)
-    flow._profile_input = fixture["expected_profile"]
-    flow.state.profile = {}
-    flow.state.policy_context = {}
-    flow._pipeline_state["policy_context"] = {}
-    flow._validation_result = Mock(status="valid", validated=True)
-
-    valuation = flow.prepare_valuation(flow._pipeline_state)
-
-    assert flow.route_analysis(valuation) == "analysis_blocked"
-    assert flow.state.policy_context["gate"]["status"] == "unsupported"

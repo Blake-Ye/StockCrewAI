@@ -16,7 +16,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from stockcrewai.profiles.reit import PROFILE_VERSION as REIT_PROFILE_VERSION
 
 
 _REPORT_NARRATIVE_CATEGORIES = (
@@ -71,41 +70,10 @@ _REPORT_QUALITY_METRIC_IDS = frozenset(
         "net_cash",
         "current_ratio",
         "debt_to_equity",
-        "ffo_total",
-        "ffo_per_share",
-        "affo",
-        "net_debt_to_ebitda",
-        "dividend_coverage",
     }
 )
 _REPORT_TREND_METRIC_IDS = frozenset(
     {"revenue_growth", "free_cash_flow", "share_dilution"}
-)
-_REIT_FORMULA_TO_METRIC = {
-    "reit-ffo-reconciliation-v1": "ffo_total",
-    "reit-ffo-per-share-v1": "ffo_per_share",
-    "company-disclosed-affo-reconciliation-v1": "affo",
-    "reit-net-debt-to-ebitda-v1": "net_debt_to_ebitda",
-    "reit-dividend-coverage-v1": "dividend_coverage",
-    "reit-price-to-ffo-v1": "price_to_ffo",
-}
-_PROFILE_ISSUERS = frozenset(
-    {
-        "bank",
-        "insurance",
-        "utility",
-        "commodity_producer",
-        "holding_company",
-        "spac",
-    }
-)
-_FOREIGN_REPORTING_PROFILE = "foreign_private_issuer_ifrs"
-_FOREIGN_ADR_FORMULA_IDS = frozenset(
-    {
-        "foreign-adr-ratio-direct-v1",
-        "foreign-adr-equivalent-shares-v1",
-        "foreign-adr-market-cap-v1",
-    }
 )
 _SUPPORTED_FINANCIAL_PERIOD_BASES = frozenset(
     {"YTD同比", "YTD", "FY同比", "FY", "同比时点"}
@@ -453,10 +421,6 @@ class ReportContext(BaseModel):
     annual_financial_summary: dict[str, Any] = Field(default_factory=dict)
     historical_valuation: dict[str, Any] = Field(default_factory=dict)
     reverse_dcf: dict[str, Any] = Field(default_factory=dict)
-    reit_metrics: dict[str, Any] | None = None
-    profile_metrics: dict[str, Any] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
 
     @field_validator("verdict_status")
     @classmethod
@@ -765,128 +729,6 @@ def _calculation_items(value: Any) -> list[Mapping[str, Any]]:
     return [item for item in value if isinstance(item, Mapping)]
 
 
-def _reit_metric_from_calculation(
-    calculation: Mapping[str, Any],
-    evidence_index: Mapping[str, Mapping[str, Any]],
-) -> ReportMetric | None:
-    """把 S04 的已验证 REIT CalculationRecord 投影成报告指标。"""
-    if calculation.get("validation_status") != "valid":
-        return None
-    formula_id = _text(calculation.get("formula_id"))
-    metric_id = _REIT_FORMULA_TO_METRIC.get(formula_id or "")
-    result = calculation.get("result")
-    if metric_id is None or _text(result) is None:
-        return None
-    evidence_ids = _ids(calculation.get("input_evidence_ids"))
-    period_end = _text(calculation.get("period_end"))
-    if not evidence_ids or period_end is None:
-        return None
-    if any(evidence_id not in evidence_index for evidence_id in evidence_ids):
-        return None
-    display_value = calculation.get("display_result", result)
-    metric = _metric_from_payload(
-        section="current_valuation" if metric_id == "price_to_ffo" else "financial",
-        metric_id=metric_id,
-        display_value=_json_safe_context(display_value),
-        unit=calculation.get("unit"),
-        evidence_ids=evidence_ids,
-        calculation_id=calculation.get("calculation_id"),
-        evidence_index=evidence_index,
-        direct_as_of=(calculation.get("as_of"),),
-    )
-    return metric.model_copy(update={"period_end": period_end}) if metric else None
-
-
-def _foreign_base_metric_from_calculation(
-    calculation: Mapping[str, Any],
-    evidence_index: Mapping[str, Mapping[str, Any]],
-) -> ReportMetric | None:
-    """把 foreign profile 中已验证的基础 CalculationRecord 投影到报告。"""
-    if calculation.get("validation_status") != "valid":
-        return None
-    formula_id = _text(calculation.get("formula_id"))
-    if not formula_id or formula_id in _FOREIGN_ADR_FORMULA_IDS:
-        return None
-    if (
-        calculation.get("result") is None
-        or not _text(calculation.get("calculation_id"))
-        or not _text(calculation.get("source_reference"))
-        or not _text(calculation.get("as_of"))
-    ):
-        return None
-    return _metric_from_payload(
-        section="financial",
-        metric_id=formula_id.removesuffix(":v1"),
-        display_value=calculation.get("result"),
-        unit=calculation.get("unit"),
-        evidence_ids=calculation.get("input_evidence_ids"),
-        calculation_id=calculation.get("calculation_id"),
-        evidence_index=evidence_index,
-        direct_source=calculation.get("source_reference"),
-        direct_as_of=(calculation.get("as_of"),),
-        require_direct_source=True,
-    )
-
-
-def _profile_metric_from_decision(
-    decision: Mapping[str, Any],
-    values: Mapping[str, Any],
-    calculations: Sequence[Mapping[str, Any]],
-    evidence_index: Mapping[str, Mapping[str, Any]],
-) -> ReportMetric | None:
-    """把银行/保险 adapter 的 verified decision 投影成报告指标。"""
-    if decision.get("status") != "available":
-        return None
-    metric_id = _text(decision.get("metric_id"))
-    value = values.get(metric_id) if metric_id else None
-    evidence_ids = _ids(decision.get("evidence_ids"))
-    calculation_ids = _ids(decision.get("calculation_ids"))
-    if not metric_id or value is None:
-        return None
-    if calculation_ids:
-        calculation = next(
-            (
-                item
-                for item in calculations
-                if item.get("calculation_id") == calculation_ids[0]
-            ),
-            None,
-        )
-        if calculation is None or calculation.get("validation_status") != "valid":
-            return None
-        input_evidence_ids = _ids(calculation.get("input_evidence_ids"))
-        if not input_evidence_ids:
-            return None
-        metric = _metric_from_payload(
-            section="financial",
-            metric_id=metric_id,
-            display_value=value,
-            unit=calculation.get("unit"),
-            evidence_ids=input_evidence_ids,
-            calculation_id=calculation.get("calculation_id"),
-            evidence_index=evidence_index,
-            direct_source=calculation.get("source_reference"),
-            direct_as_of=(calculation.get("as_of"), calculation.get("period_end")),
-        )
-        return metric
-    if not evidence_ids:
-        return None
-    source = evidence_index.get(evidence_ids[0], {})
-    return _metric_from_payload(
-        section="financial",
-        metric_id=metric_id,
-        display_value=value,
-        unit=source.get("unit"),
-        evidence_ids=evidence_ids,
-        calculation_id=None,
-        evidence_index=evidence_index,
-        direct_source=source.get("source_reference"),
-        direct_as_of=(source.get("as_of"), source.get("period_end")),
-        require_direct_source=True,
-        provenance_type="direct_evidence",
-    )
-
-
 def _percent_display(value: Any) -> str | None:
     """把反向 DCF 的小数增长率转换成稳定的百分比显示文本。"""
     raw = _text(value)
@@ -1114,39 +956,12 @@ def build_report_context(
     historical_payload = dict(historical_valuation or {})
     reverse_payload = dict(reverse_dcf or {})
     policy_profile = policy_payload.get("profile")
-    profile_issuer = (
-        _text(policy_profile.get("issuer_profile"))
-        if isinstance(policy_profile, Mapping)
-        else None
-    )
-    profile_reporting = (
-        _text(policy_profile.get("reporting_profile"))
-        if isinstance(policy_profile, Mapping)
-        else None
-    )
-    profile_security = (
-        _text(policy_profile.get("security_profile"))
-        if isinstance(policy_profile, Mapping)
-        else None
-    )
-    is_reit_profile = (
-        profile_issuer == "reit"
-    )
-    is_holding_profile = profile_issuer == "holding_company"
-    is_spac_profile = profile_security == "spac"
-    is_financial_profile = (
-        profile_issuer in _PROFILE_ISSUERS
-        or is_spac_profile
-        or profile_reporting == _FOREIGN_REPORTING_PROFILE
-    )
     annual_input = (
         annual_financial_history
         if annual_financial_history is not None
         else source_payload.get("annual_financial_history")
     )
     annual_payload = _verified_annual_financial_history(annual_input)
-    if isinstance(policy_profile, Mapping) and profile_issuer != "standard_operating":
-        annual_payload = {}
     annual_summary = _annual_financial_summary(annual_payload, reverse_payload)
     if annual_payload:
         source_payload["annual_financial_history"] = annual_payload
@@ -1209,66 +1024,33 @@ def build_report_context(
     evidence_index = _evidence_index(source_payload)
     metrics: list[ReportMetric] = []
 
-    if is_reit_profile:
-        for calculation in _calculation_items(policy_payload.get("calculation_records")):
-            metric = _reit_metric_from_calculation(calculation, evidence_index)
-            if metric is not None:
-                metrics.append(metric)
-    elif is_financial_profile:
-        profile_values = policy_payload.get("values", {})
-        profile_values = profile_values if isinstance(profile_values, Mapping) else {}
-        profile_calculations = _calculation_items(
-            policy_payload.get("calculation_records")
+    for calculation in _calculation_items(calculation_payload):
+        if (
+            calculation.get("status") != "available"
+            or calculation.get("validation_status") != "valid"
+        ):
+            continue
+        metric = _metric_from_payload(
+            section="financial",
+            metric_id=calculation.get("formula_id"),
+            display_value=calculation.get("display_result"),
+            unit=calculation.get("unit"),
+            evidence_ids=calculation.get("input_evidence_ids"),
+            calculation_id=calculation.get("calculation_id"),
+            evidence_index=evidence_index,
+            direct_source=calculation.get("source_reference"),
+            direct_as_of=(calculation.get("as_of"), calculation.get("period_end")),
+            period_basis=calculation.get("period_basis"),
+            adjustment_basis=(
+                calculation.get("adjustment_basis")
+                if calculation.get("formula_id") == "share_dilution"
+                else None
+            ),
         )
-        for decision in policy_decisions:
-            if isinstance(decision, Mapping):
-                metric = _profile_metric_from_decision(
-                    decision,
-                    profile_values,
-                    profile_calculations,
-                    evidence_index,
-                )
-                if metric is not None:
-                    metrics.append(metric)
-        if profile_reporting == _FOREIGN_REPORTING_PROFILE:
-            for calculation in profile_calculations:
-                metric = _foreign_base_metric_from_calculation(
-                    calculation, evidence_index
-                )
-                if metric is not None:
-                    metrics.append(metric)
-    else:
-        for calculation in _calculation_items(calculation_payload):
-            if (
-                calculation.get("status") != "available"
-                or calculation.get("validation_status") != "valid"
-            ):
-                continue
-            metric = _metric_from_payload(
-                section="financial",
-                metric_id=calculation.get("formula_id"),
-                display_value=calculation.get("display_result"),
-                unit=calculation.get("unit"),
-                evidence_ids=calculation.get("input_evidence_ids"),
-                calculation_id=calculation.get("calculation_id"),
-                evidence_index=evidence_index,
-                direct_source=calculation.get("source_reference"),
-                direct_as_of=(calculation.get("as_of"), calculation.get("period_end")),
-                period_basis=calculation.get("period_basis"),
-                adjustment_basis=(
-                    calculation.get("adjustment_basis")
-                    if calculation.get("formula_id") == "share_dilution"
-                    else None
-                ),
-            )
-            if metric is not None:
-                metrics.append(metric)
+        if metric is not None:
+            metrics.append(metric)
 
-    valuation_calculations = (
-        []
-        if is_reit_profile or is_holding_profile
-        else _calculation_items(valuation_payload)
-    )
+    valuation_calculations = _calculation_items(valuation_payload)
     applicable_valuation_calculations = [
         calculation
         for calculation in valuation_calculations
@@ -1288,10 +1070,7 @@ def build_report_context(
             for item in applicable_valuation_calculations
         )
     )
-    if (
-        not is_holding_profile
-        and (valuation_ready or (not_applicable_metrics and valuation_base_ready))
-    ):
+    if valuation_ready or (not_applicable_metrics and valuation_base_ready):
         market_metric = _metric_from_payload(
             section="current_valuation",
             metric_id="market_price",
@@ -1406,51 +1185,6 @@ def build_report_context(
         if policy_version:
             policy_fields["policy_version"] = policy_version
 
-    reit_metrics_payload: dict[str, Any] | None = None
-    if is_reit_profile:
-        raw_reit_calculations = _calculation_items(policy_payload.get("calculation_records"))
-        reit_metrics_payload = {
-            "profile_version": _json_safe_context(
-                policy_profile.get("profile_version")
-                or policy_payload.get("profile_version")
-                or REIT_PROFILE_VERSION
-            ),
-            "policy_version": _json_safe_context(policy_payload.get("policy_version")),
-            "values": _json_safe_context(policy_payload.get("values", {})),
-            "policy_decisions": _json_safe_context(policy_decisions),
-            "calculation_records": _json_safe_context(raw_reit_calculations),
-        }
-
-    profile_metrics_payload: dict[str, Any] | None = None
-    if is_financial_profile:
-        profile_metrics_profile_version = (
-            policy_profile.get("profile_version")
-            if isinstance(policy_profile, Mapping)
-            else None
-        )
-        if (is_holding_profile or is_spac_profile) and not _text(
-            profile_metrics_profile_version
-        ):
-            profile_metrics_profile_version = policy_payload.get("profile_version")
-        profile_metrics_payload = {
-            "profile_version": _json_safe_context(profile_metrics_profile_version),
-            "policy_version": _json_safe_context(policy_payload.get("policy_version")),
-            "metric_ids": [
-                decision.get("metric_id")
-                for decision in policy_decisions
-                if isinstance(decision, Mapping) and _text(decision.get("metric_id"))
-            ],
-            "values": _json_safe_context(policy_payload.get("values", {})),
-            "policy_decisions": _json_safe_context(policy_decisions),
-            "calculation_records": _json_safe_context(
-                _calculation_items(policy_payload.get("calculation_records"))
-            ),
-        }
-        if profile_reporting == _FOREIGN_REPORTING_PROFILE:
-            profile_metrics_payload["foreign_metadata"] = _json_safe_context(
-                policy_payload.get("foreign_metadata", {})
-            )
-
     context = ReportContext(
         company=_json_safe_context(company_payload),
         **policy_fields,
@@ -1481,8 +1215,6 @@ def build_report_context(
             )
             else _verified_reverse_dcf_context(reverse_payload)
         ),
-        reit_metrics=reit_metrics_payload,
-        profile_metrics=profile_metrics_payload,
     )
     context_payload = context.model_dump(mode="json")
     for metric in context_payload.get("metrics", []):
@@ -1491,8 +1223,6 @@ def build_report_context(
     if not policy_payload:
         for key in ("profile", "coverage_level", "policy_version"):
             context_payload.pop(key, None)
-    if not is_reit_profile:
-        context_payload.pop("reit_metrics", None)
     return context_payload
 
 

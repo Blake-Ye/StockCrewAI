@@ -51,41 +51,6 @@ _REPORT_METRIC_LABELS = {
     "debt_to_equity": "债务权益比",
     "share_dilution": "股份稀释率",
     "market_capitalization": "市值",
-    "attributable_holdings_value": "归属持仓价值",
-    "holding_company_nav": "控股公司 NAV（净资产价值）",
-    "holding_company_market_cap": "控股公司市值",
-    "holding_company_nav_discount": "NAV 折价/溢价",
-    "adr_ratio": "ADR 换普通股比例",
-    "adr_equivalent_shares": "ADR 等价股数",
-    "adr_market_cap": "ADR 等价市值",
-    "bank_roa": "银行 ROA",
-    "bank_roe": "银行 ROE",
-    "net_interest_margin": "NIM",
-    "efficiency_ratio": "效率比率",
-    "cet1_ratio": "CET1",
-    "loan_to_deposit": "贷存比",
-    "nonperforming_loan_ratio": "不良贷款率",
-    "provision_coverage": "拨备覆盖率",
-    "loss_ratio": "赔付率",
-    "expense_ratio": "费用率",
-    "combined_ratio": "综合成本率",
-    "insurance_roe": "保险 ROE",
-    "book_value_per_share": "每股账面价值",
-    "investment_income": "投资收益",
-    "solvency_ratio": "偿付能力",
-    "utility_operating_margin": "公用事业营业利润率",
-    "rate_base": "Rate Base（费率基数）",
-    "capex_intensity": "CapEx 强度",
-    "interest_coverage": "利息保障倍数",
-    "utility_roe": "公用事业 ROE",
-    "realized_price": "商品实现价格",
-    "production": "商品产量",
-    "realized_price_change": "商品实现价格变化率",
-    "production_change": "商品产量变化率",
-    "proved_reserves": "探明储量",
-    "reserve_life_years": "储量寿命",
-    "impairment_charge": "商品资产减值损失",
-    "impairment_to_commodity_revenue": "减值/商品收入",
     "price_to_book": "P/B",
     "pe_ratio": "P/E",
     "fcf_yield": "FCF Yield",
@@ -103,99 +68,27 @@ _REPORT_METRIC_LABELS = {
     "historical_valuation": "历史估值",
     "reverse_dcf": "反向 DCF",
     "reverse_dcf_implied_growth": "反向 DCF 隐含增长",
-    "spac_trust_cash": "SPAC 信托现金",
-    "spac_warrant_dilution_ratio": "SPAC 认股权证稀释率",
-    "spac_pro_forma_shares": "SPAC 备考股数",
-    "spac_cash_per_pro_forma_share": "SPAC 每备考股信托现金",
 }
 _REPORT_PERCENT_METRIC_IDS = frozenset(
     {
         "revenue_growth",
         "operating_margin",
-        "utility_operating_margin",
-        "capex_intensity",
-        "utility_roe",
         "net_margin",
         "free_cash_flow_margin",
         "cash_conversion",
         "share_dilution",
-        "realized_price_change",
-        "production_change",
-        "impairment_to_commodity_revenue",
         "historical_percentile",
         "reverse_dcf_implied_growth",
-        "spac_warrant_dilution_ratio",
     }
 )
 _REPORT_AMOUNT_METRIC_IDS = frozenset(
-    {"free_cash_flow", "net_cash", "market_capitalization", "rate_base"}
+    {"free_cash_flow", "net_cash", "market_capitalization"}
 )
 _REPORT_MULTIPLE_METRIC_IDS = frozenset(
     {
-        "adr_ratio",
-        "net_debt_to_ebitda",
-        "dividend_coverage",
-        "price_to_ffo",
         "price_to_book",
-        "interest_coverage",
     }
 )
-_COMMODITY_METRIC_IDS = frozenset(
-    {
-        "realized_price",
-        "production",
-        "realized_price_change",
-        "production_change",
-        "proved_reserves",
-        "reserve_life_years",
-        "impairment_charge",
-        "impairment_to_commodity_revenue",
-        "pe_ratio",
-    }
-)
-_FOREIGN_METRIC_IDS = frozenset(
-    {"adr_ratio", "adr_equivalent_shares", "adr_market_cap"}
-)
-_HOLDING_METRIC_IDS = frozenset(
-    {
-        "attributable_holdings_value",
-        "holding_company_nav",
-        "holding_company_market_cap",
-        "holding_company_nav_discount",
-    }
-)
-_HOLDING_AMOUNT_METRIC_IDS = frozenset(
-    {
-        "attributable_holdings_value",
-        "holding_company_nav",
-        "holding_company_market_cap",
-    }
-)
-_HOLDING_NOT_APPLICABLE_METRIC_IDS = frozenset(
-    {"pe_ratio", "fcf_yield", "historical_valuation", "reverse_dcf"}
-)
-_SPAC_METRIC_IDS = frozenset(
-    {
-        "spac_trust_cash",
-        "spac_warrant_dilution_ratio",
-        "spac_pro_forma_shares",
-        "spac_cash_per_pro_forma_share",
-    }
-)
-_REIT_METRIC_LABELS = {
-    "ffo_total": "FFO 总额",
-    "ffo_per_share": "FFO/股",
-    "affo": "AFFO",
-    "same_store_noi": "same-store NOI",
-    "occupancy": "Occupancy",
-    "net_debt_to_ebitda": "净债务/EBITDA",
-    "dividend_coverage": "股息覆盖",
-    "price_to_ffo": "P/FFO",
-}
-_REIT_APPLICABILITY_REASONS = {
-    "pe": "reit_primary_valuation_not_pe",
-    "fcf_yield": "reit_primary_cash_metric_not_fcf",
-}
 _VERDICT_RATING_LABELS = {
     "attractive": "估值吸引",
     "reasonable": "估值合理",
@@ -466,15 +359,10 @@ def _build_chart_context(report_context: Mapping[str, Any]) -> dict[str, dict[st
         financial_chart = unavailable.copy()
 
     annual = report_context.get("annual_financial_history", {})
-    profile = report_context.get("profile")
-    annual_allowed = not isinstance(profile, Mapping) or (
-        _text(profile.get("issuer_profile")) == "standard_operating"
-    )
     raw_periods = annual.get("periods") if isinstance(annual, Mapping) else None
     annual_values: list[dict[str, Decimal]] = []
     if (
-        annual_allowed
-        and isinstance(annual, Mapping)
+        isinstance(annual, Mapping)
         and annual.get("status") == "ok"
         and annual.get("validation_status") == "valid"
         and isinstance(raw_periods, Sequence)
@@ -633,23 +521,6 @@ def build_narrative_context(
             )
         if section:
             metric_sections.add(str(section))
-    profile_metrics = report_context.get("profile_metrics")
-    if isinstance(profile_metrics, Mapping):
-        profile_issuer = _text((report_context.get("profile") or {}).get("issuer_profile"))
-        if profile_issuer in {
-            "bank",
-            "insurance",
-            "utility",
-            "commodity_producer",
-        } or (
-            isinstance(report_context.get("profile"), Mapping)
-            and report_context["profile"].get("reporting_profile")
-            == "foreign_private_issuer_ifrs"
-        ) or (
-            isinstance(report_context.get("profile"), Mapping)
-            and report_context["profile"].get("security_profile") == "spac"
-        ):
-            metric_sections.add("company_quality")
     source_metadata = report_context.get("source_metadata", {})
     source_metadata = source_metadata if isinstance(source_metadata, Mapping) else {}
 
@@ -775,12 +646,6 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
     unit = _text(metric.get("unit")) or ""
     unit_lower = unit.lower()
     raw_text = _text(raw_value) or ""
-    if metric_id in {
-        "spac_trust_cash",
-        "spac_pro_forma_shares",
-        "spac_cash_per_pro_forma_share",
-    }:
-        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in {"current_ratio", "debt_to_equity"}:
         raw_numeric = metric.get("raw_result")
         ratio_value = _decimal_from_text(raw_numeric)
@@ -789,20 +654,8 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
         elif "%" in raw_text and decimal_value > Decimal("1"):
             decimal_value /= Decimal("100")
         return f"{decimal_value:.2f}x"
-    if metric_id == "rate_base":
-        return f"{decimal_value:.2f} {unit}".strip()
-    if metric_id in {
-        "realized_price",
-        "production",
-        "proved_reserves",
-        "reserve_life_years",
-        "impairment_charge",
-    }:
-        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in _REPORT_MULTIPLE_METRIC_IDS:
         return f"{decimal_value:.2f}x"
-    if metric_id in {"ffo_total", "ffo_per_share", "affo"}:
-        return f"{decimal_value:.2f} {unit}".strip()
     if metric_id in _REPORT_PERCENT_METRIC_IDS or unit_lower in {
         "ratio",
         "percent",
@@ -819,8 +672,6 @@ def _formatted_metric_value(metric: Mapping[str, Any]) -> str:
         "historical_pe_percentile_75",
     }:
         return f"{decimal_value:.2f}x"
-    if metric_id in _HOLDING_AMOUNT_METRIC_IDS:
-        return f"{decimal_value:.2f} {unit}".strip()
     normalized_unit = unit_lower.replace(" ", "")
     is_currency_amount = metric_id in _REPORT_AMOUNT_METRIC_IDS or (
         normalized_unit == "currency"
@@ -1114,17 +965,7 @@ def _reevaluation_conditions_markdown(context: Mapping[str, Any]) -> str:
     )
 
 
-def _judgment_rules_markdown(profile: str | None = None) -> str:
-    if profile == "spac":
-        return "\n".join(
-            (
-                "### 判断规则",
-                "- 经营质量：缺少关键数据时为数据不足。",
-                "- 估值适用性：SPAC 结构型证券不适用普通经营公司估值指标。",
-                "- 市场预期评估：SPAC evidence-only 报告不评估市场隐含预期。",
-                "- 研究动作：关键数据不足时等待补充证据。",
-            )
-        )
+def _judgment_rules_markdown() -> str:
     return "\n".join(
         (
             "### 判断规则",
@@ -1164,16 +1005,10 @@ def _execution_summary_lines(
 ) -> list[str]:
     """只输出四项由 Python 计算的读者结论。"""
     summary = _deterministic_summary(context)
-    profile = context.get("profile")
-    is_spac = isinstance(profile, Mapping) and profile.get("security_profile") == "spac"
-    valuation_label = "估值适用性" if is_spac else "相对自身历史估值"
-    valuation_value = "不适用" if is_spac else summary["valuation"]
-    expectations_label = "市场预期评估" if is_spac else "市场隐含预期"
-    expectations_value = "不适用" if is_spac else summary["expectations"]
     return [
         f"- **经营质量：** {summary['quality']}",
-        f"- **{valuation_label}：** {valuation_value}",
-        f"- **{expectations_label}：** {expectations_value}",
+        f"- **相对自身历史估值：** {summary['valuation']}",
+        f"- **市场隐含预期：** {summary['expectations']}",
         f"- **研究动作：** {summary['action']}",
     ]
 
@@ -1355,228 +1190,15 @@ def _audit_metadata_markdown(
     return "\n".join(lines)
 
 
-def _term_definitions(
-    *, reit: bool = False, profile: str | None = None
-) -> tuple[str, ...]:
-    if profile == "spac":
-        return (
-            "### 术语说明",
-            "- SPAC evidence-only：仅呈现已验证的证券结构证据，不构成评级。",
-            "- 认股权证稀释率：认股权证数量除以基础股数。",
-            "- 备考股数：基础股数与认股权证数量之和。",
-        )
-    definitions = [
+def _term_definitions() -> tuple[str, ...]:
+    return (
         "### 术语说明",
         "- P/E（市盈率）：股价相对于每股收益的倍数，用于描述市场对盈利的定价。",
         "- FCF Yield（自由现金流收益率）：自由现金流相对于市值的收益率。",
         "- TTM（过去十二个月）：以最近连续十二个月为口径汇总经营数据。",
         "- DCF（现金流折现）：将未来现金流折算到当前价值的估值方法。",
         "- 反向 DCF（由市场价格倒推隐含增长）：在给定模型期限内，从当前市场价格反推出自由现金流年复合增长要求。",
-    ]
-    if reit:
-        definitions.extend(
-            (
-                "- FFO（运营资金）：REIT 用于补充说明物业经营表现的行业指标，不能替代 GAAP 净利润。",
-                "- AFFO（调整后运营资金）：仅采用公司明确披露并可追溯的 AFFO reconciliation，没有统一通用公式。",
-                "- P/FFO：市场价格相对于每股 FFO 的倍数，是 REIT 的主要估值参考之一。",
-            )
-        )
-    if profile == "bank":
-        definitions.extend(
-            (
-                "- ROA（资产回报率）：净利润相对于平均资产的比例，衡量银行资产创造利润的效率。",
-                "- ROE（净资产收益率）：净利润相对于平均股东权益的比例，衡量股东资本回报。",
-                "- NIM（净息差）：净利息收入相对于平均生息资产的比例，反映银行核心息差。",
-                "- 效率比率：非利息费用相对于净利息收入与非利息收入之和的比例，通常越低表示效率越高。",
-                "- CET1（普通股权一级资本充足率）：直接披露的核心资本相对风险承担的监管比率。",
-                "- 贷存比：贷款总额相对于存款总额的比例。",
-                "- 不良贷款率：不良贷款相对于贷款总额的比例。",
-                "- 拨备覆盖率：信用损失准备相对于不良贷款的比例。",
-                "- P/B（市净率）：股价相对于每股账面价值的倍数。",
-            )
-        )
-    if profile == "insurance":
-        definitions.extend(
-            (
-                "- ROA/ROE：分别表示资产回报率和净资产收益率，用于衡量保险公司的盈利效率与股东回报。",
-                "- 赔付率：已发生赔付相对于已赚保费的比例。",
-                "- 费用率：承保费用相对于已赚保费的比例。",
-                "- 综合成本率：赔付率与费用率按固定口径相加，衡量承保业务成本。",
-                "- 偿付能力：公司或法定口径直接披露的资本/偿付能力比率。",
-                "- P/B（市净率）：股价相对于每股账面价值的倍数。",
-            )
-        )
-    if profile == "utility":
-        definitions.extend(
-            (
-                "- Rate Base（费率基数）：公用事业公司或监管机构直接披露的受监管资本基数，不由资产负债表字段推断。",
-                "- CapEx Intensity（资本开支强度）：资本开支相对于营业收入的比例。",
-                "- Interest Coverage（利息保障倍数）：营业利润相对于利息费用的比例。",
-                "- FCF Yield（自由现金流收益率）：公用事业自由现金流相对于直接披露市值的收益率，不由价格与股数推算。",
-            )
-        )
-    if profile == "commodity_producer":
-        definitions.extend(
-            (
-                "- 商品实现价格：公司按主商品披露的单位实现价格，不用股票市场价格替代。",
-                "- 商品产量：主商品的公司披露产量，变化率只比较可比期间。",
-                "- 探明储量：已证明可采的储量，不用资源量或 probable/total reserves 替代。",
-                "- 储量寿命：探明储量除以年度产量，表示按该产量水平的理论年数。",
-                "- 商品资产减值损失：公司明确披露的商品相关减值，不能用经营亏损或重组费用替代。",
-            )
-        )
-    if profile == "foreign_private_issuer_ifrs":
-        definitions.extend(
-            (
-                "- 20-F/6-K：外国私人发行人向 SEC 提交的固定范围申报；未同时验证 20-F 与 IFRS taxonomy 时不宣称 IFRS profile。",
-                "- ADR ratio：仅使用已验证的普通股/ADR 兑换比例；缺失时不默认 1:1，也不从价格或市值反推。",
-                "- ADR 等价市值：只使用 USD ADR 价格与 ADR 等价股数；原币财务数据不与 USD 跨币种混算。",
-            )
-        )
-    return tuple(definitions)
-
-
-def _profile_decisions(payload: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    decisions = payload.get("policy_decisions", [])
-    if not isinstance(decisions, Sequence) or isinstance(decisions, (str, bytes)):
-        return {}
-    return {
-        decision["metric_id"]: decision
-        for decision in decisions
-        if isinstance(decision, Mapping) and _text(decision.get("metric_id"))
-    }
-
-
-def _profile_metrics_markdown(
-    profile: str | None,
-    payload: Mapping[str, Any] | None,
-    metrics: Sequence[Mapping[str, Any]],
-) -> str:
-    if profile not in {
-        "bank",
-        "insurance",
-        "utility",
-        "commodity_producer",
-        "foreign_private_issuer_ifrs",
-        "holding_company",
-        "spac",
-    } or not isinstance(payload, Mapping):
-        return ""
-    metric_ids = payload.get("metric_ids", [])
-    if not isinstance(metric_ids, Sequence) or isinstance(metric_ids, (str, bytes)):
-        metric_ids = []
-    if profile == "commodity_producer":
-        metric_ids = [metric_id for metric_id in metric_ids if metric_id in _COMMODITY_METRIC_IDS]
-    if profile == "foreign_private_issuer_ifrs":
-        metric_ids = [metric_id for metric_id in metric_ids if metric_id in _FOREIGN_METRIC_IDS]
-    if profile == "holding_company":
-        allowed_metric_ids = _HOLDING_METRIC_IDS | _HOLDING_NOT_APPLICABLE_METRIC_IDS
-        metric_ids = [metric_id for metric_id in metric_ids if metric_id in allowed_metric_ids]
-    if profile == "spac":
-        metric_ids = [metric_id for metric_id in metric_ids if metric_id in _SPAC_METRIC_IDS]
-    metric_map = {
-        metric.get("metric_id"): metric
-        for metric in metrics
-        if isinstance(metric, Mapping) and metric.get("metric_id") in metric_ids
-    }
-    decisions = _profile_decisions(payload)
-    heading = {
-        "bank": "### 银行专用指标",
-        "insurance": "### 保险专用指标",
-        "utility": "### 公用事业专用指标",
-        "commodity_producer": "### 商品生产商专用指标",
-        "foreign_private_issuer_ifrs": "### 外国发行人/ADR 指标",
-        "holding_company": "### 控股公司专用指标",
-        "spac": "### SPAC 证券结构指标",
-    }[profile]
-    lines = [heading]
-    if profile == "foreign_private_issuer_ifrs":
-        metadata = payload.get("foreign_metadata", {})
-        if isinstance(metadata, Mapping):
-            forms = metadata.get("filing_forms", [])
-            if isinstance(forms, Sequence) and not isinstance(forms, (str, bytes)):
-                forms = [form for form in forms if form in {"20-F", "6-K"}]
-                if forms:
-                    lines.append(f"- SEC foreign filings：{', '.join(forms)}")
-            taxonomies = metadata.get("ifrs_taxonomy", [])
-            if isinstance(taxonomies, Sequence) and not isinstance(taxonomies, (str, bytes)):
-                taxonomies = [taxonomy for taxonomy in taxonomies if isinstance(taxonomy, str)]
-                if taxonomies:
-                    lines.append(f"- IFRS taxonomy：{', '.join(taxonomies)}")
-            for key, label in (
-                ("reporting_currency", "财务报告币种"),
-                ("market_currency", "市场价格币种"),
-                ("adr_ratio_status", "ADR ratio 状态"),
-            ):
-                value = _text(metadata.get(key))
-                if value:
-                    lines.append(f"- {label}：{value}")
-    for metric_id in metric_ids:
-        metric_id = _text(metric_id)
-        if not metric_id:
-            continue
-        metric = metric_map.get(metric_id)
-        if metric is not None:
-            lines.append(_metric_text(metric))
-            continue
-        decision = decisions.get(metric_id, {})
-        status = _text(decision.get("status")) or "unavailable"
-        reason = _text(decision.get("reason_code")) or "reason_code_missing"
-        label = _REPORT_METRIC_LABELS.get(metric_id, metric_id)
-        if status == "not_applicable" and metric_id == "fcf_yield":
-            explanation = {
-                "bank": "银行不计算普通企业 FCF Yield。",
-                "insurance": "保险不计算普通企业 FCF Yield。",
-                "holding_company": "控股公司不计算普通企业 FCF Yield。",
-            }.get(profile)
-            if explanation:
-                lines.append(f"- FCF Yield：not_applicable（{reason}）；{explanation}")
-            else:
-                lines.append(f"- {label}：{status}（{reason}）")
-        else:
-            lines.append(f"- {label}：{status}（{reason}）")
-    return "\n".join(lines)
-
-
-def _reit_decisions(payload: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    decisions = payload.get("policy_decisions", [])
-    if not isinstance(decisions, Sequence) or isinstance(decisions, (str, bytes)):
-        return {}
-    return {
-        decision["metric_id"]: decision
-        for decision in decisions
-        if isinstance(decision, Mapping) and _text(decision.get("metric_id"))
-    }
-
-
-def _reit_applicability_markdown(payload: Mapping[str, Any]) -> str:
-    decisions = _reit_decisions(payload)
-    pe = decisions.get("pe", {})
-    fcf_yield = decisions.get("fcf_yield", {})
-    pe_status = _text(pe.get("status")) or "not_applicable"
-    pe_reason = _text(pe.get("reason_code")) or _REIT_APPLICABILITY_REASONS["pe"]
-    fcf_status = _text(fcf_yield.get("status")) or "not_applicable"
-    fcf_reason = _text(fcf_yield.get("reason_code")) or _REIT_APPLICABILITY_REASONS["fcf_yield"]
-    return "\n".join(
-        (
-            "### REIT 估值与现金指标适用性",
-            f"- P/E：{pe_status}（{pe_reason}）；REIT 主估值看 FFO/AFFO/P-FFO。",
-            f"- FCF Yield：{fcf_status}（{fcf_reason}）；不能用普通企业 FCF Yield 替代。",
-        )
     )
-
-
-def _reit_unavailable_markdown(payload: Mapping[str, Any]) -> str:
-    decisions = _reit_decisions(payload)
-    lines = []
-    for metric_id, decision in decisions.items():
-        if _text(decision.get("status")) != "unavailable":
-            continue
-        reason_code = _text(decision.get("reason_code")) or "reason_code_missing"
-        lines.append(
-            f"- {_REIT_METRIC_LABELS.get(metric_id, metric_id)}：unavailable（{reason_code}）"
-        )
-    return "\n".join(lines)
 
 
 def _visual_markdown(visuals: Mapping[str, str], key: str, alt: str) -> str | None:
@@ -2079,27 +1701,7 @@ def _strict_lite_report_sections(
     ):
         sections.extend((balance_text, ""))
 
-    sections.extend(("## 3. 历史经营与财务质量", ""))
-    sections.extend((_annual_financial_table_markdown(context), ""))
-    sections.extend((_annual_financial_trend_markdown(context), ""))
-    chart = _visual_markdown(
-        visuals,
-        "annual_financial_trend",
-        "近五年核心财务趋势（已验证完整财年）",
-    )
-    if chart:
-        sections.extend(
-            (
-                chart,
-                "",
-                _chart_caption_markdown(
-                    context, "annual_financial_trend", chart_context
-                ),
-                "",
-            )
-        )
-
-    sections.extend(("## 4. 最新经营状态", ""))
+    sections.extend(("## 3. 最新经营状态", ""))
     sections.extend(("<!-- ## 公司质量 -->", ""))
     if metric_text := _metric_text_for_section(
         metrics,
@@ -2141,6 +1743,26 @@ def _strict_lite_report_sections(
                 chart,
                 "",
                 _chart_caption_markdown(context, "financial_kpis", chart_context),
+                "",
+            )
+        )
+
+    sections.extend(("## 4. 历史经营与财务质量", ""))
+    sections.extend((_annual_financial_table_markdown(context), ""))
+    sections.extend((_annual_financial_trend_markdown(context), ""))
+    chart = _visual_markdown(
+        visuals,
+        "annual_financial_trend",
+        "近五年核心财务趋势（已验证完整财年）",
+    )
+    if chart:
+        sections.extend(
+            (
+                chart,
+                "",
+                _chart_caption_markdown(
+                    context, "annual_financial_trend", chart_context
+                ),
                 "",
             )
         )
@@ -2201,7 +1823,6 @@ def _strict_lite_report_sections(
     sections.extend(("## 7. 综合判断与重新评估条件", "", _decision_basis_markdown(context), ""))
 
     sections.extend(("## 8. 数据来源、方法与技术附录", ""))
-    reit_metrics = context.get("reit_metrics")
     sections.extend(
         (
             _SOURCE_METHOD_NOTE,
@@ -2212,7 +1833,7 @@ def _strict_lite_report_sections(
             "",
             _judgment_rules_markdown(),
             "",
-            *_term_definitions(reit=isinstance(reit_metrics, Mapping)),
+            *_term_definitions(),
             "",
         )
     )
@@ -2241,63 +1862,31 @@ def _render_report_from_context(
     claims = _validated_claims(context_payload["claims"])
     status = context_payload["verdict_status"]
     metrics = context_payload["metrics"]
-    reit_metrics = context_payload.get("reit_metrics")
-    is_reit = isinstance(reit_metrics, Mapping)
-    profile = context_payload.get("profile", {})
-    profile_issuer = (
-        _text(profile.get("issuer_profile")) if isinstance(profile, Mapping) else None
-    )
-    profile_kind = profile_issuer
-    if (
-        isinstance(profile, Mapping)
-        and profile.get("security_profile") == "spac"
-    ):
-        profile_kind = "spac"
-    if (
-        isinstance(profile, Mapping)
-        and profile.get("reporting_profile") == "foreign_private_issuer_ifrs"
-    ):
-        profile_kind = "foreign_private_issuer_ifrs"
-    strict_lite = profile_kind in {None, "standard_operating"}
-    profile_metrics = context_payload.get("profile_metrics")
     verdict = context_payload.get("verdict", {})
     if not isinstance(verdict, Mapping):
         verdict = {}
     rating_label, risk_label, rule_label, action_label = _verdict_display(verdict, status)
-    visuals = {} if profile_kind == "spac" else build_report_visuals(context=context_payload)
+    visuals = build_report_visuals(context=context_payload)
 
     company_payload = context_payload.get("company", {})
     company_payload = company_payload if isinstance(company_payload, Mapping) else {}
     sections: list[str] = [_report_title(company_payload), ""]
-    if strict_lite:
-        sections.extend(
-            _strict_lite_report_sections(
-                context=context_payload,
-                report_draft=report_draft,
-                claims=claims,
-                metrics=metrics,
-                visuals=visuals,
-                chart_context=chart_context,
-                rating_label=rating_label,
-                risk_label=risk_label,
-                action_label=action_label,
-                status=status,
-                rule_label=rule_label,
-            )
+    sections.extend(
+        _strict_lite_report_sections(
+            context=context_payload,
+            report_draft=report_draft,
+            claims=claims,
+            metrics=metrics,
+            visuals=visuals,
+            chart_context=chart_context,
+            rating_label=rating_label,
+            risk_label=risk_label,
+            action_label=action_label,
+            status=status,
+            rule_label=rule_label,
         )
-    for field, heading in (_REPORT_SECTIONS if not strict_lite else ()):
-        if profile_kind == "spac" and field in {
-            "financial_trend",
-            "current_valuation",
-            "historical_valuation",
-            "reverse_dcf",
-        }:
-            continue
-        if profile_kind == "holding_company" and field in {
-            "historical_valuation",
-            "reverse_dcf",
-        }:
-            continue
+    )
+    for field, heading in ():
         sections.extend((f"## {heading}", ""))
         if field == "execution_summary":
             sections.extend(
@@ -2316,12 +1905,6 @@ def _render_report_from_context(
                     "",
                 )
             )
-            if profile_markdown := _profile_metrics_markdown(
-                profile_kind, profile_metrics, metrics
-            ):
-                sections.extend((profile_markdown, ""))
-            if is_reit and (unavailable := _reit_unavailable_markdown(reit_metrics)):
-                sections.extend((unavailable, ""))
             chart = _visual_markdown(visuals, "financial_kpis", "核心财务指标")
             if chart:
                 sections.extend(
@@ -2390,8 +1973,6 @@ def _render_report_from_context(
                     "",
                 )
             )
-            if is_reit:
-                sections.extend((_reit_applicability_markdown(reit_metrics), ""))
         elif field == "historical_valuation":
             sections.extend(
                 (
@@ -2452,9 +2033,9 @@ def _render_report_from_context(
                     "",
                     _audit_metadata_markdown(context_payload, status, rule_label),
                     "",
-                    _judgment_rules_markdown(profile_kind),
+                    _judgment_rules_markdown(),
                     "",
-                    *_term_definitions(reit=is_reit, profile=profile_kind),
+                    *_term_definitions(),
                     "",
                 )
             )

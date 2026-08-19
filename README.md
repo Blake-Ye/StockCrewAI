@@ -122,10 +122,10 @@ reason_code=unsupported_security
 required_data=unsupported_security:security_profile=unsupported_fund_security, unsupported_security:coverage_level=unsupported_security
 ```
 
-- 银行、保险、REIT、公用事业和商品生产商的 Profile 适配器仍保留用于离线测试和未来扩展，但真实 SEC SIC 输入会先经过类别门禁。
+- 特殊发行人类别仅用于确定性分类，分类后阻断；当前不提供专属 Profile 适配器或报告支持。
 - 普通企业 FCF Yield 等指标只在适用的普通经营公司范围内计算；非普通类别不套用普通企业指标。
-- ADR 不自动等于不支持；ADR 比例、等价股数、股权类别、申报制度和货币证据必须分别验证，缺少可验证汇率或历史证据时可能是 `partial` 或 `evidence_only`。
-- SPAC 使用信托现金、认股权证稀释和合并前股数等结构化指标；普通经营公司的 P/E、FCF 或反向 DCF 不会被强行计算，当前政策可输出 `evidence_only`。
+- ADR 等特殊证券先分类；不属于 `standard_operating` 的输入分类后阻断，不生成普通股投资报告。
+- SPAC 等特殊证券分类后返回结构化阻断结果，不生成专属或普通企业估值报告。
 - ETF、共同基金、封闭式基金等投资公司证券属于 `unsupported_security`，不生成普通股投资报告。
 
 负 EPS、历史不足、单项指标缺失或指标不适用于 Profile 时，优先查看该指标的状态和 `reason_code`，不要把它们统称为程序失败。

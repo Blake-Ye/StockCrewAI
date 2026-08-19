@@ -82,16 +82,6 @@ from stockcrewai.run_output import RunStageEvent, sanitize_text
 from stockcrewai.models.evidence import EvidenceRecord, MarketPriceRecord
 from stockcrewai.models.policy import PolicyDecision
 from stockcrewai.models.profile import ProfileResult
-from stockcrewai.profiles.holding_company import (
-    HOLDING_COMPANY_METRIC_IDS,
-    POLICY_VERSION as HOLDING_COMPANY_POLICY_VERSION,
-    PROFILE_VERSION as HOLDING_COMPANY_PROFILE_VERSION,
-)
-from stockcrewai.profiles.spac import (
-    POLICY_VERSION as SPAC_POLICY_VERSION,
-    PROFILE_VERSION as SPAC_PROFILE_VERSION,
-    SPAC_METRIC_IDS,
-)
 from stockcrewai.services.evidence_store import EvidenceStore
 from stockcrewai.services.runtime_metrics import RuntimeMetricsCollector
 from stockcrewai.tools.calculator_tool import FinancialCalculatorTool
@@ -118,11 +108,6 @@ _RUNTIME_METRICS_STAGE_LABELS: dict[int, tuple[str, str, str]] = {
     6: ("research_flow", "claim_gate", "route_claims"),
     7: ("research_flow", "report", "generate_report"),
 }
-_FOREIGN_FX_NOT_IMPLEMENTED_REASON = "foreign_currency_fx_not_implemented"
-_HOLDING_COMPANY_NAV_PRIMARY_REASON = "holding_company_nav_primary_valuation"
-_SPAC_SECURITY_STRUCTURE_REASON = "spac_security_structure_not_applicable"
-
-
 def _is_unsupported_security_profile(profile: Any) -> bool:
     if not isinstance(profile, Mapping):
         return False
@@ -155,7 +140,7 @@ def _is_unsupported_sic_category_profile(profile: Any) -> bool:
 
 
 def _unsupported_scope_reason(profile: Any) -> str | None:
-    """返回统一范围门禁的稳定原因码，保留 SIC 与证券类型的区别。"""
+    """仅为明确识别出的不支持范围返回稳定原因码。"""
     if _is_unsupported_sic_category_profile(profile):
         return "unsupported_category_sic"
     if _is_unsupported_security_profile(profile):
@@ -193,201 +178,12 @@ def _unsupported_scope_required_data(
     issuer_profile = getattr(issuer_profile, "value", issuer_profile) or "unknown"
     sic = edgar.get("sic") if isinstance(edgar, Mapping) else None
     sic = sic if sic not in (None, "") else "unknown"
+    if reason_code not in {"unsupported_category_sic", "unsupported_security"}:
+        return [reason_code]
     return [
         f"unsupported_category_sic:sic={sic}",
         f"unsupported_category_sic:issuer_profile={issuer_profile}",
     ]
-
-
-def _spac_evidence_only_policy_ready(
-    policy_context: Any,
-    valuation: Any,
-    historical_valuation: Any,
-    reverse_dcf: Any,
-) -> bool:
-    if not isinstance(policy_context, Mapping):
-        return False
-    profile = policy_context.get("profile")
-    if not isinstance(profile, Mapping):
-        return False
-    security_profile = profile.get("security_profile")
-    security_profile = getattr(security_profile, "value", security_profile)
-    if str(security_profile).strip().casefold() != "spac":
-        return False
-    if (
-        policy_context.get("profile_version") != SPAC_PROFILE_VERSION
-        or policy_context.get("policy_version") != SPAC_POLICY_VERSION
-    ):
-        return False
-    envelope = policy_context.get("profile_envelope")
-    if not isinstance(envelope, Mapping) or (
-        envelope.get("status") != "valid"
-        or envelope.get("reason_code") != "typed_profile_envelope_valid"
-    ):
-        return False
-    gate = policy_context.get("gate")
-    if not isinstance(gate, Mapping) or gate.get("status") != "evidence_only":
-        return False
-    decisions = policy_context.get("policy_decisions")
-    if not isinstance(decisions, list):
-        return False
-    decision_ids = [
-        decision.get("metric_id")
-        for decision in decisions
-        if isinstance(decision, Mapping)
-    ]
-    if (
-        len(decision_ids) != len(decisions)
-        or len(decision_ids) != len(set(decision_ids))
-        or set(decision_ids) != set(SPAC_METRIC_IDS)
-    ):
-        return False
-    if not all(
-        isinstance(decision.get("blocking"), bool)
-        and decision.get("blocking") is False
-        and isinstance(decision.get("evidence_ids"), list)
-        and isinstance(decision.get("calculation_ids"), list)
-        for decision in decisions
-    ):
-        return False
-    for key in ("evidence_records", "calculation_records", "market_price_records"):
-        records = policy_context.get(key)
-        if not isinstance(records, list) or not all(
-            isinstance(record, Mapping) for record in records
-        ):
-            return False
-    return all(
-        isinstance(result, Mapping)
-        and result.get("status") == "not_applicable"
-        and result.get("readiness") == "not_applicable"
-        and result.get("validation_status") == "unvalidated"
-        and result.get("reason_code") == _SPAC_SECURITY_STRUCTURE_REASON
-        and result.get("calculations") == []
-        for result in (valuation, historical_valuation, reverse_dcf)
-    )
-
-
-def _holding_nav_policy_ready(
-    policy_context: Any,
-    valuation: Any,
-    historical_valuation: Any,
-    reverse_dcf: Any,
-) -> bool:
-    if not isinstance(policy_context, Mapping):
-        return False
-    profile = policy_context.get("profile")
-    issuer_profile = (
-        profile.get("issuer_profile", profile.get("issuer_type"))
-        if isinstance(profile, Mapping)
-        else None
-    )
-    issuer_profile = getattr(issuer_profile, "value", issuer_profile)
-    if str(issuer_profile).strip().casefold() != "holding_company":
-        return False
-    reporting_profile = (
-        profile.get("reporting_profile") if isinstance(profile, Mapping) else None
-    )
-    reporting_profile = getattr(reporting_profile, "value", reporting_profile)
-    if str(reporting_profile).strip().casefold() != "domestic_us_gaap":
-        return False
-    if (
-        policy_context.get("profile_version") != HOLDING_COMPANY_PROFILE_VERSION
-        or policy_context.get("policy_version") != HOLDING_COMPANY_POLICY_VERSION
-    ):
-        return False
-    profile_envelope = policy_context.get("profile_envelope")
-    if not isinstance(profile_envelope, Mapping) or (
-        profile_envelope.get("status") != "valid"
-        or profile_envelope.get("reason_code") != "typed_profile_envelope_valid"
-    ):
-        return False
-    gate = policy_context.get("gate")
-    if not isinstance(gate, Mapping) or gate.get("status") != "ready":
-        return False
-    policy_decisions = policy_context.get("policy_decisions")
-    if not isinstance(policy_decisions, list):
-        return False
-    decision_ids = [
-        decision.get("metric_id")
-        for decision in policy_decisions
-        if isinstance(decision, Mapping)
-    ]
-    if (
-        len(decision_ids) != len(policy_decisions)
-        or not all(isinstance(metric_id, str) for metric_id in decision_ids)
-        or len(decision_ids) != len(set(decision_ids))
-        or set(decision_ids) != set(HOLDING_COMPANY_METRIC_IDS)
-        or not any(
-            isinstance(decision, Mapping)
-            and decision.get("metric_id") == "holding_company_nav"
-            and decision.get("status") == "available"
-            for decision in policy_decisions
-        )
-    ):
-        return False
-    if not all(
-        isinstance(decision.get(key), list)
-        and all(
-            isinstance(item, str) and bool(item.strip())
-            for item in decision[key]
-        )
-        for decision in policy_decisions
-        for key in ("evidence_ids", "calculation_ids")
-    ):
-        return False
-    evidence_records = policy_context.get("evidence_records")
-    calculation_records = policy_context.get("calculation_records")
-    if not (
-        isinstance(evidence_records, list)
-        and all(isinstance(record, Mapping) for record in evidence_records)
-        and isinstance(calculation_records, list)
-        and all(isinstance(record, Mapping) for record in calculation_records)
-    ):
-        return False
-    return all(
-        isinstance(result, Mapping)
-        and result.get("status") == "not_applicable"
-        and result.get("readiness") == "not_applicable"
-        and result.get("validation_status") == "unvalidated"
-        and result.get("reason_code") == _HOLDING_COMPANY_NAV_PRIMARY_REASON
-        for result in (valuation, historical_valuation, reverse_dcf)
-    )
-
-
-def _allow_empty_foreign_valuation_claims(
-    policy_context: Any,
-    valuation: Any,
-    historical_valuation: Any,
-    reverse_dcf: Any,
-) -> bool:
-    """仅为明确 foreign evidence-only 或完整 holding NAV 跳过估值 Claim。"""
-    if not isinstance(policy_context, Mapping):
-        return False
-    profile = policy_context.get("profile")
-    reporting_profile = (
-        profile.get("reporting_profile") if isinstance(profile, Mapping) else None
-    )
-    reporting_profile = getattr(reporting_profile, "value", reporting_profile)
-    gate = policy_context.get("gate")
-    if not isinstance(gate, Mapping):
-        return False
-    if _holding_nav_policy_ready(
-        policy_context, valuation, historical_valuation, reverse_dcf
-    ):
-        return True
-    if (
-        str(reporting_profile).strip().casefold() == "foreign_private_issuer_ifrs"
-        and gate.get("status") == "evidence_only"
-    ):
-        expected_reason = _FOREIGN_FX_NOT_IMPLEMENTED_REASON
-    else:
-        return False
-    return all(
-        isinstance(result, Mapping)
-        and result.get("status") == "not_applicable"
-        and result.get("reason_code") == expected_reason
-        for result in (valuation, historical_valuation, reverse_dcf)
-    )
 
 
 def _runtime_metrics_enabled() -> bool:
@@ -558,9 +354,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
         "profile_input",
         "profile_evidence_records",
         "profile_market_price_records",
-        "reit_profile_input",
-        "reit_evidence_records",
-        "reit_market_price_records",
     )
 
     _edgar_tool: Any = PrivateAttr(default=None)
@@ -580,13 +373,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
         default_factory=tuple
     )
     _profile_market_price_records: tuple[MarketPriceRecord, ...] = PrivateAttr(
-        default_factory=tuple
-    )
-    _reit_profile_input: Mapping[str, Any] | None = PrivateAttr(default=None)
-    _reit_evidence_records: tuple[EvidenceRecord, ...] = PrivateAttr(
-        default_factory=tuple
-    )
-    _reit_market_price_records: tuple[MarketPriceRecord, ...] = PrivateAttr(
         default_factory=tuple
     )
 
@@ -630,21 +416,11 @@ class ResearchFlow(Flow[ResearchFlowState]):
         dependencies["profile_input"] = (
             dict(profile_input) if isinstance(profile_input, Mapping) else None
         )
-        dependencies["profile_evidence_records"] = self._validated_reit_records(
+        dependencies["profile_evidence_records"] = self._validated_records(
             dependencies["profile_evidence_records"], EvidenceRecord
         )
-        dependencies["profile_market_price_records"] = self._validated_reit_records(
+        dependencies["profile_market_price_records"] = self._validated_records(
             dependencies["profile_market_price_records"], MarketPriceRecord
-        )
-        reit_profile_input = dependencies["reit_profile_input"]
-        dependencies["reit_profile_input"] = (
-            dict(reit_profile_input) if isinstance(reit_profile_input, Mapping) else None
-        )
-        dependencies["reit_evidence_records"] = self._validated_reit_records(
-            dependencies["reit_evidence_records"], EvidenceRecord
-        )
-        dependencies["reit_market_price_records"] = self._validated_reit_records(
-            dependencies["reit_market_price_records"], MarketPriceRecord
         )
         super().__init__(**data)
         for name, dependency in dependencies.items():
@@ -658,7 +434,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             self._runtime_metrics_stage_started_at = time.monotonic()
 
     @staticmethod
-    def _validated_reit_records(value: Any, record_type: Any) -> tuple[Any, ...]:
+    def _validated_records(value: Any, record_type: Any) -> tuple[Any, ...]:
         if not isinstance(value, Sequence) or isinstance(
             value, (str, bytes, bytearray)
         ):
@@ -670,190 +446,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
             except (TypeError, ValueError, ValidationError):
                 continue
         return tuple(records)
-
-    def _is_reit_profile(self) -> bool:
-        explicit_profile = (
-            self._profile_input
-            if isinstance(self._profile_input, Mapping)
-            else self._reit_profile_input
-        )
-        candidates = (
-            self.state.profile,
-            self.state.policy_context.get("profile"),
-            self._pipeline_state.get("profile"),
-            explicit_profile,
-        )
-        for candidate in candidates:
-            if not isinstance(candidate, Mapping):
-                continue
-            issuer_profile = candidate.get(
-                "issuer_profile", candidate.get("issuer_type")
-            )
-            issuer_profile = getattr(issuer_profile, "value", issuer_profile)
-            if str(issuer_profile).strip().casefold() == "reit":
-                return True
-        return False
-
-    def _active_profile_input(self) -> Mapping[str, Any] | None:
-        if isinstance(self._profile_input, Mapping) and self._profile_input:
-            return self._profile_input
-        if isinstance(self._reit_profile_input, Mapping) and self._reit_profile_input:
-            return self._reit_profile_input
-        return self.state.profile if isinstance(self.state.profile, Mapping) else None
-
-    def _active_profile_records(
-        self,
-    ) -> tuple[
-        Mapping[str, Any] | None,
-        tuple[EvidenceRecord, ...],
-        tuple[MarketPriceRecord, ...],
-    ]:
-        if isinstance(self._profile_input, Mapping):
-            return (
-                self._profile_input,
-                self._profile_evidence_records,
-                self._profile_market_price_records,
-            )
-        return (
-            self._active_profile_input(),
-            self._reit_evidence_records,
-            self._reit_market_price_records,
-        )
-
-    @staticmethod
-    def _market_price_record_from_data(
-        market_price_data: Any,
-    ) -> tuple[MarketPriceRecord, ...]:
-        payload = _json_safe(market_price_data)
-        if not isinstance(payload, Mapping):
-            return ()
-        status = payload.get("status")
-        ticker = payload.get("ticker")
-        price = payload.get("market_price", payload.get("price"))
-        price_timestamp = payload.get("price_timestamp")
-        currency = payload.get("currency")
-        source_reference = payload.get("source_reference")
-        if (
-            not status
-            or str(status).strip().casefold() != "ok"
-            or any(
-                value in (None, "")
-                for value in (
-                    ticker,
-                    price,
-                    price_timestamp,
-                    currency,
-                    source_reference,
-                )
-            )
-        ):
-            return ()
-        evidence_id = _market_price_evidence_id(
-            str(ticker).strip().upper(),
-            str(price),
-            str(price_timestamp),
-            str(currency),
-            str(source_reference),
-        )
-        if not evidence_id:
-            return ()
-        try:
-            record = MarketPriceRecord.model_validate(
-                {
-                    "evidence_id": evidence_id,
-                    "ticker": ticker,
-                    "price": price,
-                    "currency": currency,
-                    "price_timestamp": price_timestamp,
-                    "source_reference": source_reference,
-                    "adjustment_basis": "raw",
-                    "validation_status": "valid",
-                }
-            )
-        except (TypeError, ValueError, ValidationError):
-            return ()
-        return (record,)
-
-    def _refresh_profile_policy_context(self, market_price_data: Any) -> None:
-        profile, evidence_records, market_price_records = self._active_profile_records()
-        if not isinstance(profile, Mapping):
-            return
-        if not market_price_records:
-            market_price_records = self._market_price_record_from_data(
-                market_price_data
-            )
-            if isinstance(self._profile_input, Mapping):
-                self._profile_market_price_records = market_price_records
-            else:
-                self._reit_market_price_records = market_price_records
-        issuer_profile = profile.get("issuer_profile", profile.get("issuer_type"))
-        issuer_profile = getattr(issuer_profile, "value", issuer_profile)
-        reporting_profile = profile.get("reporting_profile")
-        reporting_profile = getattr(reporting_profile, "value", reporting_profile)
-        security_profile = profile.get("security_profile")
-        security_profile = getattr(security_profile, "value", security_profile)
-        is_spac = str(security_profile).strip().casefold() == "spac"
-        is_unsupported_security = _is_unsupported_security_profile(profile)
-        is_foreign_ifrs = (
-            str(reporting_profile).strip().casefold()
-            == "foreign_private_issuer_ifrs"
-        )
-        if (
-            str(issuer_profile).strip().casefold() not in {
-            "reit",
-            "bank",
-            "insurance",
-            "utility",
-            "commodity_producer",
-            "holding_company",
-            }
-            and not is_foreign_ifrs
-            and not is_spac
-            and not is_unsupported_security
-        ):
-            return
-        current_context = self.state.policy_context
-        policy_context = pipeline_support.build_profile_policy_context(
-            profile=profile,
-            source_metadata=(
-                current_context.get("foreign_metadata")
-                if is_foreign_ifrs and isinstance(current_context, Mapping)
-                else None
-            ),
-            facts=self._pipeline_state.get("facts", {}),
-            calculations=self._pipeline_state.get("calculations", []),
-            evidence_records=evidence_records,
-            market_price_records=market_price_records,
-        )
-        policy_context = _json_safe(policy_context)
-        if not isinstance(policy_context, dict):
-            raise TypeError("profile policy context 必须是 JSON-safe 映射")
-        has_explicit_profile = (
-            isinstance(self._profile_input, Mapping)
-            or isinstance(self._reit_profile_input, Mapping)
-        )
-        policy_context["policy_activation"] = (
-            "explicit_profile"
-            if has_explicit_profile
-            else "sec_metadata"
-            if is_foreign_ifrs
-            else (
-                current_context.get("policy_activation")
-                if isinstance(current_context, Mapping)
-                else None
-            )
-            or "sec_metadata"
-        )
-        self.state.profile = _json_safe(
-            policy_context.get("profile", self.state.profile)
-        )
-        self.state.policy_context = policy_context
-        self._pipeline_state["profile"] = self.state.profile
-        self._pipeline_state["policy_context"] = policy_context
-
-    def _refresh_reit_policy_context(self, market_price_data: Any) -> None:
-        """保留旧私有调用名，同时刷新所有 typed Profile。"""
-        self._refresh_profile_policy_context(market_price_data)
 
     def _build_analysis_evidence_store(self) -> EvidenceStore:
         """为当前 Flow run 构造不进入 state 的只读 EvidenceStore。"""
@@ -1177,7 +769,13 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     break
         if domain == "unavailable" and required_data:
             if any(
-                item.startswith(("unsupported_category_sic:", "unsupported_security:"))
+                item.startswith(
+                    (
+                        "unsupported_category_sic:",
+                        "unsupported_security:",
+                        "ordinary_scope_",
+                    )
+                )
                 for item in required_data
             ):
                 domain = "scope"
@@ -1447,13 +1045,10 @@ class ResearchFlow(Flow[ResearchFlowState]):
         explicit_profile = (
             self._profile_input
             if isinstance(self._profile_input, Mapping)
-            else self._reit_profile_input
-            if isinstance(self._reit_profile_input, Mapping)
             else state_profile
         )
-        _, profile_evidence_records, profile_market_price_records = (
-            self._active_profile_records()
-        )
+        profile_evidence_records = self._profile_evidence_records
+        profile_market_price_records = self._profile_market_price_records
         profile_metadata = pipeline_support.profile_metadata_from_edgar(edgar_result)
         policy_context = pipeline_support.build_profile_policy_context(
             profile=explicit_profile,
@@ -1565,29 +1160,14 @@ class ResearchFlow(Flow[ResearchFlowState]):
             self.state.profile,
             self._profile_input,
         ]
-        is_spac = any(
-            isinstance(candidate, Mapping)
-            and str(
-                getattr(candidate.get("security_profile"), "value", candidate.get("security_profile"))
-            ).strip().casefold()
-            == "spac"
-            for candidate in profile_candidates
-        )
-        is_unsupported_security = any(
-            _is_unsupported_security_profile(candidate)
-            for candidate in profile_candidates
-        )
-        is_unsupported_sic_category = any(
-            _is_unsupported_sic_category_profile(candidate)
-            for candidate in profile_candidates
-        )
-        unsupported_scope_reason = (
-            "unsupported_category_sic"
-            if is_unsupported_sic_category
-            else "unsupported_security"
-            if is_unsupported_security and not is_spac
-            else None
-        )
+        scope_profile = None
+        unsupported_scope_reason = None
+        for candidate in profile_candidates:
+            candidate_reason = _unsupported_scope_reason(candidate)
+            if candidate_reason:
+                scope_profile = candidate
+                unsupported_scope_reason = candidate_reason
+                break
         if unsupported_scope_reason:
             unavailable_valuation = {
                 "status": "not_applicable",
@@ -1604,7 +1184,9 @@ class ResearchFlow(Flow[ResearchFlowState]):
             self.state.historical_valuation = dict(unavailable_valuation)
             self.state.reverse_dcf = dict(unavailable_valuation)
             self.state.stage = "analysis"
-            self._refresh_profile_policy_context(self._market_price_data)
+            self.state.required_data = _unsupported_scope_required_data(
+                scope_profile, self.state.edgar, unsupported_scope_reason
+            )
             snapshot = self._stage_snapshot()
             self._emit_stage(
                 RunStageEvent(
@@ -1624,44 +1206,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 )
             )
             return dict(unavailable_valuation)
-        if is_spac:
-            unavailable_valuation = {
-                "status": "not_applicable",
-                "readiness": "not_applicable",
-                "validation_status": "unvalidated",
-                "reason_code": _SPAC_SECURITY_STRUCTURE_REASON,
-                "calculations": [],
-            }
-            self._market_price_data = _json_safe(self._market_price_data)
-            self._trusted_valuation_evidence_ids = set()
-            self._historical_financial_snapshots = []
-            self.state.market_price_data = _json_safe(self._market_price_data)
-            self.state.valuation = dict(unavailable_valuation)
-            self.state.historical_valuation = dict(unavailable_valuation)
-            self.state.reverse_dcf = dict(unavailable_valuation)
-            self.state.stage = "analysis"
-            self._refresh_profile_policy_context(self._market_price_data)
-            snapshot = self._stage_snapshot()
-            self._emit_stage(
-                RunStageEvent(
-                    step=3,
-                    title="市场价格与估值",
-                    actor="Python：SPAC evidence-only",
-                    status="completed",
-                    input_summary=snapshot["identity"],
-                    output_summary=(
-                        "SPAC evidence-only; ordinary valuation tools skipped; "
-                        "valuation=not_applicable"
-                    ),
-                    decision="SKIPPED",
-                    reason=(
-                        "security_profile=spac; "
-                        f"reason_code={_SPAC_SECURITY_STRUCTURE_REASON}"
-                    ),
-                    next_step="Analysis Gate",
-                )
-            )
-            return dict(unavailable_valuation)
 
         market_price_data = self._market_price_data
         if market_price_data is None and pipeline_state.get("ticker"):
@@ -1676,98 +1220,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 else fetched_market_price
             )
         self._market_price_data = _json_safe(market_price_data)
-
-        profile_context = pipeline_state.get("policy_context")
-        profile_candidates = [
-            profile_context.get("profile")
-            if isinstance(profile_context, Mapping)
-            else None,
-            pipeline_state.get("profile"),
-            self.state.profile,
-            self._profile_input,
-        ]
-        is_foreign_ifrs = False
-        is_holding_company = False
-        for candidate in profile_candidates:
-            if not isinstance(candidate, Mapping):
-                continue
-            issuer_profile = candidate.get("issuer_profile", candidate.get("issuer_type"))
-            issuer_profile = getattr(issuer_profile, "value", issuer_profile)
-            if str(issuer_profile).strip().casefold() == "holding_company":
-                is_holding_company = True
-            reporting_profile = candidate.get("reporting_profile")
-            reporting_profile = getattr(reporting_profile, "value", reporting_profile)
-            if (
-                str(reporting_profile).strip().casefold()
-                == "foreign_private_issuer_ifrs"
-            ):
-                is_foreign_ifrs = True
-                break
-
-        if is_foreign_ifrs:
-            reason_code = "foreign_currency_fx_not_implemented"
-            unavailable_valuation = {
-                "status": "not_applicable",
-                "readiness": "not_applicable",
-                "validation_status": "unvalidated",
-                "reason_code": reason_code,
-                "calculations": [],
-            }
-            self._trusted_valuation_evidence_ids = set()
-            self.state.market_price_data = _json_safe(self._market_price_data)
-            self.state.valuation = dict(unavailable_valuation)
-            self.state.historical_valuation = dict(unavailable_valuation)
-            self.state.reverse_dcf = dict(unavailable_valuation)
-            self.state.stage = "analysis"
-            self._refresh_profile_policy_context(self._market_price_data)
-            snapshot = self._stage_snapshot()
-            self._emit_stage(
-                RunStageEvent(
-                    step=3,
-                    title="市场价格与估值",
-                    actor="确定性工具：Market Price + Foreign Profile",
-                    status="completed",
-                    input_summary=snapshot["identity"],
-                    output_summary=(
-                        f"price={snapshot['price']}; timestamp={snapshot['timestamp']}; "
-                        "foreign valuation=not_applicable"
-                    ),
-                    next_step="Analysis Gate",
-                )
-            )
-            return dict(unavailable_valuation)
-
-        if is_holding_company:
-            unavailable_valuation = {
-                "status": "not_applicable",
-                "readiness": "not_applicable",
-                "validation_status": "unvalidated",
-                "reason_code": "holding_company_nav_primary_valuation",
-                "calculations": [],
-            }
-            self._trusted_valuation_evidence_ids = set()
-            self.state.market_price_data = _json_safe(self._market_price_data)
-            self.state.valuation = dict(unavailable_valuation)
-            self.state.historical_valuation = dict(unavailable_valuation)
-            self.state.reverse_dcf = dict(unavailable_valuation)
-            self.state.stage = "analysis"
-            self._refresh_profile_policy_context(self._market_price_data)
-            snapshot = self._stage_snapshot()
-            self._emit_stage(
-                RunStageEvent(
-                    step=3,
-                    title="市场价格与估值",
-                    actor="确定性工具：Market Price + Holding Company Profile",
-                    status="completed",
-                    input_summary=snapshot["identity"],
-                    output_summary=(
-                        f"price={snapshot['price']}; timestamp={snapshot['timestamp']}; "
-                        "holding-company valuation=not_applicable"
-                    ),
-                    next_step="Analysis Gate",
-                )
-            )
-            return dict(unavailable_valuation)
 
         if self._valuation_tool is None:
             self._valuation_tool = ValuationTool()
@@ -1963,7 +1415,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self.state.historical_valuation = historical_valuation
         self.state.reverse_dcf = reverse_dcf
         self.state.stage = "analysis"
-        self._refresh_profile_policy_context(self._market_price_data)
         snapshot = self._stage_snapshot()
         self._emit_stage(
             RunStageEvent(
@@ -2073,17 +1524,21 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     self.state.historical_valuation,
                     self.state.reverse_dcf,
                 )
-            if gate.get("status") in {"blocked", "unsupported"} and (
+            scope_reason = _unsupported_scope_reason(self.state.profile)
+            if scope_reason:
+                gate = dict(gate)
+                gate["status"] = "unsupported"
+                gate["blocking_decisions"] = []
+                gate["reason_codes"] = [scope_reason]
+                gate["required_data"] = _unsupported_scope_required_data(
+                    self.state.profile,
+                    self.state.edgar,
+                    scope_reason,
+                )
+            elif gate.get("status") in {"blocked", "unsupported"} and (
                 "blocking_decisions" in gate
             ):
-                scope_reason = _unsupported_scope_reason(self.state.profile)
-                if scope_reason in {"unsupported_category_sic", "unsupported_security"}:
-                    gate["required_data"] = _unsupported_scope_required_data(
-                        self.state.profile,
-                        self.state.edgar,
-                        scope_reason,
-                    )
-                else:
+                if gate.get("status") in {"blocked", "unsupported"}:
                     required_data = [
                         f"{decision.get('metric_id')}:{decision.get('reason_code')}"
                         for decision in gate.get("blocking_decisions", [])
@@ -2094,8 +1549,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
                     gate["required_data"] = required_data or [
                         f"profile_policy_gate_{gate.get('status', 'blocked')}"
                     ]
-            elif gate.get("status") == "evidence_only":
-                gate["required_data"] = []
         if gate.get("status") in {"blocked", "unsupported"}:
             self.state.status = "blocked"
             self.state.stage = "request" if self._parser_failed else "analysis"
@@ -2111,19 +1564,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
             route = "analysis_ready"
         snapshot = self._stage_snapshot()
         gate_summary = self._gate_summary()
-        policy_profile = self.state.policy_context.get("profile", {})
-        spac_evidence_only = (
-            isinstance(policy_profile, Mapping)
-            and str(
-                getattr(
-                    policy_profile.get("security_profile"),
-                    "value",
-                    policy_profile.get("security_profile"),
-                )
-            ).strip().casefold()
-            == "spac"
-            and gate.get("status") == "evidence_only"
-        )
         self._emit_stage(
             RunStageEvent(
                 step=4,
@@ -2147,8 +1587,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
                 next_step=(
                     "最终阻断"
                     if route == "analysis_blocked"
-                    else "SPAC evidence-only Python 输入"
-                    if spac_evidence_only
                     else "Analysis Crew"
                 ),
             )
@@ -2198,74 +1636,6 @@ class ResearchFlow(Flow[ResearchFlowState]):
         来自 ``prepare_valuation`` 保存的 trusted set，Calculation allowlist
         来自固定注册表与基础已验证计算集合。
         """
-        if _spac_evidence_only_policy_ready(
-            self.state.policy_context,
-            self.state.valuation,
-            self.state.historical_valuation,
-            self.state.reverse_dcf,
-        ):
-            policy_context = self.state.policy_context
-            evidence_ids = [
-                record["evidence_id"]
-                for record in policy_context.get("evidence_records", [])
-                if isinstance(record, Mapping)
-                and isinstance(record.get("evidence_id"), str)
-                and record.get("validation_status") == "valid"
-            ]
-            calculation_ids = [
-                record["calculation_id"]
-                for record in policy_context.get("calculation_records", [])
-                if isinstance(record, Mapping)
-                and isinstance(record.get("calculation_id"), str)
-                and record.get("validation_status") == "valid"
-            ]
-            self._analysis_inputs = {
-                "mode": "spac_evidence_only",
-                "profile": _json_safe(policy_context.get("profile", {})),
-                "validated_evidence_ids": list(dict.fromkeys(evidence_ids)),
-                "validated_calculation_ids": list(dict.fromkeys(calculation_ids)),
-            }
-            self._valuation_analysis_input = {
-                "mode": "spac_evidence_only",
-                "validated_evidence_ids": [],
-                "validated_calculation_ids": [],
-                "calculations": [],
-            }
-            self.state.analysis_attempts = 0
-            self.state.analysis = []
-            self.state.required_data = []
-            self.state.status = "running"
-            self.state.stage = "analysis"
-            self.state.analysis_diagnostics = {}
-            self._analysis_diagnostics = {}
-            self._analysis_result = SimpleNamespace(
-                raw=json.dumps(
-                    {"mode": "spac_evidence_only", "claims": []},
-                    ensure_ascii=False,
-                ),
-                tasks_output=[],
-            )
-            snapshot = self._stage_snapshot()
-            self._emit_stage(
-                RunStageEvent(
-                    step=5,
-                    title="SPAC evidence-only",
-                    actor="Python：SPAC evidence-only",
-                    status="completed",
-                    input_summary=(
-                        f"{snapshot['identity']}; typed profile evidence only"
-                    ),
-                    output_summary=(
-                        "AnalysisCrew=skipped; financial/risk/valuation claims=none; "
-                        "Claims=awaiting Claim Gate"
-                    ),
-                    decision="EVIDENCE_ONLY",
-                    reason="security_profile=spac; no ordinary financial analysis",
-                    next_step="Claim Gate",
-                )
-            )
-            return self._analysis_result
-
         financial_input = _financial_analysis_input(self._pipeline_state)
         profile = _json_safe(self.state.profile)
         if not isinstance(profile, Mapping):
@@ -2327,19 +1697,12 @@ class ResearchFlow(Flow[ResearchFlowState]):
         self._analysis_result = with_deterministic_claims(
             raw_analysis_result
         )
-        allow_empty_valuation_claims = _allow_empty_foreign_valuation_claims(
-            self.state.policy_context,
-            self.state.valuation,
-            self.state.historical_valuation,
-            self.state.reverse_dcf,
-        )
         _, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
             self._analysis_result,
             list(financial_input.get("validated_evidence_ids", [])),
             list(self._risk_input.get("validated_filing_ids", [])),
             list(valuation_input.get("validated_evidence_ids", [])),
             list(valuation_input.get("validated_calculation_ids", [])),
-            allow_empty_valuation_claims=allow_empty_valuation_claims,
         )
         retryable_claim_empty = (
             diagnostics is not None
@@ -2406,148 +1769,20 @@ class ResearchFlow(Flow[ResearchFlowState]):
         或其他稳定缺失码，清空 Analysis/Report 并返回 ``claims_blocked``。
         节点不调用 Verdict 或 Report Crew，不让 Agent 自己决定路由。
         """
-        policy_profile = self.state.policy_context.get("profile", {})
-        is_spac = (
-            isinstance(policy_profile, Mapping)
-            and str(
-                getattr(
-                    policy_profile.get("security_profile"),
-                    "value",
-                    policy_profile.get("security_profile"),
-                )
-            ).strip().casefold()
-            == "spac"
-        )
-        if is_spac:
-            if not _spac_evidence_only_policy_ready(
-                self.state.policy_context,
-                self.state.valuation,
-                self.state.historical_valuation,
-                self.state.reverse_dcf,
-            ):
-                self.state.status = "blocked"
-                self.state.stage = "analysis"
-                self.state.required_data = ["spac_typed_envelope_invalid"]
-                self.state.analysis = []
-                self.state.verdict = None
-                self.state.report = None
-                self._analysis_diagnostics = {
-                    "domain": "claim_gate",
-                    "reason_code": "spac_typed_envelope_invalid",
-                }
-                self.state.analysis_diagnostics = dict(self._analysis_diagnostics)
-                self._emit_stage(
-                    RunStageEvent(
-                        step=6,
-                        title="SPAC evidence-only Claim Gate",
-                        actor="Python Gate：SPAC evidence-only",
-                        status="blocked",
-                        input_summary="typed SPAC envelope",
-                        output_summary=(
-                            "BLOCKED; reason_code=spac_typed_envelope_invalid"
-                        ),
-                        decision="BLOCKED",
-                        reason="SPAC typed envelope 或 evidence-only gate 无效",
-                        next_step="最终阻断",
-                    )
-                )
-                return "claims_blocked"
-            self.state.required_data = []
-            self.state.analysis = []
-            self.state.status = "running"
-            self.state.stage = "report"
-            self._analysis_diagnostics = {}
-            self.state.analysis_diagnostics = {}
-            self._emit_stage(
-                RunStageEvent(
-                    step=6,
-                    title="SPAC evidence-only Claim Gate",
-                    actor="Python Gate：SPAC evidence-only",
-                    status="completed",
-                    input_summary="typed SPAC envelope",
-                    output_summary=(
-                        "claims_ready; ordinary financial/risk/valuation claims=none"
-                    ),
-                    decision="READY",
-                    reason="typed SPAC envelope valid; gate=evidence_only",
-                    next_step="Verdict 与 Report",
-                )
-            )
-            return "claims_ready"
-
         financial_input = self._analysis_inputs.get("financial_analysis_input", {})
         valuation_input = self._valuation_analysis_input
-        allow_empty_valuation_claims = _allow_empty_foreign_valuation_claims(
-            self.state.policy_context,
-            self.state.valuation,
-            self.state.historical_valuation,
-            self.state.reverse_dcf,
-        )
         financial_evidence_ids = list(
             financial_input.get("validated_evidence_ids", [])
         )
         claim_calculation_ids = list(
             valuation_input.get("validated_calculation_ids", [])
         )
-        if _holding_nav_policy_ready(
-            self.state.policy_context,
-            self.state.valuation,
-            self.state.historical_valuation,
-            self.state.reverse_dcf,
-        ):
-            policy_evidence_ids = {
-                evidence_id
-                for decision in self.state.policy_context["policy_decisions"]
-                if isinstance(decision, Mapping)
-                and decision.get("status") == "available"
-                for evidence_id in decision.get("evidence_ids", [])
-                if isinstance(evidence_id, str)
-            }
-            policy_calculation_ids = {
-                calculation_id
-                for decision in self.state.policy_context["policy_decisions"]
-                if isinstance(decision, Mapping)
-                and decision.get("status") == "available"
-                for calculation_id in decision.get("calculation_ids", [])
-                if isinstance(calculation_id, str)
-            }
-            profile_evidence_ids = [
-                record["evidence_id"]
-                for record in self.state.policy_context.get("evidence_records", [])
-                if isinstance(record, Mapping)
-                and record.get("validation_status") == "valid"
-                and isinstance(record.get("evidence_id"), str)
-                and record["evidence_id"] in policy_evidence_ids
-            ]
-            profile_calculation_ids = [
-                record["calculation_id"]
-                for record in self.state.policy_context.get(
-                    "calculation_records", []
-                )
-                if isinstance(record, Mapping)
-                and record.get("validation_status") == "valid"
-                and isinstance(record.get("calculation_id"), str)
-                and record["calculation_id"] in policy_calculation_ids
-            ]
-            financial_evidence_ids = list(
-                dict.fromkeys([*financial_evidence_ids, *profile_evidence_ids])
-            )
-            claim_calculation_ids = list(
-                dict.fromkeys(
-                    [
-                        *financial_input.get("validated_calculation_ids", []),
-                        *claim_calculation_ids,
-                        *profile_calculation_ids,
-                    ]
-                )
-            )
         claims, required_data, diagnostics = _filter_analysis_claims_with_diagnostics(
             analysis_result,
             financial_evidence_ids,
             list(self._risk_input.get("validated_filing_ids", [])),
             list(valuation_input.get("validated_evidence_ids", [])),
             claim_calculation_ids,
-            allow_empty_valuation_claims=allow_empty_valuation_claims,
         )
         self.state.required_data = list(required_data)
         if diagnostics is None:
@@ -2750,53 +1985,7 @@ class ResearchFlow(Flow[ResearchFlowState]):
             }.items()
             if value is not None
         }
-        active_profile, active_evidence_records, active_market_price_records = (
-            self._active_profile_records()
-        )
-        active_issuer = (
-            active_profile.get("issuer_profile", active_profile.get("issuer_type"))
-            if isinstance(active_profile, Mapping)
-            else None
-        )
-        active_issuer = getattr(active_issuer, "value", active_issuer)
-        active_reporting = (
-            active_profile.get("reporting_profile")
-            if isinstance(active_profile, Mapping)
-            else None
-        )
-        active_reporting = getattr(active_reporting, "value", active_reporting)
-        active_security = (
-            active_profile.get("security_profile")
-            if isinstance(active_profile, Mapping)
-            else None
-        )
-        active_security = getattr(active_security, "value", active_security)
-        if (
-            str(active_issuer).strip().casefold() in {
-            "reit",
-            "bank",
-            "insurance",
-            "utility",
-            "commodity_producer",
-            "holding_company",
-            }
-            or str(active_security).strip().casefold() == "spac"
-            or str(active_reporting).strip().casefold()
-            == "foreign_private_issuer_ifrs"
-        ):
-            source_metadata["facts"].update(
-                {
-                    record.evidence_id: record.model_dump(mode="json")
-                    for record in active_evidence_records
-                }
-            )
-            source_metadata["market_price"] = (
-                active_market_price_records[0].model_dump(mode="json")
-                if active_market_price_records
-                else {}
-            )
-        else:
-            source_metadata["market_price"] = market_price_metadata
+        source_metadata["market_price"] = market_price_metadata
         source_metadata["historical_prices"] = [
             {
                 key: value

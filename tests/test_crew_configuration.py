@@ -1548,7 +1548,7 @@ class AnalysisGateTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["analysis"][0]["category"], "financial_quality")
-        self.assertIn("## 执行摘要", result["report"])
+        self.assertIn("## 1. 一页结论", result["report"])
         self.assertIn("确定性状态：status=ready", result["report"])
         self.assertIn("财务质量稳定。", result["report"])
         self.assertIn("本文不构成投资建议。", result["report"])
