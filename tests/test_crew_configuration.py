@@ -4,6 +4,10 @@ from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -776,8 +780,6 @@ class EntrypointTests(unittest.TestCase):
         )
 
     def test_uv_console_script_uses_safe_entrypoint(self):
-        import tomllib
-
         project_root = Path(__file__).resolve().parents[1]
         with (project_root / "pyproject.toml").open("rb") as project_file:
             project_config = tomllib.load(project_file)

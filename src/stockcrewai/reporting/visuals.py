@@ -362,14 +362,14 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
                 lower, upper = panel.get_xlim()
                 panel_adjusted = False
                 if text_extent.x0 < axes_bbox.x0:
-                    overflow = axes_bbox.x0 - text_extent.x0 + 1.0
+                    overflow = axes_bbox.x0 - text_extent.x0 + 2.0
                     expansion = overflow * (upper - lower) / max(
                         axes_bbox.width - overflow, 1.0
                     )
                     lower -= expansion
                     panel_adjusted = True
                 if text_extent.x1 > axes_bbox.x1:
-                    overflow = text_extent.x1 - axes_bbox.x1 + 1.0
+                    overflow = text_extent.x1 - axes_bbox.x1 + 2.0
                     expansion = overflow * (upper - lower) / max(
                         axes_bbox.width - overflow, 1.0
                     )
