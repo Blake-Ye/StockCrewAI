@@ -4,9 +4,11 @@ import importlib
 from io import BytesIO
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import warnings
 
 from PIL import Image
 
@@ -184,8 +186,15 @@ class ReportVisualsTests(unittest.TestCase):
             finally:
                 module.plt.close(figure)
 
-        with patch.object(module, "_png_uri", side_effect=inspect_png_uri):
-            self.assertEqual(module._financial_kpi_png(records), "captured")
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, message=r"Glyph .* missing from font"
+            )
+            with (
+                module.plt.rc_context({"font.family": ["DejaVu Sans"]}),
+                patch.object(module, "_png_uri", side_effect=inspect_png_uri),
+            ):
+                self.assertEqual(module._financial_kpi_png(records), "captured")
 
         axes = rendered["axes"]
         self.assertEqual(len(axes), 3)
@@ -221,6 +230,72 @@ class ReportVisualsTests(unittest.TestCase):
 
         growth_labels = [text.get_text() for text in axes[0].get_yticklabels()]
         self.assertIn("股份变化（拆分调整）", growth_labels)
+
+    def test_financial_kpi_extreme_labels_stay_inside_with_dejavu_metrics(self):
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+        values = {
+            "revenue_growth": 12345.67,
+            "operating_margin": 333.60,
+            "net_margin": 27.85,
+            "free_cash_flow_margin": 30.24,
+            "cash_conversion": 987.65,
+            "share_dilution": -1234.56,
+        }
+        records = {
+            metric_id: {
+                "display_value": f"{value:.2f}%",
+                "unit": "percentage",
+                "status": "available",
+                "validation_status": "valid",
+                "calculation_id": f"calc_{metric_id}",
+                "evidence_ids": [f"ev_{metric_id}"],
+                "period_basis": "FY",
+                "period_end": "2025-12-31",
+                "as_of": "2025-12-31",
+                **(
+                    {"adjustment_basis": "split_adjusted"}
+                    if metric_id == "share_dilution"
+                    else {}
+                ),
+            }
+            for metric_id, value in values.items()
+        }
+        rendered = {}
+
+        def inspect_png_uri(draw, *, size, **kwargs):
+            figure, axes = module.plt.subplots(figsize=size, dpi=120)
+            try:
+                draw(axes)
+                figure.canvas.draw()
+                rendered["axes"] = list(figure.axes)
+                rendered["renderer"] = figure.canvas.get_renderer()
+                return "captured"
+            finally:
+                module.plt.close(figure)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=UserWarning, message=r"Glyph .* missing from font"
+            )
+            with (
+                module.plt.rc_context({"font.family": ["DejaVu Sans"]}),
+                patch.object(module, "_png_uri", side_effect=inspect_png_uri),
+            ):
+                self.assertEqual(module._financial_kpi_png(records), "captured")
+
+        renderer = rendered["renderer"]
+        for axis in rendered["axes"]:
+            axes_bbox = axis.bbox
+            for text, bar in zip(axis.texts, axis.patches):
+                text_extent = text.get_window_extent(renderer)
+                bar_extent = bar.get_window_extent(renderer)
+                with self.subTest(label=text.get_text()):
+                    self.assertGreaterEqual(text_extent.x0, axes_bbox.x0)
+                    self.assertLessEqual(text_extent.x1, axes_bbox.x1)
+                    if bar.get_width() >= 0:
+                        self.assertGreater(text_extent.x0, bar_extent.x1)
+                    else:
+                        self.assertLess(text_extent.x1, bar_extent.x0)
 
     def test_financial_kpis_reject_invalid_share_adjustment_basis(self):
         module = importlib.import_module("stockcrewai.reporting.visuals")
@@ -607,6 +682,49 @@ class ReportVisualsTests(unittest.TestCase):
         self.assertEqual(config_dir.parent, Path(tempfile.gettempdir()))
         self.assertTrue(config_dir.name.startswith("stockcrewai"))
         self.assertTrue(os.access(config_dir, os.W_OK))
+
+    def test_crewai_warning_compatibility_preserves_stacklevel(self):
+        if sys.version_info < (3, 12):
+            self.skipTest("仅验证 Python 3.12+ 的 warnings.warn 参数兼容性")
+
+        compat = importlib.import_module("stockcrewai._compat")
+        calls = []
+
+        def defective_warn(message, category=None, stacklevel=1, source=None):
+            calls.append(stacklevel)
+
+        defective_warn.__module__ = "crewai"
+        with patch.object(warnings, "warn", defective_warn):
+            compat.install_crewai_warning_compatibility()
+            warnings.warn(
+                "stacklevel probe",
+                UserWarning,
+                stacklevel=3,
+                skip_file_prefixes=(),
+            )
+
+        self.assertEqual(calls, [4])
+
+    def test_png_uri_repatches_crewai_warning_compatibility_at_call_time(self):
+        if sys.version_info < (3, 12):
+            self.skipTest("仅验证 Python 3.12+ 的 warnings.warn 参数兼容性")
+
+        module = importlib.import_module("stockcrewai.reporting.visuals")
+
+        def defective_warn(message, category=None, stacklevel=1, source=None):
+            return None
+
+        defective_warn.__module__ = "crewai"
+        with patch.object(warnings, "warn", defective_warn):
+            uri = module._png_uri(lambda axes: None, size=(1.0, 1.0), dpi=30)
+            warnings.warn(
+                "call-time probe",
+                UserWarning,
+                skip_file_prefixes=(),
+            )
+            self.assertIsNot(warnings.warn, defective_warn)
+
+        self.assertTrue(uri.startswith("data:image/png;base64,"))
 
     def test_amount_conversion_uses_actual_usd_billions(self):
         module = importlib.import_module("stockcrewai.reporting.visuals")

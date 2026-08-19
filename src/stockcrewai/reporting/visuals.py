@@ -11,12 +11,16 @@ import re
 import tempfile
 from typing import Any, Callable
 
+from stockcrewai._compat import install_crewai_warning_compatibility
+
 from .context import _SUPPORTED_FINANCIAL_PERIOD_BASES
 
 
 _MPL_CONFIG_DIR = Path(tempfile.gettempdir()) / "stockcrewai-matplotlib"
 _MPL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["MPLCONFIGDIR"] = str(_MPL_CONFIG_DIR)
+
+install_crewai_warning_compatibility()
 
 import matplotlib  # noqa: E402
 
@@ -236,6 +240,7 @@ def _amount_in_billion_usd(record: Mapping[str, Any]) -> float | None:
 def _png_uri(
     draw: Callable[[Any], None], *, size: tuple[float, float], dpi: int = 120
 ) -> str:
+    install_crewai_warning_compatibility()
     figure, axes = plt.subplots(figsize=size, dpi=dpi)
     try:
         draw(axes)
@@ -295,6 +300,7 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
         figure = axes.figure
         figure.clear()
         panel_axes = figure.subplots(1, len(panel_data), squeeze=False)[0]
+        label_texts: list[tuple[Any, Any]] = []
         for panel, (title, metric_ids, values) in zip(panel_axes, panel_data):
             labels = []
             for metric_id in metric_ids:
@@ -329,16 +335,51 @@ def _financial_kpi_png(records: Mapping[str, Mapping[str, Any]]) -> str | None:
             panel.invert_yaxis()
             for bar, value in zip(bars, values):
                 positive = value >= 0
-                panel.text(
-                    value + label_offset if positive else value - label_offset,
-                    bar.get_y() + bar.get_height() / 2,
-                    f"{value:.2f}%",
-                    va="center",
-                    ha="left" if positive else "right",
-                    fontsize=8,
+                label_texts.append(
+                    (
+                        panel,
+                        panel.text(
+                            value + label_offset if positive else value - label_offset,
+                            bar.get_y() + bar.get_height() / 2,
+                            f"{value:.2f}%",
+                            va="center",
+                            ha="left" if positive else "right",
+                            fontsize=8,
+                        ),
+                    )
                 )
         figure.suptitle(_FINANCIAL_KPI_TITLE)
         figure.subplots_adjust(left=0.08, right=0.98, bottom=0.22, top=0.80, wspace=0.45)
+        for _ in range(3):
+            figure.canvas.draw()
+            renderer = figure.canvas.get_renderer()
+            adjusted = False
+            for panel, text in label_texts:
+                axes_bbox = panel.bbox
+                if axes_bbox.width <= 0:
+                    continue
+                text_extent = text.get_window_extent(renderer)
+                lower, upper = panel.get_xlim()
+                panel_adjusted = False
+                if text_extent.x0 < axes_bbox.x0:
+                    overflow = axes_bbox.x0 - text_extent.x0 + 1.0
+                    expansion = overflow * (upper - lower) / max(
+                        axes_bbox.width - overflow, 1.0
+                    )
+                    lower -= expansion
+                    panel_adjusted = True
+                if text_extent.x1 > axes_bbox.x1:
+                    overflow = text_extent.x1 - axes_bbox.x1 + 1.0
+                    expansion = overflow * (upper - lower) / max(
+                        axes_bbox.width - overflow, 1.0
+                    )
+                    upper += expansion
+                    panel_adjusted = True
+                if panel_adjusted:
+                    panel.set_xlim(lower, upper)
+                    adjusted = True
+            if not adjusted:
+                break
 
     return _png_uri(draw, size=(12.0, 4.8))
 
