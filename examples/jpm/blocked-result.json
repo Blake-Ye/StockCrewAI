@@ -1,0 +1,46 @@
+{
+  "status": "blocked",
+  "stage": "analysis",
+  "parsed_request": {
+    "company_mention": "摩根大通",
+    "company_name_guess": "JPMorgan Chase & Co.",
+    "ticker_guess": "JPM",
+    "exchange_guess": "unspecified",
+    "request_type": "investment_value_analysis",
+    "investment_horizon": "3年",
+    "requested_focus": [
+      "投资价值"
+    ],
+    "language": "中文",
+    "confidence": 0.9
+  },
+  "profile": {
+    "issuer_profile": "bank",
+    "security_profile": "common_stock",
+    "reporting_profile": "domestic_us_gaap",
+    "coverage_level": "full",
+    "reason_codes": [
+      "profile_classified_from_sic",
+      "profile_classified_from_filing_metadata",
+      "profile_classified_from_security_metadata"
+    ],
+    "registry_version": "profile-registry:v1"
+  },
+  "policy_context": {
+    "gate": {
+      "status": "unsupported",
+      "coverage_level": "full",
+      "blocking_decisions": [],
+      "non_blocking_decisions": [],
+      "reason_codes": [
+        "unsupported_category_sic"
+      ],
+      "policy_version": "metric-policy:v1"
+    }
+  },
+  "required_data": [
+    "unsupported_category_sic:sic=6021",
+    "unsupported_category_sic:issuer_profile=bank"
+  ],
+  "reason_codes_source": "policy_context.gate.reason_codes"
+}

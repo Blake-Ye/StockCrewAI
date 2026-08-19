@@ -1,0 +1,114 @@
+{
+  "status": "ok",
+  "stage": "report",
+  "parsed_request": {
+    "company_name_guess": "苹果公司",
+    "ticker_guess": "AAPL",
+    "investment_horizon": "3年"
+  },
+  "market_price_data": {
+    "status": "ok",
+    "ticker": "AAPL",
+    "market_price": "315.025",
+    "price_timestamp": "2026-08-19T17:23:23Z",
+    "currency": "USD",
+    "source_reference": "https://finance.yahoo.com/quote/AAPL"
+  },
+  "valuation": {
+    "status": "ok",
+    "readiness": "ready",
+    "company_name": "Apple Inc.",
+    "ticker": "AAPL",
+    "market_price": "315.025",
+    "price_timestamp": "2026-08-19T17:23:23Z",
+    "currency": "USD",
+    "calculations": [
+      {
+        "calculation_id": "calc_market_capitalization",
+        "formula_id": "market_capitalization",
+        "display_result": "4602188569075.0000",
+        "unit": "currency",
+        "period_basis": null,
+        "status": "available",
+        "validation_status": "valid"
+      },
+      {
+        "calculation_id": "calc_pe_ratio",
+        "formula_id": "pe_ratio",
+        "display_result": "36.13x",
+        "unit": "multiple",
+        "period_basis": "TTM",
+        "status": "available",
+        "validation_status": "valid"
+      },
+      {
+        "calculation_id": "calc_fcf_yield",
+        "formula_id": "fcf_yield",
+        "display_result": "2.97%",
+        "unit": "ratio",
+        "period_basis": "TTM",
+        "status": "available",
+        "validation_status": "valid"
+      }
+    ]
+  },
+  "historical_valuation": {
+    "status": "ok",
+    "calculation_id": "calc_historical_pe",
+    "company_name": "Apple Inc.",
+    "ticker": "AAPL",
+    "metric": "pe_ratio",
+    "period_basis": "TTM",
+    "current_value": "36.12672018348623853211009174",
+    "current_date": "2026-08-19",
+    "five_year_median": "31.40342947047420034393359678",
+    "percentile_25": "26.36411283037134729123555647",
+    "percentile_75": "34.61742803360678597636175556",
+    "current_percentile": "86.44502891345298498081502053",
+    "available_months": 60,
+    "history_count": 60,
+    "required_months": 60,
+    "validation_status": "valid"
+  },
+  "reverse_dcf": {
+    "status": "ok",
+    "calculation_id": "calc_reverse_dcf_growth",
+    "company_name": "Apple Inc.",
+    "ticker": "AAPL",
+    "base_fcf": "136683000000",
+    "discount_rate": "0.09",
+    "forecast_years": 10,
+    "terminal_growth": "0.025",
+    "implied_growth": "0.1253633146349206013985162768",
+    "market_price": "315.025",
+    "equity_value": "4602188569075",
+    "shares_outstanding": "14608963000",
+    "convergence_status": "converged",
+    "iteration_count": 62,
+    "residual": "-0.000001967410942",
+    "period_basis": "TTM",
+    "validation_status": "valid"
+  },
+  "verdict": {
+    "status": "ready",
+    "overall_rating": "expensive",
+    "business_quality": "available",
+    "financial_trend": "available",
+    "valuation": "expensive",
+    "risk_level": "medium",
+    "summary_code": "POLICY_EVALUATED",
+    "is_investment_rating": true,
+    "policy_defined": true,
+    "rules_version": "v1",
+    "reasons": [],
+    "triggered_rules": [
+      "high_valuation"
+    ]
+  },
+  "artifacts": {
+    "report_bytes": 242499,
+    "report_path": "investment-report.md",
+    "report_sha256": "91b4325c9ac2ed67c6ebdbb5ebb962fa5a20163fe785ceafae45d282c356cc0d",
+    "report_status": "complete"
+  }
+}

@@ -38,6 +38,31 @@ flowchart LR
     L --> M[Markdown + JSON artifacts]
 ```
 
+## 真实验收与报告示例
+
+2026-08-20 在真实 SEC、Yahoo、DeepSeek 环境
+完成三次验收，以下记录来自当次运行的真实脱敏产物。
+这些结果只代表当次外部依赖可用，不等于服务永久免费稳定或后续运行始终可用。
+
+| 标的 | `status` | `stage` | 说明 | 证据 |
+| --- | --- | --- | --- | --- |
+| AAPL | `ok` | `report` | 成功生成报告 | [report.md](examples/aapl/report.md) · [run-summary.json](examples/aapl/run-summary.json) |
+| NVDA | `ok` | `report` | 成功生成报告 | [report.md](examples/nvda/report.md) · [run-summary.json](examples/nvda/run-summary.json) |
+| JPM | `blocked` | `analysis` | SIC `6021` bank（银行）被 Scope/Profile Gate 以 `unsupported_category_sic` 阻断 | [blocked-result.json](examples/jpm/blocked-result.json) |
+
+表格中的状态和阶段对应真实运行产物，
+不代表总体成功率或长期可用性承诺。
+
+![AAPL 真实运行核心财务指标预览](examples/aapl/assets/core-financial-metrics.png)
+
+图片为 AAPL 真实运行的脱敏预览；
+[查看全部样例](examples/README.md)。
+
+真实链路为：自然语言请求 → SEC/确定性计算 → Yahoo/估值 →
+Analysis/Claim Gate → Verdict → Report。
+JPM 在 Scope/Profile Gate 后即被阻断，
+不进入 LLM Analysis/Report。
+
 ## 快速开始
 
 项目使用 `uv` 管理环境，要求 Python `>=3.10,<3.14`。已有锁文件时，先准备开发依赖：

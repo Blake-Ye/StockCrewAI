@@ -1,0 +1,114 @@
+{
+  "status": "ok",
+  "stage": "report",
+  "parsed_request": {
+    "company_name_guess": "英伟达",
+    "ticker_guess": "NVDA",
+    "investment_horizon": "3 years"
+  },
+  "market_price_data": {
+    "status": "ok",
+    "ticker": "NVDA",
+    "market_price": "218.95",
+    "price_timestamp": "2026-08-19T17:26:45Z",
+    "currency": "USD",
+    "source_reference": "https://finance.yahoo.com/quote/NVDA"
+  },
+  "valuation": {
+    "status": "ok",
+    "readiness": "ready",
+    "company_name": "NVIDIA CORP",
+    "ticker": "NVDA",
+    "market_price": "218.95",
+    "price_timestamp": "2026-08-19T17:26:45Z",
+    "currency": "USD",
+    "calculations": [
+      {
+        "calculation_id": "calc_market_capitalization",
+        "formula_id": "market_capitalization",
+        "display_result": "5317419700000.000",
+        "unit": "currency",
+        "period_basis": null,
+        "status": "available",
+        "validation_status": "valid"
+      },
+      {
+        "calculation_id": "calc_pe_ratio",
+        "formula_id": "pe_ratio",
+        "display_result": "33.53x",
+        "unit": "multiple",
+        "period_basis": "TTM",
+        "status": "available",
+        "validation_status": "valid"
+      },
+      {
+        "calculation_id": "calc_fcf_yield",
+        "formula_id": "fcf_yield",
+        "display_result": "2.24%",
+        "unit": "ratio",
+        "period_basis": "TTM",
+        "status": "available",
+        "validation_status": "valid"
+      }
+    ]
+  },
+  "historical_valuation": {
+    "status": "ok",
+    "calculation_id": "calc_historical_pe",
+    "company_name": "NVIDIA CORP",
+    "ticker": "NVDA",
+    "metric": "pe_ratio",
+    "period_basis": "TTM",
+    "current_value": "33.52986217457886676875957121",
+    "current_date": "2026-08-19",
+    "five_year_median": "11.92090723352973353472779881",
+    "percentile_25": "6.554395464230096019963760053",
+    "percentile_75": "22.1991463810548012661637931",
+    "current_percentile": "84.93286458643903572008043778",
+    "available_months": 60,
+    "history_count": 60,
+    "required_months": 60,
+    "validation_status": "valid"
+  },
+  "reverse_dcf": {
+    "status": "ok",
+    "calculation_id": "calc_reverse_dcf_growth",
+    "company_name": "NVIDIA CORP",
+    "ticker": "NVDA",
+    "base_fcf": "119076000000",
+    "discount_rate": "0.09",
+    "forecast_years": 10,
+    "terminal_growth": "0.025",
+    "implied_growth": "0.1629079177338846497560299888",
+    "market_price": "218.95",
+    "equity_value": "5317419700000",
+    "shares_outstanding": "24286000000",
+    "convergence_status": "converged",
+    "iteration_count": 62,
+    "residual": "-0.000014807067756",
+    "period_basis": "TTM",
+    "validation_status": "valid"
+  },
+  "verdict": {
+    "status": "ready",
+    "overall_rating": "expensive",
+    "business_quality": "available",
+    "financial_trend": "available",
+    "valuation": "expensive",
+    "risk_level": "medium",
+    "summary_code": "POLICY_EVALUATED",
+    "is_investment_rating": true,
+    "policy_defined": true,
+    "rules_version": "v1",
+    "reasons": [],
+    "triggered_rules": [
+      "high_valuation"
+    ]
+  },
+  "artifacts": {
+    "report_bytes": 70677,
+    "report_path": "investment-report.md",
+    "report_sha256": "4a1777a73e89c7cf70b6a0a038c227ae17168ffbd153f60ad3b75050a116bdcd",
+    "report_status": "complete"
+  }
+}
