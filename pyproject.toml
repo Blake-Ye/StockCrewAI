@@ -1,8 +1,9 @@
 [project]
 name = "stockcrewai"
 version = "0.1.0"
-description = "StockCrewAI using crewAI"
-authors = [{ name = "Your Name", email = "you@example.com" }]
+description = "A U.S. equity investment-research agent prototype built with CrewAI Flow, SEC EDGAR, and deterministic validation."
+authors = [{ name = "Ziqing Ye", email = "blakevanderboom7@gmail.com" }]
+keywords = ["crewai", "ai-agent", "sec-edgar", "investment-research"]
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "crewai[tools]>=1.15.11,<2.0.0",
@@ -12,6 +13,10 @@ dependencies = [
     "pandas>=2.2,<3",
     "yfinance>=1.5.2",
 ]
+
+[project.urls]
+Repository = "https://github.com/Blake-Ye/StockCrewAI"
+Issues = "https://github.com/Blake-Ye/StockCrewAI/issues"
 
 [project.scripts]
 kickoff = "stockcrewai.main:kickoff"
